@@ -227,11 +227,10 @@ pub fn read_log_file(log_dir: &str, date: Option<&str>) -> std::io::Result<Vec<L
     let mut entries = Vec::new();
     
     for line in reader.lines() {
-        if let Ok(line) = line {
-            if let Ok(entry) = serde_json::from_str::<LogEntry>(&line) {
+        if let Ok(line) = line
+            && let Ok(entry) = serde_json::from_str::<LogEntry>(&line) {
                 entries.push(entry);
             }
-        }
     }
     
     Ok(entries)

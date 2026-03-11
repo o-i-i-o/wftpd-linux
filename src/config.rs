@@ -184,16 +184,14 @@ fn ip_matches_cidr(ip: &str, cidr: &str) -> Result<bool> {
         return Ok(true);
     }
     
-    if let Ok(ipv4) = ip.parse::<Ipv4Addr>() {
-        if let Ok(net) = cidr.parse::<Ipv4Net>() {
-            return Ok(net.contains(&ipv4));
-        }
+    if let Ok(ipv4) = ip.parse::<Ipv4Addr>()
+        && let Ok(net) = cidr.parse::<Ipv4Net>() {
+        return Ok(net.contains(&ipv4));
     }
     
-    if let Ok(ipv6) = ip.parse::<Ipv6Addr>() {
-        if let Ok(net) = cidr.parse::<Ipv6Net>() {
-            return Ok(net.contains(&ipv6));
-        }
+    if let Ok(ipv6) = ip.parse::<Ipv6Addr>()
+        && let Ok(net) = cidr.parse::<Ipv6Net>() {
+        return Ok(net.contains(&ipv6));
     }
     
     Ok(ip == cidr)

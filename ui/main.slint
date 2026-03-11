@@ -1,0 +1,305 @@
+import { Button, VerticalBox, HorizontalBox, LineEdit, GroupBox } from "std-widgets.slint";
+
+export struct UserInfo {
+    username: string,
+    home-dir: string,
+    enabled: bool,
+    is-admin: bool,
+}
+
+export struct LogEntry {
+    timestamp: string,
+    level: string,
+    source: string,
+    message: string,
+    client-ip: string,
+}
+
+export component MainWindow inherits Window {
+    title: "WFTPG - SFTP/FTP管理工具";
+    min-width: 800px;
+    min-height: 600px;
+    
+    in-out property <bool> ftp-running: false;
+    in-out property <bool> sftp-running: false;
+    in-out property <string> bind-ip: "0.0.0.0";
+    in-out property <string> ftp-port: "21";
+    in-out property <string> sftp-port: "22";
+    in-out property <string> ftp-home: "";
+    in-out property <string> sftp-home: "";
+    in-out property <[UserInfo]> users: [];
+    in-out property <[string]> allowed-ips: [];
+    in-out property <[string]> denied-ips: [];
+    in-out property <[LogEntry]> logs: [];
+    in-out property <string> status-message: "就绪";
+    in-out property <bool> service-installed: false;
+    in-out property <bool> service-running: false;
+    
+    callback start-ftp-clicked();
+    callback stop-ftp-clicked();
+    callback start-sftp-clicked();
+    callback stop-sftp-clicked();
+    callback save-config-clicked();
+    callback add-user-clicked(string, string, string, bool);
+    callback remove-user-clicked(string);
+    callback add-allowed-ip-clicked(string);
+    callback remove-allowed-ip-clicked(string);
+    callback add-denied-ip-clicked(string);
+    callback remove-denied-ip-clicked(string);
+    callback install-service-clicked();
+    callback uninstall-service-clicked();
+    callback start-service-clicked();
+    callback stop-service-clicked();
+    callback refresh-logs-clicked();
+    
+    property <int> current-tab: 0;
+    
+    VerticalBox {
+        Text {
+            text: "WFTPG - SFTP/FTP服务器管理工具";
+            font-size: 18px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        
+        HorizontalBox {
+            spacing: 4px;
+            
+            for tab[index] in ["服务器", "用户管理", "安全设置", "系统服务", "日志查看"]:
+                Rectangle {
+                    width: 100px;
+                    height: 32px;
+                    background: index == root.current-tab ? #3498db : #ecf0f1;
+                    border-radius: 4px;
+                    
+                    Text {
+                        text: tab;
+                        color: index == root.current-tab ? white : #2c3e50;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    
+                    TouchArea {
+                        clicked => { root.current-tab = index; }
+                    }
+                }
+        }
+        
+        Rectangle {
+            background: white;
+            border-radius: 4px;
+            
+            if root.current-tab == 0:
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+                    
+                    GroupBox {
+                        title: "FTP服务器";
+                        HorizontalBox {
+                            spacing: 8px;
+                            Text { 
+                                text: root.ftp-running ? "● 运行中" : "○ 已停止";
+                                color: root.ftp-running ? #27ae60 : #e74c3c;
+                            }
+                            Button {
+                                text: "启动FTP";
+                                clicked => { root.start-ftp-clicked(); }
+                            }
+                            Button {
+                                text: "停止FTP";
+                                clicked => { root.stop-ftp-clicked(); }
+                            }
+                        }
+                    }
+                    
+                    GroupBox {
+                        title: "SFTP服务器";
+                        HorizontalBox {
+                            spacing: 8px;
+                            Text { 
+                                text: root.sftp-running ? "● 运行中" : "○ 已停止";
+                                color: root.sftp-running ? #27ae60 : #e74c3c;
+                            }
+                            Button {
+                                text: "启动SFTP";
+                                clicked => { root.start-sftp-clicked(); }
+                            }
+                            Button {
+                                text: "停止SFTP";
+                                clicked => { root.stop-sftp-clicked(); }
+                            }
+                        }
+                    }
+                    
+                    GroupBox {
+                        title: "网络配置";
+                        VerticalBox {
+                            spacing: 8px;
+                            HorizontalBox {
+                                Text { text: "绑定IP:"; width: 80px; }
+                                LineEdit {
+                                    text: root.bind-ip;
+                                    edited => { root.bind-ip = self.text; }
+                                }
+                            }
+                            HorizontalBox {
+                                Text { text: "FTP端口:"; width: 80px; }
+                                LineEdit {
+                                    text: root.ftp-port;
+                                    edited => { root.ftp-port = self.text; }
+                                }
+                                Text { text: "SFTP端口:"; width: 80px; }
+                                LineEdit {
+                                    text: root.sftp-port;
+                                    edited => { root.sftp-port = self.text; }
+                                }
+                            }
+                        }
+                    }
+                    
+                    Button {
+                        text: "保存配置";
+                        clicked => { root.save-config-clicked(); }
+                    }
+                }
+            
+            if root.current-tab == 1:
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+                    
+                    Text { text: "用户列表"; }
+                    
+                    for user in root.users:
+                        HorizontalBox {
+                            spacing: 8px;
+                            Text { text: user.username; width: 120px; }
+                            Text { text: user.home-dir; width: 200px; }
+                            Text { 
+                                text: user.enabled ? "启用" : "禁用";
+                                color: user.enabled ? #27ae60 : #e74c3c;
+                            }
+                            Button {
+                                text: "删除";
+                                clicked => { root.remove-user-clicked(user.username); }
+                            }
+                        }
+                }
+            
+            if root.current-tab == 2:
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+                    
+                    GroupBox {
+                        title: "IP白名单";
+                        VerticalBox {
+                            for ip in root.allowed-ips:
+                                HorizontalBox {
+                                    Text { text: ip; }
+                                    Button {
+                                        text: "删除";
+                                        clicked => { root.remove-allowed-ip-clicked(ip); }
+                                    }
+                                }
+                        }
+                    }
+                    
+                    GroupBox {
+                        title: "IP黑名单";
+                        VerticalBox {
+                            for ip in root.denied-ips:
+                                HorizontalBox {
+                                    Text { text: ip; }
+                                    Button {
+                                        text: "删除";
+                                        clicked => { root.remove-denied-ip-clicked(ip); }
+                                    }
+                                }
+                        }
+                    }
+                }
+            
+            if root.current-tab == 3:
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+                    
+                    GroupBox {
+                        title: "系统服务";
+                        VerticalBox {
+                            spacing: 8px;
+                            Text { 
+                                text: root.service-running ? "● 服务运行中" : "○ 服务已停止";
+                                color: root.service-running ? #27ae60 : #e74c3c;
+                            }
+                            HorizontalBox {
+                                spacing: 8px;
+                                Button {
+                                    text: "安装服务";
+                                    clicked => { root.install-service-clicked(); }
+                                }
+                                Button {
+                                    text: "卸载服务";
+                                    clicked => { root.uninstall-service-clicked(); }
+                                }
+                                Button {
+                                    text: "启动服务";
+                                    clicked => { root.start-service-clicked(); }
+                                }
+                                Button {
+                                    text: "停止服务";
+                                    clicked => { root.stop-service-clicked(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            
+            if root.current-tab == 4:
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+                    
+                    HorizontalBox {
+                        Text { text: "日志记录"; }
+                        Button {
+                            text: "刷新";
+                            clicked => { root.refresh-logs-clicked(); }
+                        }
+                    }
+                    
+                    for entry in root.logs:
+                        HorizontalBox {
+                            spacing: 4px;
+                            Text { text: entry.timestamp; width: 140px; font-size: 10px; }
+                            Text { 
+                                text: entry.level;
+                                width: 50px;
+                                font-size: 10px;
+                                color: entry.level == "ERROR" ? #e74c3c : 
+                                       entry.level == "WARN" ? #f39c12 : #2c3e50;
+                            }
+                            Text { text: entry.source; width: 60px; font-size: 10px; }
+                            Text { text: entry.message; font-size: 10px; }
+                        }
+                }
+        }
+        
+        Rectangle {
+            height: 24px;
+            background: #34495e;
+            
+            Text {
+                text: root.status-message;
+                color: white;
+                font-size: 11px;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+                x: 8px;
+            }
+        }
+    }
+}

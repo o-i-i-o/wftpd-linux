@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -91,6 +90,7 @@ use std::io::{Read, Write};
 use std::fs::File;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct HostKey {
     rsa_private: Vec<u8>,
     rsa_public: Vec<u8>,
@@ -175,7 +175,7 @@ fn handle_ssh_connection(mut stream: std::net::TcpStream,
     let mut current_user: Option<String> = None;
     let mut home_dir = config.lock().unwrap().sftp.default_home.clone();
     let mut sftp_initialized = false;
-    let rest_offset: u64 = 0;
+    let _rest_offset: u64 = 0;
     
     loop {
         let mut packet_len_buf = [0u8; 4];
@@ -362,13 +362,12 @@ fn handle_ssh_connection(mut stream: std::net::TcpStream,
                     
                     {
                         let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u)) {
-                            if !user.permissions.can_read {
+                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
+                            && !user.permissions.can_read {
                                 let response = build_sftp_status_response(id, 3, "Permission denied", "");
                                 send_ssh_packet(&mut stream, &response)?;
                                 continue;
                             }
-                        }
                     }
                     
                     match File::open(&full_path) {
@@ -417,13 +416,12 @@ fn handle_ssh_connection(mut stream: std::net::TcpStream,
                     
                     {
                         let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u)) {
-                            if !user.permissions.can_write {
+                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
+                            && !user.permissions.can_write {
                                 let response = build_sftp_status_response(id, 3, "Permission denied", "");
                                 send_ssh_packet(&mut stream, &response)?;
                                 continue;
                             }
-                        }
                     }
                     
                     let full_path = resolve_path(&home_dir, &path);
@@ -462,13 +460,12 @@ fn handle_ssh_connection(mut stream: std::net::TcpStream,
                     
                     {
                         let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u)) {
-                            if !user.permissions.can_delete {
+                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
+                            && !user.permissions.can_delete {
                                 let response = build_sftp_status_response(id, 3, "Permission denied", "");
                                 send_ssh_packet(&mut stream, &response)?;
                                 continue;
                             }
-                        }
                     }
                     
                     let full_path = resolve_path(&home_dir, &path);
@@ -497,13 +494,12 @@ fn handle_ssh_connection(mut stream: std::net::TcpStream,
                     
                     {
                         let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u)) {
-                            if !user.permissions.can_mkdir {
+                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
+                            && !user.permissions.can_mkdir {
                                 let response = build_sftp_status_response(id, 3, "Permission denied", "");
                                 send_ssh_packet(&mut stream, &response)?;
                                 continue;
                             }
-                        }
                     }
                     
                     let full_path = resolve_path(&home_dir, &path);
@@ -532,13 +528,12 @@ fn handle_ssh_connection(mut stream: std::net::TcpStream,
                     
                     {
                         let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u)) {
-                            if !user.permissions.can_rmdir {
+                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
+                            && !user.permissions.can_rmdir {
                                 let response = build_sftp_status_response(id, 3, "Permission denied", "");
                                 send_ssh_packet(&mut stream, &response)?;
                                 continue;
                             }
-                        }
                     }
                     
                     let full_path = resolve_path(&home_dir, &path);
@@ -571,13 +566,12 @@ fn handle_ssh_connection(mut stream: std::net::TcpStream,
                     
                     {
                         let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u)) {
-                            if !user.permissions.can_rename {
+                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
+                            && !user.permissions.can_rename {
                                 let response = build_sftp_status_response(id, 3, "Permission denied", "");
                                 send_ssh_packet(&mut stream, &response)?;
                                 continue;
                             }
-                        }
                     }
                     
                     let old_full = resolve_path(&home_dir, &old_path);
@@ -626,14 +620,11 @@ fn handle_ssh_connection(mut stream: std::net::TcpStream,
                 }
             }
         } else {
-            match msg_type {
-                1 => {
-                    let version = parse_u32(&payload_buf, 1);
-                    let response = build_sftp_version_response(version.min(6));
-                    send_ssh_packet(&mut stream, &response)?;
-                    sftp_initialized = true;
-                }
-                _ => {}
+            if msg_type == 1 {
+                let version = parse_u32(&payload_buf, 1);
+                let response = build_sftp_version_response(version.min(6));
+                send_ssh_packet(&mut stream, &response)?;
+                sftp_initialized = true;
             }
         }
     }
@@ -641,6 +632,7 @@ fn handle_ssh_connection(mut stream: std::net::TcpStream,
     Ok(())
 }
 
+#[allow(dead_code)]
 struct SessionKeys {
     session_id: Option<Vec<u8>>,
     client_kex_data: Vec<u8>,
@@ -686,9 +678,8 @@ fn handle_kex_init(session_keys: &mut SessionKeys, payload: &[u8]) -> Result<Vec
     Ok(server_kex)
 }
 
-fn handle_kex_dh(stream: &mut std::net::TcpStream, session_keys: &mut SessionKeys, payload: &[u8]) -> Result<()> {
+fn handle_kex_dh(stream: &mut std::net::TcpStream, _session_keys: &mut SessionKeys, _payload: &[u8]) -> Result<()> {
     use rand::rngs::OsRng;
-    use sha2::{Sha256, Digest};
     
     let mut server_kex_reply = vec![31u8];
     
@@ -787,7 +778,7 @@ fn build_file_attrs(metadata: &std::fs::Metadata) -> Vec<u8> {
     attrs.extend_from_slice(&0u64.to_be_bytes());
     attrs.extend_from_slice(&0u64.to_be_bytes());
     
-    attrs.extend_from_slice(&(metadata.len() as u64).to_be_bytes());
+    attrs.extend_from_slice(&metadata.len().to_be_bytes());
     
     attrs.extend_from_slice(&0u32.to_be_bytes());
     attrs.extend_from_slice(&0u32.to_be_bytes());

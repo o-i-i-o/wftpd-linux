@@ -1,10 +1,10 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream, SocketAddr};
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::users::UserManager;
@@ -15,15 +15,7 @@ pub struct FtpServer {
     user_manager: Arc<Mutex<UserManager>>,
     logger: Arc<Mutex<Logger>>,
     running: Arc<Mutex<bool>>,
-    connections: Arc<Mutex<HashMap<String, ConnectionInfo>>>,
     passive_listeners: Arc<Mutex<HashMap<u16, Arc<Mutex<Option<TcpListener>>>>>>,
-}
-
-#[derive(Clone)]
-struct ConnectionInfo {
-    connected_at: Instant,
-    remote_addr: SocketAddr,
-    username: Option<String>,
 }
 
 impl FtpServer {
@@ -34,7 +26,6 @@ impl FtpServer {
             user_manager,
             logger,
             running: Arc::new(Mutex::new(false)),
-            connections: Arc::new(Mutex::new(HashMap::new())),
             passive_listeners: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -135,9 +126,9 @@ fn handle_ftp_connection(mut stream: TcpStream,
     }
     
     let mut rest_offset: u64 = 0;
-    let mut tls_enabled = false;
-    let mut tls_context: Option<TlsContext> = None;
-    let mut data_tls_enabled = false;
+    let mut _tls_enabled = false;
+    let mut _tls_context: Option<TlsContext> = None;
+    let mut _data_tls_enabled = false;
     
     let mut buffer = [0u8; 4096];
     
@@ -346,9 +337,9 @@ fn handle_ftp_connection(mut stream: TcpStream,
                         
                         if let (Some(cert), Some(key)) = (cert_path, key_path) {
                             match create_tls_context(&cert, &key) {
-                                Ok(ctx) => {
-                                    tls_context = Some(ctx);
-                                    tls_enabled = true;
+                                Ok(_ctx) => {
+                                    _tls_context = Some(_ctx);
+                                    _tls_enabled = true;
                                     logger.lock().unwrap().client_action("FTP",
                                         "TLS/SSL enabled",
                                         &remote_ip,
@@ -375,11 +366,11 @@ fn handle_ftp_connection(mut stream: TcpStream,
                 if let Some(level) = arg {
                     match level.to_uppercase().as_str() {
                         "P" => {
-                            data_tls_enabled = true;
+                            _data_tls_enabled = true;
                             stream.write_all(b"200 PROT Private\r\n")?;
                         }
                         "C" => {
-                            data_tls_enabled = false;
+                            _data_tls_enabled = false;
                             stream.write_all(b"200 PROT Clear\r\n")?;
                         }
                         _ => {
@@ -516,12 +507,11 @@ fn handle_ftp_connection(mut stream: TcpStream,
                         let users = user_manager.lock().unwrap();
                         let user = current_user.as_ref().and_then(|u| users.get_user(u));
                         
-                        if let Some(user) = user {
-                            if !user.permissions.can_read {
+                        if let Some(user) = user
+                            && !user.permissions.can_read {
                                 stream.write_all(b"550 Permission denied\r\n")?;
                                 continue;
                             }
-                        }
                     }
                     
                     let file_size = std::fs::metadata(&file_path)?.len();
@@ -555,8 +545,8 @@ fn handle_ftp_connection(mut stream: TcpStream,
                             TcpStream::connect(format!("{}:{}", &remote_ip, port))
                         };
                         
-                        if let Ok(mut data_stream) = data_result {
-                            if let Ok(mut file) = std::fs::File::open(&file_path) {
+                        if let Ok(mut data_stream) = data_result
+                            && let Ok(mut file) = std::fs::File::open(&file_path) {
                                 use std::io::Seek;
                                 if rest_offset > 0 {
                                     let _ = file.seek(std::io::SeekFrom::Start(rest_offset));
@@ -575,7 +565,6 @@ fn handle_ftp_connection(mut stream: TcpStream,
                                     }
                                 }
                             }
-                        }
                         
                         if passive_mode {
                             let mut listeners = passive_listeners.lock().unwrap();
@@ -605,12 +594,11 @@ fn handle_ftp_connection(mut stream: TcpStream,
                         let users = user_manager.lock().unwrap();
                         let user = current_user.as_ref().and_then(|u| users.get_user(u));
                         
-                        if let Some(user) = user {
-                            if !user.permissions.can_write {
+                        if let Some(user) = user
+                            && !user.permissions.can_write {
                                 stream.write_all(b"550 Permission denied\r\n")?;
                                 continue;
                             }
-                        }
                     }
                     
                     let file_path = Path::new(&cwd).join(filename);
@@ -643,6 +631,7 @@ fn handle_ftp_connection(mut stream: TcpStream,
                                 std::fs::OpenOptions::new()
                                     .write(true)
                                     .create(true)
+                                    .truncate(false)
                                     .open(&file_path)
                             } else {
                                 std::fs::File::create(&file_path)
@@ -697,12 +686,11 @@ fn handle_ftp_connection(mut stream: TcpStream,
                         let users = user_manager.lock().unwrap();
                         let user = current_user.as_ref().and_then(|u| users.get_user(u));
                         
-                        if let Some(user) = user {
-                            if !user.permissions.can_append {
+                        if let Some(user) = user
+                            && !user.permissions.can_append {
                                 stream.write_all(b"550 Permission denied\r\n")?;
                                 continue;
                             }
-                        }
                     }
                     
                     let file_path = Path::new(&cwd).join(filename);
@@ -730,9 +718,9 @@ fn handle_ftp_connection(mut stream: TcpStream,
                             TcpStream::connect(format!("{}:{}", &remote_ip, port))
                         };
                         
-                        if let Ok(mut data_stream) = data_result {
-                            if let Ok(mut file) = std::fs::OpenOptions::new()
-                                .write(true)
+                        if let Ok(mut data_stream) = data_result
+                            && let Ok(mut file) = std::fs::OpenOptions::new()
+                                
                                 .append(true)
                                 .create(true)
                                 .open(&file_path) {
@@ -750,7 +738,6 @@ fn handle_ftp_connection(mut stream: TcpStream,
                                     }
                                 }
                             }
-                        }
                         
                         if passive_mode {
                             let mut listeners = passive_listeners.lock().unwrap();
@@ -777,12 +764,11 @@ fn handle_ftp_connection(mut stream: TcpStream,
                     let users = user_manager.lock().unwrap();
                     let user = current_user.as_ref().and_then(|u| users.get_user(u));
                     
-                    if let Some(user) = user {
-                        if !user.permissions.can_delete {
+                    if let Some(user) = user
+                        && !user.permissions.can_delete {
                             stream.write_all(b"550 Permission denied\r\n")?;
                             continue;
                         }
-                    }
                 }
                 
                 if let Some(filename) = arg {
@@ -809,12 +795,11 @@ fn handle_ftp_connection(mut stream: TcpStream,
                     let users = user_manager.lock().unwrap();
                     let user = current_user.as_ref().and_then(|u| users.get_user(u));
                     
-                    if let Some(user) = user {
-                        if !user.permissions.can_mkdir {
+                    if let Some(user) = user
+                        && !user.permissions.can_mkdir {
                             stream.write_all(b"550 Permission denied\r\n")?;
                             continue;
                         }
-                    }
                 }
                 
                 if let Some(dirname) = arg {
@@ -841,12 +826,11 @@ fn handle_ftp_connection(mut stream: TcpStream,
                     let users = user_manager.lock().unwrap();
                     let user = current_user.as_ref().and_then(|u| users.get_user(u));
                     
-                    if let Some(user) = user {
-                        if !user.permissions.can_rmdir {
+                    if let Some(user) = user
+                        && !user.permissions.can_rmdir {
                             stream.write_all(b"550 Permission denied\r\n")?;
                             continue;
                         }
-                    }
                 }
                 
                 if let Some(dirname) = arg {
@@ -873,12 +857,11 @@ fn handle_ftp_connection(mut stream: TcpStream,
                     let users = user_manager.lock().unwrap();
                     let user = current_user.as_ref().and_then(|u| users.get_user(u));
                     
-                    if let Some(user) = user {
-                        if !user.permissions.can_rename {
+                    if let Some(user) = user
+                        && !user.permissions.can_rename {
                             stream.write_all(b"550 Permission denied\r\n")?;
                             continue;
                         }
-                    }
                 }
                 
                 stream.write_all(b"350 File exists, ready for destination name\r\n")?;
@@ -932,6 +915,7 @@ fn handle_ftp_connection(mut stream: TcpStream,
     Ok(())
 }
 
+#[allow(dead_code)]
 struct TlsContext {
     cert_path: String,
     key_path: String,
@@ -960,8 +944,8 @@ fn find_available_passive_port(passive_listeners: &Arc<Mutex<HashMap<u16, Arc<Mu
 fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
     
-    if let Ok(time) = metadata.modified() {
-        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+    if let Ok(time) = metadata.modified()
+        && let Ok(duration) = time.duration_since(UNIX_EPOCH) {
             let secs = duration.as_secs();
             let days = secs / 86400;
             let years = 1970 + days / 365;
@@ -972,18 +956,16 @@ fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
             let minute = (secs % 3600) / 60;
             return format!("{:04}-{:02}-{:02} {:02}:{:02}", years, months, day, hour, minute);
         }
-    }
     "Jan 01 00:00".to_string()
 }
 
 fn get_file_mtime_raw(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
     
-    if let Ok(time) = metadata.modified() {
-        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+    if let Ok(time) = metadata.modified()
+        && let Ok(duration) = time.duration_since(UNIX_EPOCH) {
             return format!("{}", duration.as_secs());
         }
-    }
     "0".to_string()
 }
 
@@ -998,11 +980,10 @@ fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
     
     facts.push(format!("size={}", metadata.len()));
     
-    if let Ok(time) = metadata.modified() {
-        if let Ok(duration) = time.duration_since(std::time::UNIX_EPOCH) {
+    if let Ok(time) = metadata.modified()
+        && let Ok(duration) = time.duration_since(std::time::UNIX_EPOCH) {
             facts.push(format!("modify={}", duration.as_secs()));
         }
-    }
     
     facts.join("; ")
 }

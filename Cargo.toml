@@ -1,23 +1,13 @@
 [package]
 name = "wftpg"
-version = "1.0.0"
-edition = "2021"
+version = "2.0.0"
+edition = "2024"
 authors = ["WFTPG Developer"]
-description = "SFTP+FTP GUI Management Tool for ARM Linux"
-
-[lib]
-name = "wftpg"
-path = "src/lib.rs"
-
-[[bin]]
-name = "wftpg"
-path = "src/main.rs"
-
-[[bin]]
-name = "wftpg-service"
-path = "src/service_main.rs"
+description = "SFTP+FTP GUI Management Tool for ARM Linux (纯Rust + Slint实现)"
+build = "build.rs"
 
 [dependencies]
+slint = "1.5"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -31,12 +21,15 @@ anyhow = "1"
 thiserror = "1"
 dirs = "5"
 ipnet = "2"
-regex = "1"
-ctrlc = "3"
-
+russh = "0.45"
+russh-keys = "0.45"
+tokio-native-tls = "0.3"
 sha2 = "0.10"
 rsa = { version = "0.9", features = ["pem"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
+
+[build-dependencies]
+slint-build = "1.5"
 
 [profile.release]
 opt-level = 3

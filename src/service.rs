@@ -47,42 +47,42 @@ WantedBy=multi-user.target
     
     pub fn start_service(&self) -> Result<()> {
         std::process::Command::new("systemctl")
-            .args(&["start", &self.service_name])
+            .args(["start", &self.service_name])
             .status()?;
         Ok(())
     }
     
     pub fn stop_service(&self) -> Result<()> {
         std::process::Command::new("systemctl")
-            .args(&["stop", &self.service_name])
+            .args(["stop", &self.service_name])
             .status()?;
         Ok(())
     }
     
     pub fn restart_service(&self) -> Result<()> {
         std::process::Command::new("systemctl")
-            .args(&["restart", &self.service_name])
+            .args(["restart", &self.service_name])
             .status()?;
         Ok(())
     }
     
     pub fn enable_service(&self) -> Result<()> {
         std::process::Command::new("systemctl")
-            .args(&["enable", &self.service_name])
+            .args(["enable", &self.service_name])
             .status()?;
         Ok(())
     }
     
     pub fn disable_service(&self) -> Result<()> {
         std::process::Command::new("systemctl")
-            .args(&["disable", &self.service_name])
+            .args(["disable", &self.service_name])
             .status()?;
         Ok(())
     }
     
     pub fn is_service_running(&self) -> bool {
         std::process::Command::new("systemctl")
-            .args(&["is-active", "--quiet", &self.service_name])
+            .args(["is-active", "--quiet", &self.service_name])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
@@ -90,7 +90,7 @@ WantedBy=multi-user.target
     
     pub fn is_service_enabled(&self) -> bool {
         std::process::Command::new("systemctl")
-            .args(&["is-enabled", "--quiet", &self.service_name])
+            .args(["is-enabled", "--quiet", &self.service_name])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
@@ -98,7 +98,7 @@ WantedBy=multi-user.target
     
     pub fn get_service_status(&self) -> String {
         let output = std::process::Command::new("systemctl")
-            .args(&["status", &self.service_name])
+            .args(["status", &self.service_name])
             .output();
         
         match output {

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub mod config;
 pub mod users;
 pub mod logger;
@@ -91,7 +93,7 @@ impl AppState {
     
     pub fn is_ftp_running(&self) -> bool {
         let ftp_server = self.ftp_server.lock().unwrap();
-        ftp_server.as_ref().map_or(false, |s| s.is_running())
+        ftp_server.as_ref().is_some_and(|s| s.is_running())
     }
     
     pub fn start_sftp(&self) -> anyhow::Result<()> {
@@ -119,7 +121,7 @@ impl AppState {
     
     pub fn is_sftp_running(&self) -> bool {
         let sftp_server = self.sftp_server.lock().unwrap();
-        sftp_server.as_ref().map_or(false, |s| s.is_running())
+        sftp_server.as_ref().is_some_and(|s| s.is_running())
     }
     
     pub fn start_all(&self) -> anyhow::Result<()> {

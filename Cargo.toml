@@ -34,6 +34,10 @@ ipnet = "2"
 regex = "1"
 ctrlc = "3"
 
+sha2 = "0.10"
+rsa = { version = "0.9", features = ["pem"] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+
 [profile.release]
 opt-level = 3
 lto = true

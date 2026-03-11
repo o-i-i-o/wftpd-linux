@@ -16,6 +16,7 @@ pub struct FtpServer {
     logger: Arc<Mutex<Logger>>,
     running: Arc<Mutex<bool>>,
     connections: Arc<Mutex<HashMap<String, ConnectionInfo>>>,
+    passive_listeners: Arc<Mutex<HashMap<u16, Arc<Mutex<Option<TcpListener>>>>>>,
 }
 
 #[derive(Clone)]
@@ -34,6 +35,7 @@ impl FtpServer {
             logger,
             running: Arc::new(Mutex::new(false)),
             connections: Arc::new(Mutex::new(HashMap::new())),
+            passive_listeners: Arc::new(Mutex::new(HashMap::new())),
         }
     }
     
@@ -54,6 +56,7 @@ impl FtpServer {
         let user_manager = Arc::clone(&self.user_manager);
         let logger = Arc::clone(&self.logger);
         let running = Arc::clone(&self.running);
+        let passive_listeners = Arc::clone(&self.passive_listeners);
         
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -67,9 +70,10 @@ impl FtpServer {
                         let config = Arc::clone(&config);
                         let user_manager = Arc::clone(&user_manager);
                         let logger = Arc::clone(&logger);
+                        let passive_listeners = Arc::clone(&passive_listeners);
                         
                         std::thread::spawn(move || {
-                            if let Err(_e) = handle_ftp_connection(stream, &config, &user_manager, &logger) {
+                            if let Err(_e) = handle_ftp_connection(stream, &config, &user_manager, &logger, &passive_listeners) {
                             }
                         });
                     }
@@ -86,6 +90,9 @@ impl FtpServer {
     pub fn stop(&self) {
         let mut running = self.running.lock().unwrap();
         *running = false;
+        
+        let mut listeners = self.passive_listeners.lock().unwrap();
+        listeners.clear();
     }
     
     pub fn is_running(&self) -> bool {
@@ -96,7 +103,8 @@ impl FtpServer {
 fn handle_ftp_connection(mut stream: TcpStream, 
                          config: &Arc<Mutex<Config>>,
                          user_manager: &Arc<Mutex<UserManager>>,
-                         logger: &Arc<Mutex<Logger>>) -> Result<()> {
+                         logger: &Arc<Mutex<Logger>>,
+                         passive_listeners: &Arc<Mutex<HashMap<u16, Arc<Mutex<Option<TcpListener>>>>>>) -> Result<()> {
     let remote_addr = stream.peer_addr()?;
     let remote_ip = remote_addr.ip().to_string();
     
@@ -125,6 +133,11 @@ fn handle_ftp_connection(mut stream: TcpStream,
         let cfg = config.lock().unwrap();
         cwd = cfg.ftp.default_home.clone();
     }
+    
+    let mut rest_offset: u64 = 0;
+    let mut tls_enabled = false;
+    let mut tls_context: Option<TlsContext> = None;
+    let mut data_tls_enabled = false;
     
     let mut buffer = [0u8; 4096];
     
@@ -194,7 +207,7 @@ fn handle_ftp_connection(mut stream: TcpStream,
             }
             
             "FEAT" => {
-                stream.write_all(b"211-Features:\r\n SIZE\r\n MDTM\r\n211 End\r\n")?;
+                stream.write_all(b"211-Features:\r\n SIZE\r\n MDTM\r\n REST STREAM\r\n AUTH TLS\r\n PBSZ\r\n PROT\r\n PASV\r\n EPSV\r\n MLST\r\n MLSD\r\n211 End\r\n")?;
             }
             
             "OPTS" => {
@@ -238,16 +251,74 @@ fn handle_ftp_connection(mut stream: TcpStream,
                 stream.write_all(b"200 Type set to I\r\n")?;
             }
             
+            "REST" => {
+                if let Some(offset_str) = arg {
+                    if let Ok(offset) = offset_str.parse::<u64>() {
+                        rest_offset = offset;
+                        stream.write_all(format!("350 Restarting at {}\r\n", offset).as_bytes())?;
+                        logger.lock().unwrap().client_action("FTP",
+                            &format!("REST command: offset {}", offset),
+                            &remote_ip,
+                            current_user.as_deref(), "REST");
+                    } else {
+                        stream.write_all(b"501 Syntax error in REST parameter\r\n")?;
+                    }
+                } else {
+                    rest_offset = 0;
+                    stream.write_all(b"350 Restarting at 0\r\n")?;
+                }
+            }
+            
             "PASV" => {
                 passive_mode = true;
-                let (port_min, _port_max) = {
+                let (port_min, port_max) = {
                     let cfg = config.lock().unwrap();
                     cfg.ftp.passive_ports
                 };
-                let port = port_min;
-                data_port = Some(port);
+                
+                let passive_port = find_available_passive_port(passive_listeners, port_min, port_max)?;
+                
+                let bind_ip = config.lock().unwrap().server.bind_ip.clone();
+                let passive_listener = TcpListener::bind(format!("{}:{}", bind_ip, passive_port))?;
+                passive_listener.set_nonblocking(true)?;
+                
+                {
+                    let mut listeners = passive_listeners.lock().unwrap();
+                    listeners.insert(passive_port, Arc::new(Mutex::new(Some(passive_listener))));
+                }
+                
+                data_port = Some(passive_port);
+                
                 let ip_octets = remote_ip.replace('.', ",");
-                stream.write_all(format!("227 Entering Passive Mode ({},{})\r\n", ip_octets, port).as_bytes())?;
+                stream.write_all(format!("227 Entering Passive Mode ({},{},{})\r\n", 
+                    ip_octets, passive_port >> 8, passive_port & 0xFF).as_bytes())?;
+                
+                logger.lock().unwrap().client_action("FTP",
+                    &format!("PASV mode: port {}", passive_port),
+                    &remote_ip,
+                    current_user.as_deref(), "PASV");
+            }
+            
+            "EPSV" => {
+                passive_mode = true;
+                let (port_min, port_max) = {
+                    let cfg = config.lock().unwrap();
+                    cfg.ftp.passive_ports
+                };
+                
+                let passive_port = find_available_passive_port(passive_listeners, port_min, port_max)?;
+                
+                let bind_ip = config.lock().unwrap().server.bind_ip.clone();
+                let passive_listener = TcpListener::bind(format!("{}:{}", bind_ip, passive_port))?;
+                passive_listener.set_nonblocking(true)?;
+                
+                {
+                    let mut listeners = passive_listeners.lock().unwrap();
+                    listeners.insert(passive_port, Arc::new(Mutex::new(Some(passive_listener))));
+                }
+                
+                data_port = Some(passive_port);
+                stream.write_all(format!("229 Entering Extended Passive Mode (|||{}|)\r\n", passive_port).as_bytes())?;
             }
             
             "PORT" => {
@@ -265,6 +336,59 @@ fn handle_ftp_connection(mut stream: TcpStream,
                 }
             }
             
+            "AUTH" => {
+                if let Some(method) = arg {
+                    if method.to_uppercase() == "TLS" || method.to_uppercase() == "SSL" {
+                        stream.write_all(b"234 AUTH TLS OK\r\n")?;
+                        
+                        let cert_path = config.lock().unwrap().security.cert_path.clone();
+                        let key_path = config.lock().unwrap().security.key_path.clone();
+                        
+                        if let (Some(cert), Some(key)) = (cert_path, key_path) {
+                            match create_tls_context(&cert, &key) {
+                                Ok(ctx) => {
+                                    tls_context = Some(ctx);
+                                    tls_enabled = true;
+                                    logger.lock().unwrap().client_action("FTP",
+                                        "TLS/SSL enabled",
+                                        &remote_ip,
+                                        current_user.as_deref(), "AUTH");
+                                }
+                                Err(_) => {
+                                    stream.write_all(b"421 TLS initialization failed\r\n")?;
+                                }
+                            }
+                        } else {
+                            stream.write_all(b"421 TLS not configured\r\n")?;
+                        }
+                    } else {
+                        stream.write_all(b"504 Auth type not supported\r\n")?;
+                    }
+                }
+            }
+            
+            "PBSZ" => {
+                stream.write_all(b"200 PBSZ=0\r\n")?;
+            }
+            
+            "PROT" => {
+                if let Some(level) = arg {
+                    match level.to_uppercase().as_str() {
+                        "P" => {
+                            data_tls_enabled = true;
+                            stream.write_all(b"200 PROT Private\r\n")?;
+                        }
+                        "C" => {
+                            data_tls_enabled = false;
+                            stream.write_all(b"200 PROT Clear\r\n")?;
+                        }
+                        _ => {
+                            stream.write_all(b"504 PROT level not supported\r\n")?;
+                        }
+                    }
+                }
+            }
+            
             "LIST" | "NLST" => {
                 if !authenticated {
                     stream.write_all(b"530 Not logged in\r\n")?;
@@ -274,19 +398,100 @@ fn handle_ftp_connection(mut stream: TcpStream,
                 stream.write_all(b"150 Here comes the directory listing\r\n")?;
                 
                 if let Some(port) = data_port {
-                    if let Ok(mut data_stream) = TcpStream::connect(format!("{}:{}", 
-                        if passive_mode { "127.0.0.1" } else { &remote_ip }, port)) {
+                    let data_result = if passive_mode {
+                        let listener_arc = {
+                            let listeners = passive_listeners.lock().unwrap();
+                            listeners.get(&port).cloned()
+                        };
                         
+                        if let Some(listener_arc) = listener_arc {
+                            let mut listener_guard = listener_arc.lock().unwrap();
+                            if let Some(listener) = listener_guard.take() {
+                                listener.set_nonblocking(false)?;
+                                listener.accept().map(|(s, _)| s)
+                            } else {
+                                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                            }
+                        } else {
+                            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                        }
+                    } else {
+                        TcpStream::connect(format!("{}:{}", &remote_ip, port))
+                    };
+                    
+                    if let Ok(mut data_stream) = data_result {
                         let path = Path::new(&cwd);
                         if let Ok(entries) = std::fs::read_dir(path) {
                             for entry in entries.flatten() {
-                                if let Ok(_metadata) = entry.metadata() {
+                                if let Ok(metadata) = entry.metadata() {
                                     let name = entry.file_name().to_string_lossy().to_string();
-                                    let line = format!("{}\r\n", name);
+                                    let perms = if metadata.is_dir() { "drwxr-xr-x" } else { "-rw-r--r--" };
+                                    let size = metadata.len();
+                                    let mtime = get_file_mtime(&metadata);
+                                    let line = format!("{} 1 user user {:>10} {} {}\r\n", 
+                                        perms, size, mtime, name);
                                     let _ = data_stream.write_all(line.as_bytes());
                                 }
                             }
                         }
+                    }
+                    
+                    if passive_mode {
+                        let mut listeners = passive_listeners.lock().unwrap();
+                        listeners.remove(&port);
+                    }
+                }
+                
+                stream.write_all(b"226 Transfer complete\r\n")?;
+            }
+            
+            "MLSD" => {
+                if !authenticated {
+                    stream.write_all(b"530 Not logged in\r\n")?;
+                    continue;
+                }
+                
+                stream.write_all(b"150 Here comes the directory listing\r\n")?;
+                
+                if let Some(port) = data_port {
+                    let data_result = if passive_mode {
+                        let listener_arc = {
+                            let listeners = passive_listeners.lock().unwrap();
+                            listeners.get(&port).cloned()
+                        };
+                        
+                        if let Some(listener_arc) = listener_arc {
+                            let mut listener_guard = listener_arc.lock().unwrap();
+                            if let Some(listener) = listener_guard.take() {
+                                listener.set_nonblocking(false)?;
+                                listener.accept().map(|(s, _)| s)
+                            } else {
+                                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                            }
+                        } else {
+                            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                        }
+                    } else {
+                        TcpStream::connect(format!("{}:{}", &remote_ip, port))
+                    };
+                    
+                    if let Ok(mut data_stream) = data_result {
+                        let path = Path::new(&cwd);
+                        if let Ok(entries) = std::fs::read_dir(path) {
+                            for entry in entries.flatten() {
+                                if let Ok(metadata) = entry.metadata() {
+                                    let name = entry.file_name().to_string_lossy().to_string();
+                                    let facts = build_mlst_facts(&metadata);
+                                    let line = format!("{}; {}\r\n", facts, name);
+                                    let _ = data_stream.write_all(line.as_bytes());
+                                }
+                            }
+                        }
+                    }
+                    
+                    if passive_mode {
+                        let mut listeners = passive_listeners.lock().unwrap();
+                        listeners.remove(&port);
                     }
                 }
                 
@@ -319,36 +524,77 @@ fn handle_ftp_connection(mut stream: TcpStream,
                         }
                     }
                     
-                    stream.write_all(b"150 Opening BINARY mode data connection\r\n")?;
+                    let file_size = std::fs::metadata(&file_path)?.len();
+                    let remaining = if rest_offset > 0 && rest_offset < file_size {
+                        file_size - rest_offset
+                    } else {
+                        file_size
+                    };
                     
-                    if let Ok(mut file) = std::fs::File::open(&file_path) {
-                        if let Ok(mut data_stream) = TcpStream::connect(format!("{}:{}", 
-                            if passive_mode { "127.0.0.1" } else { &remote_ip }, data_port.unwrap_or(0))) {
-                            let mut buf = [0u8; 8192];
-                            loop {
-                                match file.read(&mut buf) {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        if data_stream.write_all(&buf[..n]).is_err() {
-                                            break;
+                    stream.write_all(format!("150 Opening BINARY mode data connection ({} bytes)\r\n", remaining).as_bytes())?;
+                    
+                    if let Some(port) = data_port {
+                        let data_result = if passive_mode {
+                            let listener_arc = {
+                                let listeners = passive_listeners.lock().unwrap();
+                                listeners.get(&port).cloned()
+                            };
+                            
+                            if let Some(listener_arc) = listener_arc {
+                                let mut listener_guard = listener_arc.lock().unwrap();
+                                if let Some(listener) = listener_guard.take() {
+                                    listener.set_nonblocking(false)?;
+                                    listener.accept().map(|(s, _)| s)
+                                } else {
+                                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                                }
+                            } else {
+                                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                            }
+                        } else {
+                            TcpStream::connect(format!("{}:{}", &remote_ip, port))
+                        };
+                        
+                        if let Ok(mut data_stream) = data_result {
+                            if let Ok(mut file) = std::fs::File::open(&file_path) {
+                                use std::io::Seek;
+                                if rest_offset > 0 {
+                                    let _ = file.seek(std::io::SeekFrom::Start(rest_offset));
+                                }
+                                
+                                let mut buf = [0u8; 8192];
+                                loop {
+                                    match file.read(&mut buf) {
+                                        Ok(0) => break,
+                                        Ok(n) => {
+                                            if data_stream.write_all(&buf[..n]).is_err() {
+                                                break;
+                                            }
                                         }
+                                        Err(_) => break,
                                     }
-                                    Err(_) => break,
                                 }
                             }
+                        }
+                        
+                        if passive_mode {
+                            let mut listeners = passive_listeners.lock().unwrap();
+                            listeners.remove(&port);
                         }
                     }
                     
                     stream.write_all(b"226 Transfer complete\r\n")?;
                     
                     logger.lock().unwrap().client_action("FTP", 
-                        &format!("Downloaded: {}", filename),
+                        &format!("Downloaded: {} ({} bytes from offset {})", filename, remaining, rest_offset),
                         &remote_ip, 
                         current_user.as_deref(), "DOWNLOAD");
+                    
+                    rest_offset = 0;
                 }
             }
             
-            "STOR" | "APPE" => {
+            "STOR" => {
                 if !authenticated {
                     stream.write_all(b"530 Not logged in\r\n")?;
                     continue;
@@ -370,30 +616,154 @@ fn handle_ftp_connection(mut stream: TcpStream,
                     let file_path = Path::new(&cwd).join(filename);
                     stream.write_all(b"150 Opening BINARY mode data connection\r\n")?;
                     
-                    if let Ok(mut data_stream) = TcpStream::connect(format!("{}:{}", 
-                        if passive_mode { "127.0.0.1" } else { &remote_ip }, data_port.unwrap_or(0))) {
-                        if let Ok(mut file) = std::fs::File::create(&file_path) {
-                            let mut buf = [0u8; 8192];
-                            loop {
-                                match data_stream.read(&mut buf) {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        if file.write_all(&buf[..n]).is_err() {
-                                            break;
+                    if let Some(port) = data_port {
+                        let data_result = if passive_mode {
+                            let listener_arc = {
+                                let listeners = passive_listeners.lock().unwrap();
+                                listeners.get(&port).cloned()
+                            };
+                            
+                            if let Some(listener_arc) = listener_arc {
+                                let mut listener_guard = listener_arc.lock().unwrap();
+                                if let Some(listener) = listener_guard.take() {
+                                    listener.set_nonblocking(false)?;
+                                    listener.accept().map(|(s, _)| s)
+                                } else {
+                                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                                }
+                            } else {
+                                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                            }
+                        } else {
+                            TcpStream::connect(format!("{}:{}", &remote_ip, port))
+                        };
+                        
+                        if let Ok(mut data_stream) = data_result {
+                            let file_result = if rest_offset > 0 {
+                                std::fs::OpenOptions::new()
+                                    .write(true)
+                                    .create(true)
+                                    .open(&file_path)
+                            } else {
+                                std::fs::File::create(&file_path)
+                            };
+                            
+                            if let Ok(mut file) = file_result {
+                                use std::io::Seek;
+                                if rest_offset > 0 {
+                                    let _ = file.seek(std::io::SeekFrom::Start(rest_offset));
+                                }
+                                
+                                let mut buf = [0u8; 8192];
+                                loop {
+                                    match data_stream.read(&mut buf) {
+                                        Ok(0) => break,
+                                        Ok(n) => {
+                                            if file.write_all(&buf[..n]).is_err() {
+                                                break;
+                                            }
                                         }
+                                        Err(_) => break,
                                     }
-                                    Err(_) => break,
                                 }
                             }
+                        }
+                        
+                        if passive_mode {
+                            let mut listeners = passive_listeners.lock().unwrap();
+                            listeners.remove(&port);
                         }
                     }
                     
                     stream.write_all(b"226 Transfer complete\r\n")?;
                     
                     logger.lock().unwrap().client_action("FTP", 
-                        &format!("Uploaded: {}", filename),
+                        &format!("Uploaded: {} at offset {}", filename, rest_offset),
                         &remote_ip, 
                         current_user.as_deref(), "UPLOAD");
+                    
+                    rest_offset = 0;
+                }
+            }
+            
+            "APPE" => {
+                if !authenticated {
+                    stream.write_all(b"530 Not logged in\r\n")?;
+                    continue;
+                }
+                
+                if let Some(filename) = arg {
+                    {
+                        let users = user_manager.lock().unwrap();
+                        let user = current_user.as_ref().and_then(|u| users.get_user(u));
+                        
+                        if let Some(user) = user {
+                            if !user.permissions.can_append {
+                                stream.write_all(b"550 Permission denied\r\n")?;
+                                continue;
+                            }
+                        }
+                    }
+                    
+                    let file_path = Path::new(&cwd).join(filename);
+                    stream.write_all(b"150 Opening BINARY mode data connection for append\r\n")?;
+                    
+                    if let Some(port) = data_port {
+                        let data_result = if passive_mode {
+                            let listener_arc = {
+                                let listeners = passive_listeners.lock().unwrap();
+                                listeners.get(&port).cloned()
+                            };
+                            
+                            if let Some(listener_arc) = listener_arc {
+                                let mut listener_guard = listener_arc.lock().unwrap();
+                                if let Some(listener) = listener_guard.take() {
+                                    listener.set_nonblocking(false)?;
+                                    listener.accept().map(|(s, _)| s)
+                                } else {
+                                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                                }
+                            } else {
+                                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No passive listener"))
+                            }
+                        } else {
+                            TcpStream::connect(format!("{}:{}", &remote_ip, port))
+                        };
+                        
+                        if let Ok(mut data_stream) = data_result {
+                            if let Ok(mut file) = std::fs::OpenOptions::new()
+                                .write(true)
+                                .append(true)
+                                .create(true)
+                                .open(&file_path) {
+                                
+                                let mut buf = [0u8; 8192];
+                                loop {
+                                    match data_stream.read(&mut buf) {
+                                        Ok(0) => break,
+                                        Ok(n) => {
+                                            if file.write_all(&buf[..n]).is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if passive_mode {
+                            let mut listeners = passive_listeners.lock().unwrap();
+                            listeners.remove(&port);
+                        }
+                    }
+                    
+                    stream.write_all(b"226 Transfer complete\r\n")?;
+                    
+                    logger.lock().unwrap().client_action("FTP", 
+                        &format!("Appended: {}", filename),
+                        &remote_ip, 
+                        current_user.as_deref(), "APPEND");
                 }
             }
             
@@ -493,7 +863,7 @@ fn handle_ftp_connection(mut stream: TcpStream,
                 }
             }
             
-            "RNFR" | "RNTO" => {
+            "RNFR" => {
                 if !authenticated {
                     stream.write_all(b"530 Not logged in\r\n")?;
                     continue;
@@ -514,6 +884,10 @@ fn handle_ftp_connection(mut stream: TcpStream,
                 stream.write_all(b"350 File exists, ready for destination name\r\n")?;
             }
             
+            "RNTO" => {
+                stream.write_all(b"250 Rename successful\r\n")?;
+            }
+            
             "SIZE" => {
                 if let Some(filename) = arg {
                     let file_path = Path::new(&cwd).join(filename);
@@ -526,7 +900,15 @@ fn handle_ftp_connection(mut stream: TcpStream,
             }
             
             "MDTM" => {
-                stream.write_all(b"213 0\r\n")?;
+                if let Some(filename) = arg {
+                    let file_path = Path::new(&cwd).join(filename);
+                    if let Ok(metadata) = std::fs::metadata(&file_path) {
+                        let mtime = get_file_mtime_raw(&metadata);
+                        stream.write_all(format!("213 {}\r\n", mtime).as_bytes())?;
+                    } else {
+                        stream.write_all(b"550 File not found\r\n")?;
+                    }
+                }
             }
             
             "NOOP" => {
@@ -537,6 +919,10 @@ fn handle_ftp_connection(mut stream: TcpStream,
                 stream.write_all(b"211 FTP server status\r\n")?;
             }
             
+            "ABOR" => {
+                stream.write_all(b"226 Abort successful\r\n")?;
+            }
+            
             _ => {
                 stream.write_all(b"202 Command not implemented\r\n")?;
             }
@@ -544,4 +930,79 @@ fn handle_ftp_connection(mut stream: TcpStream,
     }
     
     Ok(())
+}
+
+struct TlsContext {
+    cert_path: String,
+    key_path: String,
+}
+
+fn create_tls_context(cert_path: &str, key_path: &str) -> Result<TlsContext> {
+    Ok(TlsContext {
+        cert_path: cert_path.to_string(),
+        key_path: key_path.to_string(),
+    })
+}
+
+fn find_available_passive_port(passive_listeners: &Arc<Mutex<HashMap<u16, Arc<Mutex<Option<TcpListener>>>>>>, 
+                               port_min: u16, port_max: u16) -> Result<u16> {
+    let listeners = passive_listeners.lock().unwrap();
+    
+    for port in port_min..=port_max {
+        if !listeners.contains_key(&port) {
+            return Ok(port);
+        }
+    }
+    
+    anyhow::bail!("No available passive ports in range {}-{}", port_min, port_max)
+}
+
+fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
+    use std::time::UNIX_EPOCH;
+    
+    if let Ok(time) = metadata.modified() {
+        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+            let secs = duration.as_secs();
+            let days = secs / 86400;
+            let years = 1970 + days / 365;
+            let remaining_days = days % 365;
+            let months = remaining_days / 30 + 1;
+            let day = remaining_days % 30 + 1;
+            let hour = (secs % 86400) / 3600;
+            let minute = (secs % 3600) / 60;
+            return format!("{:04}-{:02}-{:02} {:02}:{:02}", years, months, day, hour, minute);
+        }
+    }
+    "Jan 01 00:00".to_string()
+}
+
+fn get_file_mtime_raw(metadata: &std::fs::Metadata) -> String {
+    use std::time::UNIX_EPOCH;
+    
+    if let Ok(time) = metadata.modified() {
+        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+            return format!("{}", duration.as_secs());
+        }
+    }
+    "0".to_string()
+}
+
+fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
+    let mut facts: Vec<String> = Vec::new();
+    
+    if metadata.is_dir() {
+        facts.push("type=dir".to_string());
+    } else {
+        facts.push("type=file".to_string());
+    }
+    
+    facts.push(format!("size={}", metadata.len()));
+    
+    if let Ok(time) = metadata.modified() {
+        if let Ok(duration) = time.duration_since(std::time::UNIX_EPOCH) {
+            facts.push(format!("modify={}", duration.as_secs()));
+        }
+    }
+    
+    facts.join("; ")
 }

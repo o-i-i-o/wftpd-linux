@@ -1,4 +1,4 @@
-import { Button, VerticalBox, HorizontalBox, LineEdit, GroupBox } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, LineEdit, GroupBox, CheckBox, ComboBox } from "std-widgets.slint";
 
 export struct UserInfo {
     username: string,
@@ -17,16 +17,44 @@ export struct LogEntry {
 
 export component MainWindow inherits Window {
     title: "WFTPG - SFTP/FTP管理工具";
-    min-width: 800px;
-    min-height: 600px;
+    min-width: 900px;
+    min-height: 700px;
     
     in-out property <bool> ftp-running: false;
     in-out property <bool> sftp-running: false;
+    
     in-out property <string> bind-ip: "0.0.0.0";
     in-out property <string> ftp-port: "21";
     in-out property <string> sftp-port: "22";
+    in-out property <string> max-connections: "100";
+    in-out property <string> connection-timeout: "300";
+    in-out property <string> idle-timeout: "600";
+    
     in-out property <string> ftp-home: "";
+    in-out property <string> passive-port-min: "50000";
+    in-out property <string> passive-port-max: "51000";
+    in-out property <string> welcome-message: "Welcome to WFTPG FTP Server";
+    in-out property <bool> allow-anonymous: false;
+    in-out property <string> anonymous-home: "";
+    
     in-out property <string> sftp-home: "";
+    in-out property <string> host-key-path: "/etc/wftpg/ssh_host_rsa_key";
+    in-out property <string> max-auth-attempts: "3";
+    in-out property <string> auth-timeout: "60";
+    
+    in-out property <string> max-login-attempts: "5";
+    in-out property <string> ban-duration: "300";
+    in-out property <bool> require-ssl: false;
+    in-out property <string> cert-path: "";
+    in-out property <string> key-path: "";
+    
+    in-out property <string> log-dir: "/var/log/wftpg";
+    in-out property <string> log-level: "info";
+    in-out property <string> max-log-size: "10";
+    in-out property <string> max-log-files: "10";
+    in-out property <bool> log-to-file: true;
+    in-out property <bool> log-to-gui: true;
+    
     in-out property <[UserInfo]> users: [];
     in-out property <[string]> allowed-ips: [];
     in-out property <[string]> denied-ips: [];
@@ -35,6 +63,16 @@ export component MainWindow inherits Window {
     in-out property <bool> service-installed: false;
     in-out property <bool> service-running: false;
     
+    in-out property <string> new-username: "";
+    in-out property <string> new-password: "";
+    in-out property <string> new-home-dir: "";
+    in-out property <bool> new-is-admin: false;
+    
+    in-out property <string> new-allowed-ip: "";
+    in-out property <string> new-denied-ip: "";
+    
+    in-out property <bool> auto-refresh-logs: true;
+    
     callback start-ftp-clicked();
     callback stop-ftp-clicked();
     callback start-sftp-clicked();
@@ -42,6 +80,8 @@ export component MainWindow inherits Window {
     callback save-config-clicked();
     callback add-user-clicked(string, string, string, bool);
     callback remove-user-clicked(string);
+    callback update-user-clicked(string, string, bool);
+    callback toggle-user-enabled-clicked(string, bool);
     callback add-allowed-ip-clicked(string);
     callback remove-allowed-ip-clicked(string);
     callback add-denied-ip-clicked(string);
@@ -51,8 +91,12 @@ export component MainWindow inherits Window {
     callback start-service-clicked();
     callback stop-service-clicked();
     callback refresh-logs-clicked();
+    callback load-users-clicked();
+    callback load-ip-lists-clicked();
     
     property <int> current-tab: 0;
+    property <int> server-sub-tab: 0;
+    property <int> security-sub-tab: 0;
     
     VerticalBox {
         Text {
@@ -65,7 +109,7 @@ export component MainWindow inherits Window {
         HorizontalBox {
             spacing: 4px;
             
-            for tab[index] in ["服务器", "用户管理", "安全设置", "系统服务", "日志查看"]:
+            for tab[index] in ["服务器配置", "用户管理", "安全设置", "系统服务", "日志查看"]:
                 Rectangle {
                     width: 100px;
                     height: 32px;
@@ -81,7 +125,18 @@ export component MainWindow inherits Window {
                     }
                     
                     TouchArea {
-                        clicked => { root.current-tab = index; }
+                        clicked => { 
+                            root.current-tab = index;
+                            if index == 1 {
+                                root.load-users-clicked();
+                            }
+                            if index == 2 {
+                                root.load-ip-lists-clicked();
+                            }
+                            if index == 4 {
+                                root.refresh-logs-clicked();
+                            }
+                        }
                     }
                 }
         }
@@ -95,69 +150,321 @@ export component MainWindow inherits Window {
                     padding: 16px;
                     spacing: 12px;
                     
-                    GroupBox {
-                        title: "FTP服务器";
-                        HorizontalBox {
-                            spacing: 8px;
-                            Text { 
-                                text: root.ftp-running ? "● 运行中" : "○ 已停止";
-                                color: root.ftp-running ? #27ae60 : #e74c3c;
+                    HorizontalBox {
+                        spacing: 8px;
+                        for sub-tab[index] in ["基本设置", "FTP配置", "SFTP配置", "日志配置"]:
+                            Rectangle {
+                                width: 80px;
+                                height: 28px;
+                                background: index == root.server-sub-tab ? #2980b9 : #bdc3c7;
+                                border-radius: 3px;
+                                
+                                Text {
+                                    text: sub-tab;
+                                    color: index == root.server-sub-tab ? white : #2c3e50;
+                                    font-size: 11px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                
+                                TouchArea {
+                                    clicked => { root.server-sub-tab = index; }
+                                }
                             }
-                            Button {
-                                text: "启动FTP";
-                                clicked => { root.start-ftp-clicked(); }
-                            }
-                            Button {
-                                text: "停止FTP";
-                                clicked => { root.stop-ftp-clicked(); }
-                            }
-                        }
                     }
                     
-                    GroupBox {
-                        title: "SFTP服务器";
-                        HorizontalBox {
-                            spacing: 8px;
-                            Text { 
-                                text: root.sftp-running ? "● 运行中" : "○ 已停止";
-                                color: root.sftp-running ? #27ae60 : #e74c3c;
-                            }
-                            Button {
-                                text: "启动SFTP";
-                                clicked => { root.start-sftp-clicked(); }
-                            }
-                            Button {
-                                text: "停止SFTP";
-                                clicked => { root.stop-sftp-clicked(); }
-                            }
-                        }
-                    }
-                    
-                    GroupBox {
-                        title: "网络配置";
+                    if root.server-sub-tab == 0:
                         VerticalBox {
                             spacing: 8px;
-                            HorizontalBox {
-                                Text { text: "绑定IP:"; width: 80px; }
-                                LineEdit {
-                                    text: root.bind-ip;
-                                    edited => { root.bind-ip = self.text; }
+                            
+                            GroupBox {
+                                title: "服务状态";
+                                HorizontalBox {
+                                    spacing: 16px;
+                                    Text { 
+                                        text: root.ftp-running ? "● FTP运行中" : "○ FTP已停止";
+                                        color: root.ftp-running ? #27ae60 : #e74c3c;
+                                    }
+                                    Button {
+                                        text: "启动FTP";
+                                        clicked => { root.start-ftp-clicked(); }
+                                    }
+                                    Button {
+                                        text: "停止FTP";
+                                        clicked => { root.stop-ftp-clicked(); }
+                                    }
+                                    Text { 
+                                        text: root.sftp-running ? "● SFTP运行中" : "○ SFTP已停止";
+                                        color: root.sftp-running ? #27ae60 : #e74c3c;
+                                    }
+                                    Button {
+                                        text: "启动SFTP";
+                                        clicked => { root.start-sftp-clicked(); }
+                                    }
+                                    Button {
+                                        text: "停止SFTP";
+                                        clicked => { root.stop-sftp-clicked(); }
+                                    }
                                 }
                             }
-                            HorizontalBox {
-                                Text { text: "FTP端口:"; width: 80px; }
-                                LineEdit {
-                                    text: root.ftp-port;
-                                    edited => { root.ftp-port = self.text; }
+                            
+                            GroupBox {
+                                title: "网络设置";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "绑定IP:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.bind-ip;
+                                            edited => { root.bind-ip = self.text; }
+                                        }
+                                    }
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "FTP端口:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.ftp-port;
+                                            edited => { root.ftp-port = self.text; }
+                                            width: 100px;
+                                        }
+                                        Text { text: "SFTP端口:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.sftp-port;
+                                            edited => { root.sftp-port = self.text; }
+                                            width: 100px;
+                                        }
+                                    }
                                 }
-                                Text { text: "SFTP端口:"; width: 80px; }
-                                LineEdit {
-                                    text: root.sftp-port;
-                                    edited => { root.sftp-port = self.text; }
+                            }
+                            
+                            GroupBox {
+                                title: "连接限制";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "最大连接数:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.max-connections;
+                                            edited => { root.max-connections = self.text; }
+                                            width: 100px;
+                                        }
+                                        Text { text: "连接超时(秒):"; width: 100px; }
+                                        LineEdit {
+                                            text: root.connection-timeout;
+                                            edited => { root.connection-timeout = self.text; }
+                                            width: 100px;
+                                        }
+                                        Text { text: "空闲超时(秒):"; width: 100px; }
+                                        LineEdit {
+                                            text: root.idle-timeout;
+                                            edited => { root.idle-timeout = self.text; }
+                                            width: 100px;
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
+                    
+                    if root.server-sub-tab == 1:
+                        VerticalBox {
+                            spacing: 8px;
+                            
+                            GroupBox {
+                                title: "FTP基本设置";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "默认主目录:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.ftp-home;
+                                            edited => { root.ftp-home = self.text; }
+                                        }
+                                    }
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "欢迎消息:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.welcome-message;
+                                            edited => { root.welcome-message = self.text; }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            GroupBox {
+                                title: "被动模式设置";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "端口范围:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.passive-port-min;
+                                            edited => { root.passive-port-min = self.text; }
+                                            width: 80px;
+                                        }
+                                        Text { text: "-"; width: 20px; horizontal-alignment: center; }
+                                        LineEdit {
+                                            text: root.passive-port-max;
+                                            edited => { root.passive-port-max = self.text; }
+                                            width: 80px;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            GroupBox {
+                                title: "匿名登录";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        CheckBox {
+                                            text: "允许匿名登录";
+                                            checked: root.allow-anonymous;
+                                            toggled => { root.allow-anonymous = self.checked; }
+                                        }
+                                    }
+                                    if root.allow-anonymous:
+                                        HorizontalBox {
+                                            spacing: 8px;
+                                            Text { text: "匿名主目录:"; width: 100px; }
+                                            LineEdit {
+                                                text: root.anonymous-home;
+                                                edited => { root.anonymous-home = self.text; }
+                                            }
+                                        }
+                                }
+                            }
+                        }
+                    
+                    if root.server-sub-tab == 2:
+                        VerticalBox {
+                            spacing: 8px;
+                            
+                            GroupBox {
+                                title: "SFTP基本设置";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "默认主目录:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.sftp-home;
+                                            edited => { root.sftp-home = self.text; }
+                                        }
+                                    }
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "主机密钥路径:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.host-key-path;
+                                            edited => { root.host-key-path = self.text; }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            GroupBox {
+                                title: "认证设置";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "最大认证尝试:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.max-auth-attempts;
+                                            edited => { root.max-auth-attempts = self.text; }
+                                            width: 80px;
+                                        }
+                                        Text { text: "认证超时(秒):"; width: 100px; }
+                                        LineEdit {
+                                            text: root.auth-timeout;
+                                            edited => { root.auth-timeout = self.text; }
+                                            width: 80px;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    
+                    if root.server-sub-tab == 3:
+                        VerticalBox {
+                            spacing: 8px;
+                            
+                            GroupBox {
+                                title: "日志基本设置";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "日志目录:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.log-dir;
+                                            edited => { root.log-dir = self.text; }
+                                        }
+                                    }
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "日志级别:"; width: 100px; }
+                                        ComboBox {
+                                            width: 120px;
+                                            model: ["trace", "debug", "info", "warn", "error"];
+                                            current-index: root.log-level == "trace" ? 0 : 
+                                                           root.log-level == "debug" ? 1 :
+                                                           root.log-level == "info" ? 2 :
+                                                           root.log-level == "warn" ? 3 : 4;
+                                            selected(idx) => {
+                                                root.log-level = idx == 0 ? "trace" :
+                                                                  idx == 1 ? "debug" :
+                                                                  idx == 2 ? "info" :
+                                                                  idx == 3 ? "warn" : "error";
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            GroupBox {
+                                title: "日志文件设置";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "最大大小(MB):"; width: 100px; }
+                                        LineEdit {
+                                            text: root.max-log-size;
+                                            edited => { root.max-log-size = self.text; }
+                                            width: 80px;
+                                        }
+                                        Text { text: "最大文件数:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.max-log-files;
+                                            edited => { root.max-log-files = self.text; }
+                                            width: 80px;
+                                        }
+                                    }
+                                    HorizontalBox {
+                                        spacing: 16px;
+                                        CheckBox {
+                                            text: "记录到文件";
+                                            checked: root.log-to-file;
+                                            toggled => { root.log-to-file = self.checked; }
+                                        }
+                                        CheckBox {
+                                            text: "显示到界面";
+                                            checked: root.log-to-gui;
+                                            toggled => { root.log-to-gui = self.checked; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    
+                    Rectangle { vertical-stretch: 1; }
                     
                     Button {
                         text: "保存配置";
@@ -170,22 +477,97 @@ export component MainWindow inherits Window {
                     padding: 16px;
                     spacing: 12px;
                     
-                    Text { text: "用户列表"; }
-                    
-                    for user in root.users:
-                        HorizontalBox {
+                    GroupBox {
+                        title: "添加用户";
+                        VerticalBox {
                             spacing: 8px;
-                            Text { text: user.username; width: 120px; }
-                            Text { text: user.home-dir; width: 200px; }
-                            Text { 
-                                text: user.enabled ? "启用" : "禁用";
-                                color: user.enabled ? #27ae60 : #e74c3c;
+                            HorizontalBox {
+                                spacing: 8px;
+                                Text { text: "用户名:"; width: 60px; }
+                                LineEdit {
+                                    text: root.new-username;
+                                    edited => { root.new-username = self.text; }
+                                }
                             }
-                            Button {
-                                text: "删除";
-                                clicked => { root.remove-user-clicked(user.username); }
+                            HorizontalBox {
+                                spacing: 8px;
+                                Text { text: "密码:"; width: 60px; }
+                                LineEdit {
+                                    text: root.new-password;
+                                    edited => { root.new-password = self.text; }
+                                }
+                            }
+                            HorizontalBox {
+                                spacing: 8px;
+                                Text { text: "主目录:"; width: 60px; }
+                                LineEdit {
+                                    text: root.new-home-dir;
+                                    edited => { root.new-home-dir = self.text; }
+                                }
+                            }
+                            HorizontalBox {
+                                spacing: 8px;
+                                CheckBox {
+                                    text: "管理员";
+                                    checked: root.new-is-admin;
+                                    toggled => { root.new-is-admin = self.checked; }
+                                }
+                                Button {
+                                    text: "添加用户";
+                                    clicked => {
+                                        root.add-user-clicked(root.new-username, root.new-password, root.new-home-dir, root.new-is-admin);
+                                        root.new-username = "";
+                                        root.new-password = "";
+                                        root.new-home-dir = "";
+                                        root.new-is-admin = false;
+                                    }
+                                }
                             }
                         }
+                    }
+                    
+                    GroupBox {
+                        title: "用户列表";
+                        VerticalBox {
+                            spacing: 4px;
+                            
+                            HorizontalBox {
+                                spacing: 8px;
+                                Text { text: "用户名"; width: 100px; font-weight: 600; }
+                                Text { text: "主目录"; width: 200px; font-weight: 600; }
+                                Text { text: "状态"; width: 60px; font-weight: 600; }
+                                Text { text: "角色"; width: 60px; font-weight: 600; }
+                                Text { text: "操作"; font-weight: 600; }
+                            }
+                            
+                            for user in root.users:
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    Text { text: user.username; width: 100px; }
+                                    Text { text: user.home-dir; width: 200px; }
+                                    Text { 
+                                        text: user.enabled ? "启用" : "禁用";
+                                        color: user.enabled ? #27ae60 : #e74c3c;
+                                        width: 60px;
+                                    }
+                                    Text { 
+                                        text: user.is-admin ? "管理员" : "用户";
+                                        width: 60px;
+                                    }
+                                    HorizontalBox {
+                                        spacing: 4px;
+                                        Button {
+                                            text: user.enabled ? "禁用" : "启用";
+                                            clicked => { root.toggle-user-enabled-clicked(user.username, !user.enabled); }
+                                        }
+                                        Button {
+                                            text: "删除";
+                                            clicked => { root.remove-user-clicked(user.username); }
+                                        }
+                                    }
+                                }
+                        }
+                    }
                 }
             
             if root.current-tab == 2:
@@ -193,33 +575,171 @@ export component MainWindow inherits Window {
                     padding: 16px;
                     spacing: 12px;
                     
-                    GroupBox {
-                        title: "IP白名单";
-                        VerticalBox {
-                            for ip in root.allowed-ips:
-                                HorizontalBox {
-                                    Text { text: ip; }
-                                    Button {
-                                        text: "删除";
-                                        clicked => { root.remove-allowed-ip-clicked(ip); }
-                                    }
+                    HorizontalBox {
+                        spacing: 8px;
+                        for sub-tab[index] in ["IP过滤", "安全选项"]:
+                            Rectangle {
+                                width: 80px;
+                                height: 28px;
+                                background: index == root.security-sub-tab ? #2980b9 : #bdc3c7;
+                                border-radius: 3px;
+                                
+                                Text {
+                                    text: sub-tab;
+                                    color: index == root.security-sub-tab ? white : #2c3e50;
+                                    font-size: 11px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
                                 }
-                        }
+                                
+                                TouchArea {
+                                    clicked => { root.security-sub-tab = index; }
+                                }
+                            }
                     }
                     
-                    GroupBox {
-                        title: "IP黑名单";
+                    if root.security-sub-tab == 0:
                         VerticalBox {
-                            for ip in root.denied-ips:
-                                HorizontalBox {
-                                    Text { text: ip; }
-                                    Button {
-                                        text: "删除";
-                                        clicked => { root.remove-denied-ip-clicked(ip); }
+                            spacing: 12px;
+                            
+                            GroupBox {
+                                title: "IP白名单 (允许访问)";
+                                VerticalBox {
+                                    spacing: 8px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "添加IP/CIDR:"; width: 90px; }
+                                        LineEdit {
+                                            text: root.new-allowed-ip;
+                                            edited => { root.new-allowed-ip = self.text; }
+                                            width: 200px;
+                                        }
+                                        Button {
+                                            text: "添加";
+                                            clicked => {
+                                                root.add-allowed-ip-clicked(root.new-allowed-ip);
+                                                root.new-allowed-ip = "";
+                                            }
+                                        }
+                                    }
+                                    
+                                    HorizontalBox {
+                                        spacing: 4px;
+                                        Text { text: "当前白名单:"; font-weight: 600; }
+                                    }
+                                    
+                                    for ip in root.allowed-ips:
+                                        HorizontalBox {
+                                            spacing: 8px;
+                                            Text { text: ip; width: 200px; }
+                                            Button {
+                                                text: "删除";
+                                                clicked => { root.remove-allowed-ip-clicked(ip); }
+                                            }
+                                        }
+                                }
+                            }
+                            
+                            GroupBox {
+                                title: "IP黑名单 (禁止访问)";
+                                VerticalBox {
+                                    spacing: 8px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "添加IP/CIDR:"; width: 90px; }
+                                        LineEdit {
+                                            text: root.new-denied-ip;
+                                            edited => { root.new-denied-ip = self.text; }
+                                            width: 200px;
+                                        }
+                                        Button {
+                                            text: "添加";
+                                            clicked => {
+                                                root.add-denied-ip-clicked(root.new-denied-ip);
+                                                root.new-denied-ip = "";
+                                            }
+                                        }
+                                    }
+                                    
+                                    HorizontalBox {
+                                        spacing: 4px;
+                                        Text { text: "当前黑名单:"; font-weight: 600; }
+                                    }
+                                    
+                                    for ip in root.denied-ips:
+                                        HorizontalBox {
+                                            spacing: 8px;
+                                            Text { text: ip; width: 200px; }
+                                            Button {
+                                                text: "删除";
+                                                clicked => { root.remove-denied-ip-clicked(ip); }
+                                            }
+                                        }
+                                }
+                            }
+                        }
+                    
+                    if root.security-sub-tab == 1:
+                        VerticalBox {
+                            spacing: 12px;
+                            
+                            GroupBox {
+                                title: "登录安全";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "最大登录尝试:"; width: 100px; }
+                                        LineEdit {
+                                            text: root.max-login-attempts;
+                                            edited => { root.max-login-attempts = self.text; }
+                                            width: 80px;
+                                        }
+                                        Text { text: "封禁时长(秒):"; width: 100px; }
+                                        LineEdit {
+                                            text: root.ban-duration;
+                                            edited => { root.ban-duration = self.text; }
+                                            width: 80px;
+                                        }
                                     }
                                 }
+                            }
+                            
+                            GroupBox {
+                                title: "SSL/TLS设置";
+                                VerticalBox {
+                                    spacing: 6px;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        CheckBox {
+                                            text: "要求SSL/TLS连接";
+                                            checked: root.require-ssl;
+                                            toggled => { root.require-ssl = self.checked; }
+                                        }
+                                    }
+                                    if root.require-ssl:
+                                        VerticalBox {
+                                            spacing: 6px;
+                                            HorizontalBox {
+                                                spacing: 8px;
+                                                Text { text: "证书路径:"; width: 100px; }
+                                                LineEdit {
+                                                    text: root.cert-path;
+                                                    edited => { root.cert-path = self.text; }
+                                                }
+                                            }
+                                            HorizontalBox {
+                                                spacing: 8px;
+                                                Text { text: "密钥路径:"; width: 100px; }
+                                                LineEdit {
+                                                    text: root.key-path;
+                                                    edited => { root.key-path = self.text; }
+                                                }
+                                            }
+                                        }
+                                }
+                            }
                         }
-                    }
                 }
             
             if root.current-tab == 3:
@@ -264,11 +784,28 @@ export component MainWindow inherits Window {
                     spacing: 12px;
                     
                     HorizontalBox {
-                        Text { text: "日志记录"; }
-                        Button {
-                            text: "刷新";
-                            clicked => { root.refresh-logs-clicked(); }
+                        Text { text: "日志记录"; font-weight: 600; }
+                        HorizontalBox {
+                            spacing: 8px;
+                            CheckBox {
+                                text: "自动刷新";
+                                checked: root.auto-refresh-logs;
+                                toggled => { root.auto-refresh-logs = self.checked; }
+                            }
+                            Button {
+                                text: "刷新";
+                                clicked => { root.refresh-logs-clicked(); }
+                            }
                         }
+                    }
+                    
+                    HorizontalBox {
+                        spacing: 4px;
+                        Text { text: "时间"; width: 140px; font-size: 10px; font-weight: 600; }
+                        Text { text: "级别"; width: 50px; font-size: 10px; font-weight: 600; }
+                        Text { text: "来源"; width: 60px; font-size: 10px; font-weight: 600; }
+                        Text { text: "客户端IP"; width: 120px; font-size: 10px; font-weight: 600; }
+                        Text { text: "消息"; font-size: 10px; font-weight: 600; }
                     }
                     
                     for entry in root.logs:
@@ -283,6 +820,7 @@ export component MainWindow inherits Window {
                                        entry.level == "WARN" ? #f39c12 : #2c3e50;
                             }
                             Text { text: entry.source; width: 60px; font-size: 10px; }
+                            Text { text: entry.client-ip; width: 120px; font-size: 10px; }
                             Text { text: entry.message; font-size: 10px; }
                         }
                 }

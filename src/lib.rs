@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod config;
 pub mod users;
 pub mod logger;
@@ -23,6 +21,7 @@ pub struct AppState {
     pub logger: Arc<Mutex<Logger>>,
     pub ftp_server: Arc<Mutex<Option<FtpServer>>>,
     pub sftp_server: Arc<Mutex<Option<SftpServer>>>,
+    pub sftp_runtime: Arc<Mutex<Option<tokio::runtime::Runtime>>>,
     pub service_manager: ServiceManager,
     pub config_path: PathBuf,
     pub users_path: PathBuf,
@@ -50,6 +49,7 @@ impl AppState {
             logger: Arc::new(Mutex::new(logger)),
             ftp_server: Arc::new(Mutex::new(None)),
             sftp_server: Arc::new(Mutex::new(None)),
+            sftp_runtime: Arc::new(Mutex::new(None)),
             service_manager: ServiceManager::new(),
             config_path,
             users_path,
@@ -97,26 +97,44 @@ impl AppState {
     }
     
     pub fn start_sftp(&self) -> anyhow::Result<()> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        
         let config = Arc::clone(&self.config);
         let user_manager = Arc::clone(&self.user_manager);
         let logger = Arc::clone(&self.logger);
         
         let server = SftpServer::new(config, user_manager, logger);
-        server.start()?;
         
-        let mut sftp_server = self.sftp_server.lock().unwrap();
-        *sftp_server = Some(server);
+        runtime.block_on(async {
+            server.start().await
+        })?;
+        
+        {
+            let mut sftp_server = self.sftp_server.lock().unwrap();
+            *sftp_server = Some(server);
+        }
+        
+        {
+            let mut sftp_runtime = self.sftp_runtime.lock().unwrap();
+            *sftp_runtime = Some(runtime);
+        }
         
         self.logger.lock().unwrap().info("SFTP", "SFTP server started");
         Ok(())
     }
     
     pub fn stop_sftp(&self) {
-        let mut sftp_server = self.sftp_server.lock().unwrap();
-        if let Some(server) = sftp_server.take() {
-            server.stop();
-            self.logger.lock().unwrap().info("SFTP", "SFTP server stopped");
+        if let Some(runtime) = self.sftp_runtime.lock().unwrap().take() {
+            if let Some(server) = self.sftp_server.lock().unwrap().take() {
+                runtime.block_on(async {
+                    server.stop().await
+                });
+            }
+            runtime.shutdown_background();
         }
+        self.logger.lock().unwrap().info("SFTP", "SFTP server stopped");
     }
     
     pub fn is_sftp_running(&self) -> bool {

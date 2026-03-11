@@ -1,885 +1,1219 @@
 use anyhow::Result;
-use std::net::TcpListener;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use russh::*;
+use russh::keys::*;
+use russh::keys::ssh_key::rand_core::OsRng;
+use russh::server::Msg;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::collections::HashSet;
+use tokio::sync::Mutex;
 
 use crate::config::Config;
-use crate::users::UserManager;
 use crate::logger::Logger;
+use crate::users::UserManager;
 
 pub struct SftpServer {
-    config: Arc<Mutex<Config>>,
-    user_manager: Arc<Mutex<UserManager>>,
-    logger: Arc<Mutex<Logger>>,
-    running: Arc<Mutex<bool>>,
+    config: Arc<StdMutex<Config>>,
+    user_manager: Arc<StdMutex<UserManager>>,
+    logger: Arc<StdMutex<Logger>>,
+    running: Arc<StdMutex<bool>>,
+    shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
 impl SftpServer {
-    pub fn new(config: Arc<Mutex<Config>>, user_manager: Arc<Mutex<UserManager>>, 
-               logger: Arc<Mutex<Logger>>) -> Self {
+    pub fn new(
+        config: Arc<StdMutex<Config>>,
+        user_manager: Arc<StdMutex<UserManager>>,
+        logger: Arc<StdMutex<Logger>>,
+    ) -> Self {
         SftpServer {
             config,
             user_manager,
             logger,
-            running: Arc::new(Mutex::new(false)),
+            running: Arc::new(StdMutex::new(false)),
+            shutdown_tx: Arc::new(Mutex::new(None)),
         }
     }
-    
-    pub fn start(&self) -> Result<()> {
+
+    pub async fn start(&self) -> Result<()> {
         let (bind_ip, sftp_port, host_key_path) = {
             let cfg = self.config.lock().unwrap();
-            (cfg.server.bind_ip.clone(), cfg.server.sftp_port, cfg.sftp.host_key_path.clone())
+            (
+                cfg.server.bind_ip.clone(),
+                cfg.server.sftp_port,
+                cfg.sftp.host_key_path.clone(),
+            )
         };
-        let bind_addr = format!("{}:{}", bind_ip, sftp_port);
-        let listener = TcpListener::bind(&bind_addr)?;
-        
+
+        let host_key = Self::load_or_generate_host_key(&host_key_path).await?;
+
+        let config = russh::server::Config {
+            keys: vec![host_key],
+            ..Default::default()
+        };
+        let config = Arc::new(config);
+
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        {
+            let mut tx = self.shutdown_tx.lock().await;
+            *tx = Some(shutdown_tx);
+        }
+
         {
             let mut running = self.running.lock().unwrap();
             *running = true;
         }
-        
-        let config = Arc::clone(&self.config);
-        let user_manager = Arc::clone(&self.user_manager);
-        let logger = Arc::clone(&self.logger);
-        let running = Arc::clone(&self.running);
-        
-        let host_key = generate_or_load_host_key(&host_key_path)?;
-        
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let is_running = *running.lock().unwrap();
-                if !is_running {
-                    break;
-                }
-                
-                match stream {
-                    Ok(stream) => {
-                        let config = Arc::clone(&config);
-                        let user_manager = Arc::clone(&user_manager);
-                        let logger = Arc::clone(&logger);
-                        let host_key = host_key.clone();
-                        
-                        std::thread::spawn(move || {
-                            if let Err(e) = handle_ssh_connection(stream, &config, &user_manager, &logger, &host_key) {
-                                eprintln!("SSH connection error: {}", e);
-                            }
-                        });
+
+        let config_clone = Arc::clone(&self.config);
+        let user_manager_clone = Arc::clone(&self.user_manager);
+        let logger_clone = Arc::clone(&self.logger);
+        let running_clone = Arc::clone(&self.running);
+
+        let bind_addr = format!("{}:{}", bind_ip, sftp_port);
+        let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => {
+                        break;
                     }
-                    Err(e) => {
-                        eprintln!("Failed to accept SSH connection: {}", e);
+                    accept_result = listener.accept() => {
+                        match accept_result {
+                            Ok((socket, peer_addr)) => {
+                                let config = Arc::clone(&config);
+                                let config_clone = Arc::clone(&config_clone);
+                                let user_manager = Arc::clone(&user_manager_clone);
+                                let logger = Arc::clone(&logger_clone);
+
+                                tokio::spawn(async move {
+                                    let handler = SftpHandler {
+                                        config: config_clone,
+                                        user_manager,
+                                        logger,
+                                        authenticated: false,
+                                        username: None,
+                                        home_dir: None,
+                                        sftp_channel: None,
+                                        sftp_state: None,
+                                    };
+
+                                    if let Err(e) = russh::server::run_stream(config, socket, handler).await {
+                                        eprintln!("SSH connection error from {}: {}", peer_addr, e);
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to accept connection: {}", e);
+                            }
+                        }
                     }
                 }
             }
+
+            let mut running = running_clone.lock().unwrap();
+            *running = false;
         });
-        
+
+        self.logger.lock().unwrap().info("SFTP", &format!("SFTP server started on {}", bind_addr));
         Ok(())
     }
-    
-    pub fn stop(&self) {
-        let mut running = self.running.lock().unwrap();
-        *running = false;
+
+    pub async fn stop(&self) {
+        if let Some(tx) = self.shutdown_tx.lock().await.take() {
+            let _ = tx.send(());
+        }
+        {
+            let mut running = self.running.lock().unwrap();
+            *running = false;
+        }
+        self.logger.lock().unwrap().info("SFTP", "SFTP server stopped");
     }
-    
+
     pub fn is_running(&self) -> bool {
         *self.running.lock().unwrap()
     }
-}
 
-use std::io::{Read, Write};
-use std::fs::File;
+    async fn load_or_generate_host_key(path: &str) -> Result<PrivateKey> {
+        let path = PathBuf::from(path);
 
-#[derive(Clone)]
-#[allow(dead_code)]
-struct HostKey {
-    rsa_private: Vec<u8>,
-    rsa_public: Vec<u8>,
-}
-
-fn generate_or_load_host_key(path: &str) -> Result<HostKey> {
-    use rand::rngs::OsRng;
-    use rsa::{RsaPrivateKey, RsaPublicKey};
-    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
-    
-    let path = Path::new(path);
-    
-    if path.exists() {
-        let private_key = std::fs::read(path)?;
-        let public_path = path.with_extension("pub");
-        let public_key = if public_path.exists() {
-            std::fs::read(&public_path)?
-        } else {
-            vec![]
-        };
-        return Ok(HostKey {
-            rsa_private: private_key,
-            rsa_public: public_key,
-        });
-    }
-    
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    
-    let mut rng = OsRng;
-    let bits = 2048;
-    let private_key = RsaPrivateKey::new(&mut rng, bits)?;
-    let public_key = RsaPublicKey::from(&private_key);
-    
-    let private_pem = private_key.to_pkcs8_pem(LineEnding::LF)?;
-    let public_pem = public_key.to_public_key_pem(LineEnding::LF)?;
-    
-    std::fs::write(path, private_pem.as_bytes())?;
-    let public_path = path.with_extension("pub");
-    std::fs::write(&public_path, public_pem.as_bytes())?;
-    
-    Ok(HostKey {
-        rsa_private: private_pem.as_bytes().to_vec(),
-        rsa_public: public_pem.as_bytes().to_vec(),
-    })
-}
-
-fn handle_ssh_connection(mut stream: std::net::TcpStream,
-                         config: &Arc<Mutex<Config>>,
-                         user_manager: &Arc<Mutex<UserManager>>,
-                         logger: &Arc<Mutex<Logger>>,
-                         _host_key: &HostKey) -> Result<()> {
-    
-    let remote_addr = stream.peer_addr()?;
-    let remote_ip = remote_addr.ip().to_string();
-    
-    {
-        let cfg = config.lock().unwrap();
-        if !cfg.is_ip_allowed(&remote_ip) {
-            return Ok(());
+        if path.exists() {
+            let key_data = tokio::fs::read_to_string(&path).await?;
+            let key = PrivateKey::from_openssh(&key_data)?;
+            return Ok(key);
         }
-    }
-    
-    let auth_timeout = config.lock().unwrap().sftp.auth_timeout;
-    stream.set_read_timeout(Some(Duration::from_secs(auth_timeout)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-    
-    let server_version = b"SSH-2.0-WFTPG_SFTP_2.0\r\n";
-    stream.write_all(server_version)?;
-    
-    let mut client_version_buf = [0u8; 256];
-    let version_len = stream.read(&mut client_version_buf)?;
-    let client_version = String::from_utf8_lossy(&client_version_buf[..version_len]).to_string();
-    
-    logger.lock().unwrap().info("SFTP", &format!("Client: {}", client_version.trim()));
-    
-    let mut session_keys = SessionKeys::new();
-    
-    let mut kex_done = false;
-    let mut authenticated = false;
-    let mut current_user: Option<String> = None;
-    let mut home_dir = config.lock().unwrap().sftp.default_home.clone();
-    let mut sftp_initialized = false;
-    let _rest_offset: u64 = 0;
-    
-    loop {
-        let mut packet_len_buf = [0u8; 4];
-        match stream.read_exact(&mut packet_len_buf) {
-            Ok(_) => {},
-            Err(_) => break,
-        }
-        
-        let packet_len = u32::from_be_bytes(packet_len_buf) as usize;
-        if packet_len == 0 || packet_len > 1024 * 1024 {
-            break;
-        }
-        
-        let padding_len;
-        {
-            let mut first_byte = [0u8; 1];
-            stream.read_exact(&mut first_byte)?;
-            padding_len = first_byte[0] as usize;
-        }
-        
-        let payload_len = packet_len - 1 - padding_len;
-        let mut payload_buf = vec![0u8; payload_len];
-        stream.read_exact(&mut payload_buf)?;
-        
-        let mut padding_buf = vec![0u8; padding_len];
-        stream.read_exact(&mut padding_buf)?;
-        
-        let msg_type = payload_buf.first().copied().unwrap_or(0);
-        
-        if !kex_done {
-            match msg_type {
-                20 => {
-                    let response = handle_kex_init(&mut session_keys, &payload_buf)?;
-                    send_ssh_packet(&mut stream, &response)?;
-                }
-                
-                30 => {
-                    handle_kex_dh(&mut stream, &mut session_keys, &payload_buf)?;
-                    kex_done = true;
-                    
-                    let new_keys = build_new_keys_response();
-                    send_ssh_packet(&mut stream, &new_keys)?;
-                }
-                
-                _ => {}
-            }
-        } else if !authenticated {
-            match msg_type {
-                50 => {
-                    let username = extract_ssh_string(&payload_buf, 1);
-                    let method = extract_ssh_string(&payload_buf, username.len() + 5);
-                    
-                    if method == "password" {
-                        let password = extract_ssh_string(&payload_buf, username.len() + method.len() + 9);
-                        
-                        let mut users = user_manager.lock().unwrap();
-                        match users.authenticate(&username, &password) {
-                            Ok(true) => {
-                                authenticated = true;
-                                current_user = Some(username.clone());
-                                if let Some(user) = users.get_user(&username) {
-                                    home_dir = user.home_dir.clone();
-                                }
-                                
-                                let response = build_ssh_msg_userauth_success();
-                                send_ssh_packet(&mut stream, &response)?;
-                                
-                                logger.lock().unwrap().client_action("SFTP",
-                                    &format!("User {} logged in", username),
-                                    &remote_ip,
-                                    Some(&username), "LOGIN");
-                            }
-                            _ => {
-                                let response = build_ssh_msg_userauth_failure();
-                                send_ssh_packet(&mut stream, &response)?;
-                            }
-                        }
-                    } else if method == "publickey" {
-                        let response = build_ssh_msg_userauth_failure();
-                        send_ssh_packet(&mut stream, &response)?;
-                    } else {
-                        let response = build_ssh_msg_userauth_pk_ok();
-                        send_ssh_packet(&mut stream, &response)?;
-                    }
-                }
-                
-                1 => {
-                    if !authenticated {
-                        break;
-                    }
-                    
-                    let version = parse_u32(&payload_buf, 1);
-                    let response = build_sftp_version_response(version.min(6));
-                    send_ssh_packet(&mut stream, &response)?;
-                    sftp_initialized = true;
-                }
-                
-                _ => {}
-            }
-        } else if sftp_initialized {
-            match msg_type {
-                1 => {
-                    let version = parse_u32(&payload_buf, 1);
-                    let response = build_sftp_version_response(version.min(6));
-                    send_ssh_packet(&mut stream, &response)?;
-                }
-                
-                3 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let path_len = parse_u32(&payload_buf, 5) as usize;
-                    let path = String::from_utf8_lossy(&payload_buf[9..9+path_len]).to_string();
-                    
-                    let full_path = resolve_path(&home_dir, &path);
-                    
-                    if full_path.exists() && full_path.is_dir() {
-                        let handle = format!("dir_{:08x}", id);
-                        let response = build_sftp_handle_response(id, &handle);
-                        send_ssh_packet(&mut stream, &response)?;
-                    } else {
-                        let response = build_sftp_status_response(id, 2, "No such directory", "");
-                        send_ssh_packet(&mut stream, &response)?;
-                    }
-                }
-                
-                4 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let handle_len = parse_u32(&payload_buf, 5) as usize;
-                    let _handle = String::from_utf8_lossy(&payload_buf[9..9+handle_len]).to_string();
-                    
-                    let response = build_sftp_status_response(id, 0, "OK", "");
-                    send_ssh_packet(&mut stream, &response)?;
-                }
-                
-                5 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let path_len = parse_u32(&payload_buf, 5) as usize;
-                    let path = String::from_utf8_lossy(&payload_buf[9..9+path_len]).to_string();
-                    
-                    let full_path = resolve_path(&home_dir, &path);
-                    
-                    match std::fs::read_dir(&full_path) {
-                        Ok(entries) => {
-                            let mut names = Vec::new();
-                            let mut attrs_list = Vec::new();
-                            
-                            for entry in entries.flatten() {
-                                let name = entry.file_name().to_string_lossy().to_string();
-                                let long_name = format_long_name(&entry.path());
-                                names.push((name, long_name));
-                                
-                                if let Ok(metadata) = entry.metadata() {
-                                    attrs_list.push(build_file_attrs(&metadata));
-                                } else {
-                                    attrs_list.push(vec![0u8; 32]);
-                                }
-                            }
-                            
-                            let response = build_sftp_name_response_extended(id, &names, &attrs_list);
-                            send_ssh_packet(&mut stream, &response)?;
-                            
-                            logger.lock().unwrap().client_action("SFTP",
-                                &format!("Listed directory: {}", path),
-                                &remote_ip,
-                                current_user.as_deref(), "LIST");
-                        }
-                        Err(_) => {
-                            let response = build_sftp_status_response(id, 2, "No such file", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                        }
-                    }
-                }
-                
-                11 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let path_len = parse_u32(&payload_buf, 5) as usize;
-                    let path = String::from_utf8_lossy(&payload_buf[9..9+path_len]).to_string();
-                    
-                    let offset_pos = 9 + path_len;
-                    let offset = parse_u64(&payload_buf, offset_pos);
-                    let len_pos = offset_pos + 8;
-                    let length = parse_u32(&payload_buf, len_pos) as usize;
-                    
-                    let full_path = resolve_path(&home_dir, &path);
-                    
-                    {
-                        let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
-                            && !user.permissions.can_read {
-                                let response = build_sftp_status_response(id, 3, "Permission denied", "");
-                                send_ssh_packet(&mut stream, &response)?;
-                                continue;
-                            }
-                    }
-                    
-                    match File::open(&full_path) {
-                        Ok(mut file) => {
-                            use std::io::Seek;
-                            if offset > 0 {
-                                let _ = file.seek(std::io::SeekFrom::Start(offset));
-                            }
-                            
-                            let mut content = vec![0u8; length.min(32768)];
-                            match file.read(&mut content) {
-                                Ok(n) => {
-                                    content.truncate(n);
-                                    let response = build_sftp_data_response(id, &content);
-                                    send_ssh_packet(&mut stream, &response)?;
-                                    
-                                    logger.lock().unwrap().client_action("SFTP",
-                                        &format!("Downloaded: {} ({} bytes from offset {})", path, n, offset),
-                                        &remote_ip,
-                                        current_user.as_deref(), "DOWNLOAD");
-                                }
-                                Err(_) => {
-                                    let response = build_sftp_status_response(id, 4, "Read error", "");
-                                    send_ssh_packet(&mut stream, &response)?;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            let response = build_sftp_status_response(id, 2, "No such file", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                        }
-                    }
-                }
-                
-                6 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let path_len = parse_u32(&payload_buf, 5) as usize;
-                    let path = String::from_utf8_lossy(&payload_buf[9..9+path_len]).to_string();
-                    
-                    let offset_pos = 9 + path_len;
-                    let offset = parse_u64(&payload_buf, offset_pos);
-                    let len_pos = offset_pos + 8;
-                    let data_len = parse_u32(&payload_buf, len_pos) as usize;
-                    let data_start = len_pos + 4;
-                    let data = &payload_buf[data_start..data_start + data_len];
-                    
-                    {
-                        let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
-                            && !user.permissions.can_write {
-                                let response = build_sftp_status_response(id, 3, "Permission denied", "");
-                                send_ssh_packet(&mut stream, &response)?;
-                                continue;
-                            }
-                    }
-                    
-                    let full_path = resolve_path(&home_dir, &path);
-                    
-                    let result = if offset == 0 {
-                        std::fs::write(&full_path, data)
-                    } else {
-                        File::open(&full_path).and_then(|mut f| {
-                            use std::io::Seek;
-                            f.seek(std::io::SeekFrom::Start(offset))?;
-                            f.write_all(data)
-                        })
-                    };
-                    
-                    match result {
-                        Ok(_) => {
-                            let response = build_sftp_status_response(id, 0, "OK", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                            
-                            logger.lock().unwrap().client_action("SFTP",
-                                &format!("Uploaded: {} ({} bytes at offset {})", path, data_len, offset),
-                                &remote_ip,
-                                current_user.as_deref(), "UPLOAD");
-                        }
-                        Err(_) => {
-                            let response = build_sftp_status_response(id, 4, "Write error", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                        }
-                    }
-                }
-                
-                13 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let path_len = parse_u32(&payload_buf, 5) as usize;
-                    let path = String::from_utf8_lossy(&payload_buf[9..9+path_len]).to_string();
-                    
-                    {
-                        let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
-                            && !user.permissions.can_delete {
-                                let response = build_sftp_status_response(id, 3, "Permission denied", "");
-                                send_ssh_packet(&mut stream, &response)?;
-                                continue;
-                            }
-                    }
-                    
-                    let full_path = resolve_path(&home_dir, &path);
-                    
-                    match std::fs::remove_file(&full_path) {
-                        Ok(_) => {
-                            let response = build_sftp_status_response(id, 0, "OK", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                            
-                            logger.lock().unwrap().client_action("SFTP",
-                                &format!("Deleted: {}", path),
-                                &remote_ip,
-                                current_user.as_deref(), "DELETE");
-                        }
-                        Err(_) => {
-                            let response = build_sftp_status_response(id, 2, "Delete failed", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                        }
-                    }
-                }
-                
-                14 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let path_len = parse_u32(&payload_buf, 5) as usize;
-                    let path = String::from_utf8_lossy(&payload_buf[9..9+path_len]).to_string();
-                    
-                    {
-                        let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
-                            && !user.permissions.can_mkdir {
-                                let response = build_sftp_status_response(id, 3, "Permission denied", "");
-                                send_ssh_packet(&mut stream, &response)?;
-                                continue;
-                            }
-                    }
-                    
-                    let full_path = resolve_path(&home_dir, &path);
-                    
-                    match std::fs::create_dir_all(&full_path) {
-                        Ok(_) => {
-                            let response = build_sftp_status_response(id, 0, "OK", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                            
-                            logger.lock().unwrap().client_action("SFTP",
-                                &format!("Created directory: {}", path),
-                                &remote_ip,
-                                current_user.as_deref(), "MKDIR");
-                        }
-                        Err(_) => {
-                            let response = build_sftp_status_response(id, 4, "Create failed", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                        }
-                    }
-                }
-                
-                15 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let path_len = parse_u32(&payload_buf, 5) as usize;
-                    let path = String::from_utf8_lossy(&payload_buf[9..9+path_len]).to_string();
-                    
-                    {
-                        let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
-                            && !user.permissions.can_rmdir {
-                                let response = build_sftp_status_response(id, 3, "Permission denied", "");
-                                send_ssh_packet(&mut stream, &response)?;
-                                continue;
-                            }
-                    }
-                    
-                    let full_path = resolve_path(&home_dir, &path);
-                    
-                    match std::fs::remove_dir_all(&full_path) {
-                        Ok(_) => {
-                            let response = build_sftp_status_response(id, 0, "OK", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                            
-                            logger.lock().unwrap().client_action("SFTP",
-                                &format!("Removed directory: {}", path),
-                                &remote_ip,
-                                current_user.as_deref(), "RMDIR");
-                        }
-                        Err(_) => {
-                            let response = build_sftp_status_response(id, 4, "Remove failed", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                        }
-                    }
-                }
-                
-                16 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let old_path_len = parse_u32(&payload_buf, 5) as usize;
-                    let old_path = String::from_utf8_lossy(&payload_buf[9..9+old_path_len]).to_string();
-                    
-                    let new_path_start = 9 + old_path_len + 4;
-                    let new_path_len = parse_u32(&payload_buf, 9 + old_path_len) as usize;
-                    let new_path = String::from_utf8_lossy(&payload_buf[new_path_start..new_path_start+new_path_len]).to_string();
-                    
-                    {
-                        let users = user_manager.lock().unwrap();
-                        if let Some(user) = current_user.as_ref().and_then(|u| users.get_user(u))
-                            && !user.permissions.can_rename {
-                                let response = build_sftp_status_response(id, 3, "Permission denied", "");
-                                send_ssh_packet(&mut stream, &response)?;
-                                continue;
-                            }
-                    }
-                    
-                    let old_full = resolve_path(&home_dir, &old_path);
-                    let new_full = resolve_path(&home_dir, &new_path);
-                    
-                    match std::fs::rename(&old_full, &new_full) {
-                        Ok(_) => {
-                            let response = build_sftp_status_response(id, 0, "OK", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                            
-                            logger.lock().unwrap().client_action("SFTP",
-                                &format!("Renamed: {} -> {}", old_path, new_path),
-                                &remote_ip,
-                                current_user.as_deref(), "RENAME");
-                        }
-                        Err(_) => {
-                            let response = build_sftp_status_response(id, 4, "Rename failed", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                        }
-                    }
-                }
-                
-                17 => {
-                    let id = parse_u32(&payload_buf, 1);
-                    let path_len = parse_u32(&payload_buf, 5) as usize;
-                    let path = String::from_utf8_lossy(&payload_buf[9..9+path_len]).to_string();
-                    
-                    let full_path = resolve_path(&home_dir, &path);
-                    
-                    match std::fs::metadata(&full_path) {
-                        Ok(metadata) => {
-                            let attrs = build_file_attrs(&metadata);
-                            let response = build_sftp_attrs_response(id, &attrs);
-                            send_ssh_packet(&mut stream, &response)?;
-                        }
-                        Err(_) => {
-                            let response = build_sftp_status_response(id, 2, "No such file", "");
-                            send_ssh_packet(&mut stream, &response)?;
-                        }
-                    }
-                }
-                
-                _ => {
-                    let response = build_sftp_status_response(0, 8, "Unsupported", "");
-                    send_ssh_packet(&mut stream, &response)?;
-                }
-            }
-        } else {
-            if msg_type == 1 {
-                let version = parse_u32(&payload_buf, 1);
-                let response = build_sftp_version_response(version.min(6));
-                send_ssh_packet(&mut stream, &response)?;
-                sftp_initialized = true;
-            }
-        }
-    }
-    
-    Ok(())
-}
 
-#[allow(dead_code)]
-struct SessionKeys {
-    session_id: Option<Vec<u8>>,
-    client_kex_data: Vec<u8>,
-    server_kex_data: Vec<u8>,
-}
-
-impl SessionKeys {
-    fn new() -> Self {
-        SessionKeys {
-            session_id: None,
-            client_kex_data: Vec::new(),
-            server_kex_data: Vec::new(),
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
         }
-    }
-}
 
-fn handle_kex_init(session_keys: &mut SessionKeys, payload: &[u8]) -> Result<Vec<u8>> {
-    session_keys.client_kex_data = payload.to_vec();
-    
-    let mut server_kex = vec![20u8];
-    server_kex.extend_from_slice(&[0, 0, 0, 64]);
-    server_kex.extend_from_slice(b"curve25519-sha256,diffie-hellman-group14-sha256");
-    server_kex.extend_from_slice(&[0, 0, 0, 44]);
-    server_kex.extend_from_slice(b"rsa-sha2-256,ssh-ed25519");
-    server_kex.extend_from_slice(&[0, 0, 0, 52]);
-    server_kex.extend_from_slice(b"aes256-ctr,aes256-gcm@openssh.com,chacha20-poly1305");
-    server_kex.extend_from_slice(&[0, 0, 0, 52]);
-    server_kex.extend_from_slice(b"aes256-ctr,aes256-gcm@openssh.com,chacha20-poly1305");
-    server_kex.extend_from_slice(&[0, 0, 0, 24]);
-    server_kex.extend_from_slice(b"hmac-sha2-256,hmac-sha2-512");
-    server_kex.extend_from_slice(&[0, 0, 0, 24]);
-    server_kex.extend_from_slice(b"hmac-sha2-256,hmac-sha2-512");
-    server_kex.extend_from_slice(&[0, 0, 0, 12]);
-    server_kex.extend_from_slice(b"none,zlib");
-    server_kex.extend_from_slice(&[0, 0, 0, 12]);
-    server_kex.extend_from_slice(b"none,zlib");
-    server_kex.extend_from_slice(&[0, 0, 0, 0]);
-    server_kex.extend_from_slice(&[0, 0, 0, 0]);
-    server_kex.extend_from_slice(&[0]);
-    server_kex.extend_from_slice(&[0, 0, 0, 0]);
-    
-    session_keys.server_kex_data = server_kex.clone();
-    Ok(server_kex)
-}
-
-fn handle_kex_dh(stream: &mut std::net::TcpStream, _session_keys: &mut SessionKeys, _payload: &[u8]) -> Result<()> {
-    use rand::rngs::OsRng;
-    
-    let mut server_kex_reply = vec![31u8];
-    
-    let public_key_blob = b"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC";
-    server_kex_reply.extend_from_slice(&(public_key_blob.len() as u32).to_be_bytes());
-    server_kex_reply.extend_from_slice(public_key_blob);
-    
-    let f_bytes: [u8; 32] = {
         let mut rng = OsRng;
-        use rand::RngCore;
-        let mut bytes = [0u8; 32];
-        rng.fill_bytes(&mut bytes);
-        bytes
-    };
-    
-    server_kex_reply.extend_from_slice(&(f_bytes.len() as u32).to_be_bytes());
-    server_kex_reply.extend_from_slice(&f_bytes);
-    
-    let mut signature: Vec<u8> = b"\x00\x00\x00\x0cssh-rsa\x00\x00\x00\x40".to_vec();
-    signature.extend_from_slice(&[0u8; 64]);
-    server_kex_reply.extend_from_slice(&(signature.len() as u32).to_be_bytes());
-    server_kex_reply.extend_from_slice(&signature);
-    
-    send_ssh_packet(stream, &server_kex_reply)?;
-    
-    Ok(())
-}
+        let key = PrivateKey::random(&mut rng, keys::Algorithm::Ed25519)?;
 
-fn build_new_keys_response() -> Vec<u8> {
-    vec![21u8]
-}
+        let openssh = key.to_openssh(keys::ssh_key::LineEnding::default())?;
+        tokio::fs::write(&path, openssh.to_string()).await?;
 
-fn build_ssh_msg_userauth_success() -> Vec<u8> {
-    vec![52u8]
-}
+        let pub_path = path.with_extension("pub");
+        let public_key = key.public_key();
+        let pub_openssh = public_key.to_openssh()?;
+        tokio::fs::write(&pub_path, pub_openssh.to_string()).await?;
 
-fn build_ssh_msg_userauth_failure() -> Vec<u8> {
-    let mut payload = vec![51u8];
-    payload.extend_from_slice(&8u32.to_be_bytes());
-    payload.extend_from_slice(b"password");
-    payload.push(0);
-    payload
-}
-
-fn build_ssh_msg_userauth_pk_ok() -> Vec<u8> {
-    let mut payload = vec![60u8];
-    payload.extend_from_slice(&7u32.to_be_bytes());
-    payload.extend_from_slice(b"ssh-rsa");
-    payload.extend_from_slice(&0u32.to_be_bytes());
-    payload
-}
-
-fn send_ssh_packet(stream: &mut std::net::TcpStream, payload: &[u8]) -> Result<()> {
-    let padding_len = ((8 - (payload.len() + 5) % 8) % 8) + 4;
-    let packet_len = 1 + payload.len() + padding_len;
-    
-    let mut packet = Vec::new();
-    packet.extend_from_slice(&(packet_len as u32).to_be_bytes());
-    packet.push(padding_len as u8);
-    packet.extend_from_slice(payload);
-    packet.extend_from_slice(&vec![0u8; padding_len]);
-    
-    stream.write_all(&packet)?;
-    Ok(())
-}
-
-fn resolve_path(home_dir: &str, path: &str) -> std::path::PathBuf {
-    if path.starts_with('/') {
-        std::path::PathBuf::from(path)
-    } else {
-        std::path::PathBuf::from(home_dir).join(path)
+        Ok(key)
     }
 }
 
-fn format_long_name(path: &std::path::Path) -> String {
-    match std::fs::metadata(path) {
-        Ok(metadata) => {
-            let is_dir = metadata.is_dir();
-            let mode = if is_dir { "drwxr-xr-x" } else { "-rw-r--r--" };
-            let size = metadata.len();
-            let name = path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            format!("{} 1 user user {:>10} Jan 01 00:00 {}", mode, size, name)
-        }
-        Err(_) => "?????????? ? ? ? ? ? ?".to_string()
-    }
+struct SftpHandler {
+    config: Arc<StdMutex<Config>>,
+    user_manager: Arc<StdMutex<UserManager>>,
+    logger: Arc<StdMutex<Logger>>,
+    authenticated: bool,
+    username: Option<String>,
+    home_dir: Option<String>,
+    sftp_channel: Option<ChannelId>,
+    sftp_state: Option<Arc<Mutex<SftpState>>>,
 }
 
-fn build_file_attrs(metadata: &std::fs::Metadata) -> Vec<u8> {
-    let mut attrs = Vec::new();
-    
-    let permissions = if metadata.is_dir() { 0o755u32 } else { 0o644u32 };
-    attrs.extend_from_slice(&permissions.to_be_bytes());
-    
-    attrs.extend_from_slice(&0u64.to_be_bytes());
-    attrs.extend_from_slice(&0u64.to_be_bytes());
-    
-    attrs.extend_from_slice(&metadata.len().to_be_bytes());
-    
-    attrs.extend_from_slice(&0u32.to_be_bytes());
-    attrs.extend_from_slice(&0u32.to_be_bytes());
-    attrs.extend_from_slice(&0u32.to_be_bytes());
-    attrs.extend_from_slice(&0u32.to_be_bytes());
-    
-    attrs
+struct SftpState {
+    home_dir: String,
+    username: Option<String>,
+    user_manager: Arc<StdMutex<UserManager>>,
+    logger: Arc<StdMutex<Logger>>,
+    config: Arc<StdMutex<Config>>,
+    handles: HashMap<String, SftpFileHandle>,
+    next_handle_id: u32,
+    sftp_version: u32,
+    buffer: Vec<u8>,
+    locked_files: HashSet<PathBuf>,
 }
 
-fn parse_u32(data: &[u8], offset: usize) -> u32 {
-    if offset + 4 > data.len() {
-        return 0;
-    }
-    u32::from_be_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]])
+enum SftpFileHandle {
+    File {
+        path: PathBuf,
+        file: tokio::fs::File,
+        locked: bool,
+    },
+    Dir {
+        path: PathBuf,
+        entries: Vec<(String, bool, u64)>,
+        index: usize,
+    },
 }
 
-fn parse_u64(data: &[u8], offset: usize) -> u64 {
-    if offset + 8 > data.len() {
-        return 0;
-    }
-    u64::from_be_bytes([
-        data[offset], data[offset+1], data[offset+2], data[offset+3],
-        data[offset+4], data[offset+5], data[offset+6], data[offset+7]
-    ])
-}
+impl russh::server::Handler for SftpHandler {
+    type Error = anyhow::Error;
 
-fn extract_ssh_string(data: &[u8], offset: usize) -> String {
-    if offset + 4 > data.len() {
-        return String::new();
-    }
-    let len = parse_u32(data, offset) as usize;
-    if offset + 4 + len > data.len() {
-        return String::new();
-    }
-    String::from_utf8_lossy(&data[offset+4..offset+4+len]).to_string()
-}
-
-fn build_sftp_packet(payload: &[u8]) -> Vec<u8> {
-    let mut packet = Vec::new();
-    packet.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    packet.extend_from_slice(payload);
-    packet
-}
-
-fn build_sftp_version_response(version: u32) -> Vec<u8> {
-    let mut payload = vec![2u8];
-    payload.extend_from_slice(&version.to_be_bytes());
-    build_sftp_packet(&payload)
-}
-
-fn build_sftp_handle_response(id: u32, handle: &str) -> Vec<u8> {
-    let mut payload = vec![102u8];
-    payload.extend_from_slice(&id.to_be_bytes());
-    payload.extend_from_slice(&(handle.len() as u32).to_be_bytes());
-    payload.extend_from_slice(handle.as_bytes());
-    build_sftp_packet(&payload)
-}
-
-fn build_sftp_status_response(id: u32, status: u32, msg: &str, lang: &str) -> Vec<u8> {
-    let mut payload = vec![101u8];
-    payload.extend_from_slice(&id.to_be_bytes());
-    payload.extend_from_slice(&status.to_be_bytes());
-    payload.extend_from_slice(&(msg.len() as u32).to_be_bytes());
-    payload.extend_from_slice(msg.as_bytes());
-    payload.extend_from_slice(&(lang.len() as u32).to_be_bytes());
-    payload.extend_from_slice(lang.as_bytes());
-    build_sftp_packet(&payload)
-}
-
-fn build_sftp_data_response(id: u32, data: &[u8]) -> Vec<u8> {
-    let mut payload = vec![103u8];
-    payload.extend_from_slice(&id.to_be_bytes());
-    payload.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    payload.extend_from_slice(data);
-    build_sftp_packet(&payload)
-}
-
-fn build_sftp_name_response_extended(id: u32, names: &[(String, String)], attrs: &[Vec<u8>]) -> Vec<u8> {
-    let mut payload = vec![104u8];
-    payload.extend_from_slice(&id.to_be_bytes());
-    payload.extend_from_slice(&(names.len() as u32).to_be_bytes());
-    
-    for (i, (name, long_name)) in names.iter().enumerate() {
-        payload.extend_from_slice(&(name.len() as u32).to_be_bytes());
-        payload.extend_from_slice(name.as_bytes());
-        payload.extend_from_slice(&(long_name.len() as u32).to_be_bytes());
-        payload.extend_from_slice(long_name.as_bytes());
+    async fn auth_password(
+        &mut self,
+        user: &str,
+        password: &str,
+    ) -> Result<server::Auth, Self::Error> {
+        let mut users = self.user_manager.lock().unwrap();
         
-        if i < attrs.len() {
-            payload.extend_from_slice(&attrs[i]);
-        } else {
-            payload.extend_from_slice(&[0u8; 32]);
+        match users.authenticate(user, password) {
+            Ok(true) => {
+                self.authenticated = true;
+                self.username = Some(user.to_string());
+                
+                if let Some(u) = users.get_user(user) {
+                    self.home_dir = Some(u.home_dir.clone());
+                }
+
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    &format!("User {} logged in", user),
+                    "",
+                    Some(user),
+                    "LOGIN",
+                );
+
+                Ok(server::Auth::Accept)
+            }
+            Ok(false) => {
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    &format!("Failed login attempt for user {}", user),
+                    "",
+                    None,
+                    "AUTH_FAIL",
+                );
+                Ok(server::Auth::Reject { 
+                    proceed_with_methods: None,
+                    partial_success: false,
+                })
+            }
+            Err(_) => {
+                Ok(server::Auth::Reject { 
+                    proceed_with_methods: None,
+                    partial_success: false,
+                })
+            }
         }
     }
-    
-    build_sftp_packet(&payload)
+
+    async fn auth_publickey(
+        &mut self,
+        user: &str,
+        public_key: &PublicKey,
+    ) -> Result<server::Auth, Self::Error> {
+        let (enabled, user_pubkey_path) = {
+            let users = self.user_manager.lock().unwrap();
+            if let Some(u) = users.get_user(user) {
+                (u.enabled, format!("/etc/wftpg/keys/{}.pub", user))
+            } else {
+                (false, String::new())
+            }
+        };
+        
+        if enabled
+            && let Ok(stored_key) = tokio::fs::read_to_string(&user_pubkey_path).await
+            && let Ok(stored_pubkey) = keys::parse_public_key_base64(stored_key.trim())
+            && public_key == &stored_pubkey {
+            self.authenticated = true;
+            self.username = Some(user.to_string());
+            
+            let users = self.user_manager.lock().unwrap();
+            if let Some(u) = users.get_user(user) {
+                self.home_dir = Some(u.home_dir.clone());
+            }
+
+            return Ok(server::Auth::Accept);
+        }
+
+        Ok(server::Auth::Reject { 
+            proceed_with_methods: None,
+            partial_success: false,
+        })
+    }
+
+    async fn channel_open_session(
+        &mut self,
+        _channel: Channel<Msg>,
+        _session: &mut server::Session,
+    ) -> Result<bool, Self::Error> {
+        Ok(self.authenticated)
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        name: &str,
+        session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        if name == "sftp" && self.authenticated {
+            let _ = session.channel_success(channel);
+            
+            self.sftp_channel = Some(channel);
+            
+            let home_dir = self.home_dir.clone().unwrap_or_else(|| "/tmp".to_string());
+            let username = self.username.clone();
+            
+            self.sftp_state = Some(Arc::new(Mutex::new(SftpState {
+                home_dir,
+                username,
+                user_manager: Arc::clone(&self.user_manager),
+                logger: Arc::clone(&self.logger),
+                config: Arc::clone(&self.config),
+                handles: HashMap::new(),
+                next_handle_id: 0,
+                sftp_version: 3,
+                buffer: Vec::new(),
+                locked_files: HashSet::new(),
+            })));
+        } else {
+            let _ = session.channel_failure(channel);
+        }
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        if self.sftp_channel == Some(channel)
+            && let Some(state) = &self.sftp_state {
+            let state_clone = Arc::clone(state);
+            let handle = session.handle();
+            let data_vec = data.to_vec();
+            
+            tokio::spawn(async move {
+                let response = {
+                    let mut state = state_clone.lock().await;
+                    state.process_sftp_data(&data_vec).await
+                };
+                
+                if let Ok(resp) = response {
+                    let _ = handle.data(channel, CryptoVec::from_slice(&resp)).await;
+                }
+            });
+        }
+        Ok(())
+    }
 }
 
-fn build_sftp_attrs_response(id: u32, attrs: &[u8]) -> Vec<u8> {
-    let mut payload = vec![105u8];
-    payload.extend_from_slice(&id.to_be_bytes());
-    payload.extend_from_slice(attrs);
-    build_sftp_packet(&payload)
+impl SftpState {
+    async fn process_sftp_data(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        self.buffer.extend_from_slice(data);
+        
+        while self.buffer.len() >= 4 {
+            let packet_len = u32::from_be_bytes([
+                self.buffer[0], self.buffer[1], self.buffer[2], self.buffer[3]
+            ]) as usize;
+            
+            if self.buffer.len() < 4 + packet_len {
+                break;
+            }
+            
+            let packet: Vec<u8> = self.buffer[4..4 + packet_len].to_vec();
+            self.buffer.drain(0..4 + packet_len);
+            
+            if !packet.is_empty() {
+                let response = self.handle_sftp_packet(&packet).await?;
+                return Ok(response);
+            }
+        }
+        
+        Ok(Vec::new())
+    }
+
+    fn check_permission(&self, check_fn: impl Fn(&crate::users::Permissions) -> bool) -> bool {
+        let users = self.user_manager.lock().unwrap();
+        if let Some(username) = &self.username
+            && let Some(user) = users.get_user(username) {
+            return check_fn(&user.permissions);
+        }
+        false
+    }
+
+    async fn handle_sftp_packet(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        if data.is_empty() {
+            return Ok(self.build_status_packet(0, 4, "Bad packet", ""));
+        }
+
+        let msg_type = data[0];
+
+        match msg_type {
+            1 => self.handle_init(data).await,
+            3 => self.handle_open(data).await,
+            4 => self.handle_close(data).await,
+            5 => self.handle_read(data).await,
+            6 => self.handle_write(data).await,
+            7 => self.handle_lstat(data).await,
+            8 => self.handle_fstat(data).await,
+            9 => self.handle_mkdir(data).await,
+            10 => self.handle_rmdir(data).await,
+            11 => self.handle_realpath(data).await,
+            12 => self.handle_stat(data).await,
+            13 => self.handle_remove(data).await,
+            14 => self.handle_mkdir(data).await,
+            15 => self.handle_rmdir(data).await,
+            16 => self.handle_rename(data).await,
+            17 => self.handle_readlink(data).await,
+            18 => self.handle_symlink(data).await,
+            20 => self.handle_opendir(data).await,
+            21 => self.handle_readdir(data).await,
+            22 => self.handle_remove(data).await,
+            40 => self.handle_lock(data).await,
+            41 => self.handle_unlock(data).await,
+            200 => self.handle_extended(data).await,
+            _ => Ok(self.build_status_packet(0, 8, "Unsupported operation", "")),
+        }
+    }
+
+    async fn handle_init(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let version = if data.len() >= 5 {
+            u32::from_be_bytes([data[1], data[2], data[3], data[4]])
+        } else {
+            3
+        };
+
+        self.sftp_version = version.min(6);
+
+        let mut payload = vec![2];
+        payload.extend_from_slice(&self.sftp_version.to_be_bytes());
+        Ok(self.build_packet(&payload))
+    }
+
+    async fn handle_opendir(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let path = self.parse_string(data, 5)?;
+
+        let full_path = self.resolve_path(&path);
+
+        if !full_path.exists() {
+            return Ok(self.build_status_packet(id, 2, "No such directory", ""));
+        }
+
+        if !full_path.is_dir() {
+            return Ok(self.build_status_packet(id, 4, "Not a directory", ""));
+        }
+
+        let handle = self.generate_handle();
+        self.handles.insert(handle.clone(), SftpFileHandle::Dir {
+            path: full_path,
+            entries: Vec::new(),
+            index: 0,
+        });
+
+        Ok(self.build_handle_packet(id, &handle))
+    }
+
+    async fn handle_close(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let handle = self.parse_string(data, 5)?;
+
+        self.handles.remove(&handle);
+        Ok(self.build_status_packet(id, 0, "OK", ""))
+    }
+
+    async fn handle_readdir(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let handle_str = self.parse_string(data, 5)?;
+
+        let entries_result = {
+            let handle = self.handles.get_mut(&handle_str);
+            match handle {
+                Some(SftpFileHandle::Dir { path, entries, index }) => {
+                    if entries.is_empty() {
+                        let mut read_entries = Vec::new();
+                        if let Ok(mut dir) = tokio::fs::read_dir(path).await {
+                            while let Ok(Some(entry)) = dir.next_entry().await {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+                                let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                                read_entries.push((name, is_dir, size));
+                            }
+                        }
+                        *entries = read_entries;
+                        *index = 0;
+                    }
+
+                    if *index >= entries.len() {
+                        return Ok(self.build_status_packet(id, 1, "End of directory", ""));
+                    }
+
+                    let count = (entries.len() - *index).min(100);
+                    let result_entries: Vec<(String, bool, u64)> = entries[*index..*index + count].to_vec();
+                    *index += count;
+                    Some(result_entries)
+                }
+                _ => None,
+            }
+        };
+
+        match entries_result {
+            Some(dir_entries) => {
+                let mut payload = vec![104];
+                payload.extend_from_slice(&id.to_be_bytes());
+                payload.extend_from_slice(&(dir_entries.len() as u32).to_be_bytes());
+
+                for (name, is_dir, size) in dir_entries {
+                    payload.extend_from_slice(&(name.len() as u32).to_be_bytes());
+                    payload.extend_from_slice(name.as_bytes());
+                    
+                    let long_name = format!("{} 1 user user {:>10} Jan 01 00:00 {}", 
+                        if is_dir { "drwxr-xr-x" } else { "-rw-r--r--" },
+                        size, name
+                    );
+                    payload.extend_from_slice(&(long_name.len() as u32).to_be_bytes());
+                    payload.extend_from_slice(long_name.as_bytes());
+                    
+                    payload.extend_from_slice(&self.build_attrs(is_dir, size));
+                }
+
+                Ok(self.build_packet(&payload))
+            }
+            None => Ok(self.build_status_packet(id, 4, "Invalid handle", "")),
+        }
+    }
+
+    async fn handle_read(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let handle_str = self.parse_string(data, 5)?;
+        let offset = self.parse_u64(data, 5 + 4 + handle_str.len());
+        let len = self.parse_u32(data, 5 + 4 + handle_str.len() + 8) as usize;
+
+        if !self.check_permission(|p| p.can_read) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let handle = self.handles.get_mut(&handle_str);
+        match handle {
+            Some(SftpFileHandle::File { path, file, .. }) => {
+                use tokio::io::{AsyncSeekExt, AsyncReadExt};
+                let _ = file.seek(std::io::SeekFrom::Start(offset)).await;
+                
+                let mut buffer = vec![0u8; len.min(32768)];
+                let n = file.read(&mut buffer).await.unwrap_or(0);
+                buffer.truncate(n);
+
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    &format!("Read {} bytes from {:?}", n, path),
+                    "",
+                    self.username.as_deref(),
+                    "READ",
+                );
+
+                Ok(self.build_data_packet(id, &buffer))
+            }
+            _ => Ok(self.build_status_packet(id, 4, "Invalid handle", "")),
+        }
+    }
+
+    async fn handle_write(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let handle_str = self.parse_string(data, 5)?;
+        let offset_pos = 5 + 4 + handle_str.len();
+        let offset = self.parse_u64(data, offset_pos);
+        let data_len = self.parse_u32(data, offset_pos + 8) as usize;
+        let write_data = &data[offset_pos + 12..offset_pos + 12 + data_len];
+
+        if !self.check_permission(|p| p.can_write) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let handle = self.handles.get_mut(&handle_str);
+        match handle {
+            Some(SftpFileHandle::File { path, file, .. }) => {
+                use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+                let _ = file.seek(std::io::SeekFrom::Start(offset)).await;
+                file.write_all(write_data).await?;
+                let _ = file.flush().await;
+
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    &format!("Wrote {} bytes to {:?}", data_len, path),
+                    "",
+                    self.username.as_deref(),
+                    "WRITE",
+                );
+
+                Ok(self.build_status_packet(id, 0, "OK", ""))
+            }
+            _ => Ok(self.build_status_packet(id, 4, "Invalid handle", "")),
+        }
+    }
+
+    async fn handle_remove(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let path = self.parse_string(data, 5)?;
+
+        if !self.check_permission(|p| p.can_delete) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let full_path = self.resolve_path(&path);
+
+        if tokio::fs::remove_file(&full_path).await.is_ok() {
+            self.logger.lock().unwrap().client_action(
+                "SFTP",
+                &format!("Removed file: {}", path),
+                "",
+                self.username.as_deref(),
+                "DELETE",
+            );
+            Ok(self.build_status_packet(id, 0, "OK", ""))
+        } else {
+            Ok(self.build_status_packet(id, 4, "Failed to remove file", ""))
+        }
+    }
+
+    async fn handle_mkdir(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let path = self.parse_string(data, 5)?;
+
+        if !self.check_permission(|p| p.can_mkdir) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let full_path = self.resolve_path(&path);
+
+        if tokio::fs::create_dir_all(&full_path).await.is_ok() {
+            self.logger.lock().unwrap().client_action(
+                "SFTP",
+                &format!("Created directory: {}", path),
+                "",
+                self.username.as_deref(),
+                "MKDIR",
+            );
+            Ok(self.build_status_packet(id, 0, "OK", ""))
+        } else {
+            Ok(self.build_status_packet(id, 4, "Failed to create directory", ""))
+        }
+    }
+
+    async fn handle_rmdir(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let path = self.parse_string(data, 5)?;
+
+        if !self.check_permission(|p| p.can_rmdir) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let full_path = self.resolve_path(&path);
+
+        if tokio::fs::remove_dir_all(&full_path).await.is_ok() {
+            self.logger.lock().unwrap().client_action(
+                "SFTP",
+                &format!("Removed directory: {}", path),
+                "",
+                self.username.as_deref(),
+                "RMDIR",
+            );
+            Ok(self.build_status_packet(id, 0, "OK", ""))
+        } else {
+            Ok(self.build_status_packet(id, 4, "Failed to remove directory", ""))
+        }
+    }
+
+    async fn handle_rename(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let old_path = self.parse_string(data, 5)?;
+        let new_path_pos = 5 + 4 + old_path.len();
+        let new_path = self.parse_string(data, new_path_pos)?;
+
+        if !self.check_permission(|p| p.can_rename) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let old_full = self.resolve_path(&old_path);
+        let new_full = self.resolve_path(&new_path);
+
+        if tokio::fs::rename(&old_full, &new_full).await.is_ok() {
+            self.logger.lock().unwrap().client_action(
+                "SFTP",
+                &format!("Renamed: {} -> {}", old_path, new_path),
+                "",
+                self.username.as_deref(),
+                "RENAME",
+            );
+            Ok(self.build_status_packet(id, 0, "OK", ""))
+        } else {
+            Ok(self.build_status_packet(id, 4, "Failed to rename", ""))
+        }
+    }
+
+    async fn handle_stat(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let path = self.parse_string(data, 5)?;
+
+        let full_path = self.resolve_path(&path);
+
+        match tokio::fs::metadata(&full_path).await {
+            Ok(metadata) => {
+                let mut payload = vec![105];
+                payload.extend_from_slice(&id.to_be_bytes());
+                payload.extend_from_slice(&self.build_attrs(metadata.is_dir(), metadata.len()));
+                Ok(self.build_packet(&payload))
+            }
+            Err(_) => Ok(self.build_status_packet(id, 2, "No such file", "")),
+        }
+    }
+
+    async fn handle_lstat(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        self.handle_stat(data).await
+    }
+
+    async fn handle_fstat(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let handle_str = self.parse_string(data, 5)?;
+
+        let handle = self.handles.get(&handle_str);
+        match handle {
+            Some(SftpFileHandle::File { path, .. }) => {
+                match tokio::fs::metadata(path).await {
+                    Ok(metadata) => {
+                        let mut payload = vec![105];
+                        payload.extend_from_slice(&id.to_be_bytes());
+                        payload.extend_from_slice(&self.build_attrs(metadata.is_dir(), metadata.len()));
+                        Ok(self.build_packet(&payload))
+                    }
+                    Err(_) => Ok(self.build_status_packet(id, 2, "No such file", "")),
+                }
+            }
+            _ => Ok(self.build_status_packet(id, 4, "Invalid handle", "")),
+        }
+    }
+
+    async fn handle_realpath(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let path = self.parse_string(data, 5)?;
+
+        let full_path = self.resolve_path(&path);
+        let resolved = full_path.canonicalize().unwrap_or(full_path);
+        let path_str = resolved.to_string_lossy().to_string();
+
+        let mut payload = vec![104];
+        payload.extend_from_slice(&id.to_be_bytes());
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.extend_from_slice(&(path_str.len() as u32).to_be_bytes());
+        payload.extend_from_slice(path_str.as_bytes());
+        payload.extend_from_slice(&(path_str.len() as u32).to_be_bytes());
+        payload.extend_from_slice(path_str.as_bytes());
+        payload.extend_from_slice(&self.build_attrs(false, 0));
+
+        Ok(self.build_packet(&payload))
+    }
+
+    fn resolve_path(&self, path: &str) -> PathBuf {
+        if path.starts_with('/') {
+            PathBuf::from(path)
+        } else {
+            PathBuf::from(&self.home_dir).join(path)
+        }
+    }
+
+    fn generate_handle(&mut self) -> String {
+        let handle = format!("h{:08x}", self.next_handle_id);
+        self.next_handle_id = self.next_handle_id.wrapping_add(1);
+        handle
+    }
+
+    fn parse_u32(&self, data: &[u8], offset: usize) -> u32 {
+        if offset + 4 > data.len() {
+            return 0;
+        }
+        u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+    }
+
+    fn parse_u64(&self, data: &[u8], offset: usize) -> u64 {
+        if offset + 8 > data.len() {
+            return 0;
+        }
+        u64::from_be_bytes([
+            data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+            data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+        ])
+    }
+
+    fn parse_string(&self, data: &[u8], offset: usize) -> Result<String> {
+        if offset + 4 > data.len() {
+            return Ok(String::new());
+        }
+        let len = self.parse_u32(data, offset) as usize;
+        if offset + 4 + len > data.len() {
+            return Ok(String::new());
+        }
+        Ok(String::from_utf8_lossy(&data[offset + 4..offset + 4 + len]).to_string())
+    }
+
+    fn build_packet(&self, payload: &[u8]) -> Vec<u8> {
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        packet.extend_from_slice(payload);
+        packet
+    }
+
+    fn build_status_packet(&self, id: u32, status: u32, msg: &str, lang: &str) -> Vec<u8> {
+        let mut payload = vec![101];
+        payload.extend_from_slice(&id.to_be_bytes());
+        payload.extend_from_slice(&status.to_be_bytes());
+        payload.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+        payload.extend_from_slice(msg.as_bytes());
+        payload.extend_from_slice(&(lang.len() as u32).to_be_bytes());
+        payload.extend_from_slice(lang.as_bytes());
+        self.build_packet(&payload)
+    }
+
+    fn build_handle_packet(&self, id: u32, handle: &str) -> Vec<u8> {
+        let mut payload = vec![102];
+        payload.extend_from_slice(&id.to_be_bytes());
+        payload.extend_from_slice(&(handle.len() as u32).to_be_bytes());
+        payload.extend_from_slice(handle.as_bytes());
+        self.build_packet(&payload)
+    }
+
+    fn build_data_packet(&self, id: u32, data: &[u8]) -> Vec<u8> {
+        let mut payload = vec![103];
+        payload.extend_from_slice(&id.to_be_bytes());
+        payload.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        payload.extend_from_slice(data);
+        self.build_packet(&payload)
+    }
+
+    fn build_attrs(&self, is_dir: bool, size: u64) -> Vec<u8> {
+        let mut attrs = Vec::new();
+        let flags: u32 = 0x00000001 | 0x00000002 | 0x00000004;
+        attrs.extend_from_slice(&flags.to_be_bytes());
+        let permissions = if is_dir { 0o755u32 } else { 0o644u32 };
+        attrs.extend_from_slice(&permissions.to_be_bytes());
+        attrs.extend_from_slice(&0u64.to_be_bytes());
+        attrs.extend_from_slice(&0u64.to_be_bytes());
+        attrs.extend_from_slice(&size.to_be_bytes());
+        attrs
+    }
+
+    async fn handle_open(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let path = self.parse_string(data, 5)?;
+        let pflags_pos = 5 + 4 + path.len();
+        let pflags = self.parse_u32(data, pflags_pos);
+
+        let need_read = pflags & 0x00000001 != 0;
+        let need_write = pflags & 0x00000002 != 0;
+        let need_append = pflags & 0x00000008 != 0;
+
+        if !self.check_permission(|p| {
+            (!need_read || p.can_read) &&
+            (!need_write || p.can_write) &&
+            (!need_append || p.can_append)
+        }) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let full_path = self.resolve_path(&path);
+
+        let file_result = if pflags & 0x00000002 != 0 {
+            if pflags & 0x00000010 != 0 {
+                tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&full_path).await
+            } else if pflags & 0x00000008 != 0 {
+                tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .append(true)
+                    .open(&full_path).await
+            } else {
+                tokio::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(&full_path).await
+            }
+        } else {
+            tokio::fs::File::open(&full_path).await
+        };
+
+        match file_result {
+            Ok(file) => {
+                let handle = self.generate_handle();
+                self.handles.insert(handle.clone(), SftpFileHandle::File {
+                    path: full_path,
+                    file,
+                    locked: false,
+                });
+                Ok(self.build_handle_packet(id, &handle))
+            }
+            Err(_) => Ok(self.build_status_packet(id, 4, "Failed to open file", "")),
+        }
+    }
+
+    async fn handle_readlink(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let path = self.parse_string(data, 5)?;
+
+        let full_path = self.resolve_path(&path);
+
+        match tokio::fs::read_link(&full_path).await {
+            Ok(target) => {
+                let target_str = target.to_string_lossy().to_string();
+                let mut payload = vec![104];
+                payload.extend_from_slice(&id.to_be_bytes());
+                payload.extend_from_slice(&1u32.to_be_bytes());
+                payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
+                payload.extend_from_slice(target_str.as_bytes());
+                payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
+                payload.extend_from_slice(target_str.as_bytes());
+                payload.extend_from_slice(&self.build_attrs(false, 0));
+                Ok(self.build_packet(&payload))
+            }
+            Err(_) => Ok(self.build_status_packet(id, 2, "No such file", "")),
+        }
+    }
+
+    async fn handle_symlink(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let target = self.parse_string(data, 5)?;
+        let link_pos = 5 + 4 + target.len();
+        let link_path = self.parse_string(data, link_pos)?;
+
+        if !self.check_permission(|p| p.can_write) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let full_link = self.resolve_path(&link_path);
+        let full_target = self.resolve_path(&target);
+
+        if tokio::fs::symlink(&full_target, &full_link).await.is_ok() {
+            self.logger.lock().unwrap().client_action(
+                "SFTP",
+                &format!("Created symlink: {} -> {}", link_path, target),
+                "",
+                self.username.as_deref(),
+                "SYMLINK",
+            );
+            Ok(self.build_status_packet(id, 0, "OK", ""))
+        } else {
+            Ok(self.build_status_packet(id, 4, "Failed to create symlink", ""))
+        }
+    }
+
+    async fn handle_lock(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let handle_str = self.parse_string(data, 5)?;
+
+        if self.sftp_version < 5 {
+            return Ok(self.build_status_packet(id, 8, "Lock requires SFTP v5+", ""));
+        }
+
+        let handle = self.handles.get_mut(&handle_str);
+        match handle {
+            Some(SftpFileHandle::File { path, file, locked }) => {
+                if *locked {
+                    return Ok(self.build_status_packet(id, 0, "Already locked", ""));
+                }
+
+                let std_file = file.try_clone().await?.into_std().await;
+                match fs2::FileExt::lock_exclusive(&std_file) {
+                    Ok(()) => {
+                        *locked = true;
+                        self.locked_files.insert(path.clone());
+                        self.logger.lock().unwrap().client_action(
+                            "SFTP",
+                            &format!("Locked file: {:?}", path),
+                            "",
+                            self.username.as_deref(),
+                            "LOCK",
+                        );
+                        Ok(self.build_status_packet(id, 0, "OK", ""))
+                    }
+                    Err(_) => Ok(self.build_status_packet(id, 4, "Failed to lock file", "")),
+                }
+            }
+            _ => Ok(self.build_status_packet(id, 4, "Invalid handle", "")),
+        }
+    }
+
+    async fn handle_unlock(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let handle_str = self.parse_string(data, 5)?;
+
+        let handle = self.handles.get_mut(&handle_str);
+        match handle {
+            Some(SftpFileHandle::File { path, file, locked }) => {
+                if !*locked {
+                    return Ok(self.build_status_packet(id, 0, "Not locked", ""));
+                }
+
+                let std_file = file.try_clone().await?.into_std().await;
+                match fs2::FileExt::unlock(&std_file) {
+                    Ok(()) => {
+                        *locked = false;
+                        self.locked_files.remove(path);
+                        self.logger.lock().unwrap().client_action(
+                            "SFTP",
+                            &format!("Unlocked file: {:?}", path),
+                            "",
+                            self.username.as_deref(),
+                            "UNLOCK",
+                        );
+                        Ok(self.build_status_packet(id, 0, "OK", ""))
+                    }
+                    Err(_) => Ok(self.build_status_packet(id, 4, "Failed to unlock file", "")),
+                }
+            }
+            _ => Ok(self.build_status_packet(id, 4, "Invalid handle", "")),
+        }
+    }
+
+    async fn handle_extended(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = self.parse_u32(data, 1);
+        let ext_name = self.parse_string(data, 5)?;
+
+        match ext_name.as_str() {
+            "limits@openssh.com" => self.handle_limits(id).await,
+            "statvfs@openssh.com" => self.handle_statvfs(id, data).await,
+            "md5sum@openssh.com" | "md5-hash@openssh.com" => self.handle_md5sum(id, data).await,
+            "sha256sum@openssh.com" | "sha256-hash@openssh.com" => self.handle_sha256sum(id, data).await,
+            "copy-file" => self.handle_copy_file(id, data).await,
+            "hardlink@openssh.com" => self.handle_hardlink(id, data).await,
+            _ => {
+                Ok(self.build_status_packet(id, 8, &format!("Unsupported extension: {}", ext_name), ""))
+            }
+        }
+    }
+
+    async fn handle_limits(&self, id: u32) -> Result<Vec<u8>> {
+        let max_packet_size: u64 = 32768;
+        let max_read_size: u64 = 32768;
+        let max_write_size: u64 = 32768;
+        let max_open_handles: u64 = 1000;
+        let max_locks: u64 = 100;
+
+        let mut payload = vec![201];
+        payload.extend_from_slice(&id.to_be_bytes());
+        payload.extend_from_slice(&max_packet_size.to_be_bytes());
+        payload.extend_from_slice(&max_read_size.to_be_bytes());
+        payload.extend_from_slice(&max_write_size.to_be_bytes());
+        payload.extend_from_slice(&max_open_handles.to_be_bytes());
+        payload.extend_from_slice(&max_locks.to_be_bytes());
+        Ok(self.build_packet(&payload))
+    }
+
+    async fn handle_statvfs(&self, id: u32, data: &[u8]) -> Result<Vec<u8>> {
+        let path = self.parse_string(data, 5 + 4)?;
+        let full_path = self.resolve_path(&path);
+
+        #[cfg(unix)]
+        {
+            match tokio::fs::metadata(full_path.parent().unwrap_or(&full_path)).await {
+                Ok(_metadata) => {
+                    let bsize: u64 = 4096;
+                    let frsize: u64 = 4096;
+                    let blocks: u64 = 1000000;
+                    let bfree: u64 = 500000;
+                    let bavail: u64 = 500000;
+                    let files: u64 = 100000;
+                    let ffree: u64 = 50000;
+                    let favail: u64 = 50000;
+                    let fsid: u64 = 1;
+                    let flag: u64 = 0;
+                    let namemax: u64 = 255;
+
+                    let mut payload = vec![201];
+                    payload.extend_from_slice(&id.to_be_bytes());
+                    payload.extend_from_slice(&bsize.to_be_bytes());
+                    payload.extend_from_slice(&frsize.to_be_bytes());
+                    payload.extend_from_slice(&blocks.to_be_bytes());
+                    payload.extend_from_slice(&bfree.to_be_bytes());
+                    payload.extend_from_slice(&bavail.to_be_bytes());
+                    payload.extend_from_slice(&files.to_be_bytes());
+                    payload.extend_from_slice(&ffree.to_be_bytes());
+                    payload.extend_from_slice(&favail.to_be_bytes());
+                    payload.extend_from_slice(&fsid.to_be_bytes());
+                    payload.extend_from_slice(&flag.to_be_bytes());
+                    payload.extend_from_slice(&namemax.to_be_bytes());
+                    Ok(self.build_packet(&payload))
+                }
+                Err(_) => Ok(self.build_status_packet(id, 2, "No such file", "")),
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            Ok(self.build_status_packet(id, 8, "statvfs not supported on this platform", ""))
+        }
+    }
+
+    async fn handle_md5sum(&self, id: u32, data: &[u8]) -> Result<Vec<u8>> {
+        let path = self.parse_string(data, 5 + 4)?;
+        let full_path = self.resolve_path(&path);
+
+        if !self.check_permission(|p| p.can_read) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        match tokio::fs::read(&full_path).await {
+            Ok(content) => {
+                use md5::{Md5, Digest};
+                let mut hasher = Md5::new();
+                hasher.update(&content);
+                let hash = hasher.finalize();
+                let hash_hex = hex::encode(hash);
+
+                let mut payload = vec![201];
+                payload.extend_from_slice(&id.to_be_bytes());
+                payload.extend_from_slice(&(hash_hex.len() as u32).to_be_bytes());
+                payload.extend_from_slice(hash_hex.as_bytes());
+                Ok(self.build_packet(&payload))
+            }
+            Err(_) => Ok(self.build_status_packet(id, 2, "No such file", "")),
+        }
+    }
+
+    async fn handle_sha256sum(&self, id: u32, data: &[u8]) -> Result<Vec<u8>> {
+        let path = self.parse_string(data, 5 + 4)?;
+        let full_path = self.resolve_path(&path);
+
+        if !self.check_permission(|p| p.can_read) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        match tokio::fs::read(&full_path).await {
+            Ok(content) => {
+                use sha2::{Sha256, Digest};
+                let mut hasher = Sha256::new();
+                hasher.update(&content);
+                let hash = hasher.finalize();
+                let hash_hex = hex::encode(hash);
+
+                let mut payload = vec![201];
+                payload.extend_from_slice(&id.to_be_bytes());
+                payload.extend_from_slice(&(hash_hex.len() as u32).to_be_bytes());
+                payload.extend_from_slice(hash_hex.as_bytes());
+                Ok(self.build_packet(&payload))
+            }
+            Err(_) => Ok(self.build_status_packet(id, 2, "No such file", "")),
+        }
+    }
+
+    async fn handle_copy_file(&mut self, id: u32, data: &[u8]) -> Result<Vec<u8>> {
+        let src_path = self.parse_string(data, 5 + 4)?;
+        let dst_pos = 5 + 4 + 4 + src_path.len();
+        let dst_path = self.parse_string(data, dst_pos)?;
+
+        if !self.check_permission(|p| p.can_read && p.can_write) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let src_full = self.resolve_path(&src_path);
+        let dst_full = self.resolve_path(&dst_path);
+
+        match tokio::fs::copy(&src_full, &dst_full).await {
+            Ok(_) => {
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    &format!("Copied: {} -> {}", src_path, dst_path),
+                    "",
+                    self.username.as_deref(),
+                    "COPY",
+                );
+                Ok(self.build_status_packet(id, 0, "OK", ""))
+            }
+            Err(_) => Ok(self.build_status_packet(id, 4, "Failed to copy file", "")),
+        }
+    }
+
+    async fn handle_hardlink(&mut self, id: u32, data: &[u8]) -> Result<Vec<u8>> {
+        let src_path = self.parse_string(data, 5 + 4)?;
+        let dst_pos = 5 + 4 + 4 + src_path.len();
+        let dst_path = self.parse_string(data, dst_pos)?;
+
+        if !self.check_permission(|p| p.can_write) {
+            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        }
+
+        let src_full = self.resolve_path(&src_path);
+        let dst_full = self.resolve_path(&dst_path);
+
+        #[cfg(unix)]
+        {
+            match tokio::fs::hard_link(&src_full, &dst_full).await {
+                Ok(_) => {
+                    self.logger.lock().unwrap().client_action(
+                        "SFTP",
+                        &format!("Hardlink: {} -> {}", src_path, dst_path),
+                        "",
+                        self.username.as_deref(),
+                        "HARDLINK",
+                    );
+                    Ok(self.build_status_packet(id, 0, "OK", ""))
+                }
+                Err(_) => Ok(self.build_status_packet(id, 4, "Failed to create hardlink", "")),
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            Ok(self.build_status_packet(id, 8, "Hardlinks not supported on this platform", ""))
+        }
+    }
 }

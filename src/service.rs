@@ -48,14 +48,18 @@ WantedBy=multi-user.target
     }
 
     pub fn start_service(&self) -> Result<()> {
-        std::process::Command::new("systemctl")
+        let status = std::process::Command::new("systemctl")
             .args(["start", &self.service_name])
             .status()?;
+        
+        if !status.success() {
+            anyhow::bail!("Failed to start service");
+        }
         Ok(())
     }
 
     pub fn stop_service(&self) -> Result<()> {
-        std::process::Command::new("systemctl")
+        let _status = std::process::Command::new("systemctl")
             .args(["stop", &self.service_name])
             .status()?;
         Ok(())
@@ -74,9 +78,13 @@ WantedBy=multi-user.target
     }
 
     pub fn reload_daemon(&self) -> Result<()> {
-        std::process::Command::new("systemctl")
+        let status = std::process::Command::new("systemctl")
             .arg("daemon-reload")
             .status()?;
+        
+        if !status.success() {
+            anyhow::bail!("Failed to reload daemon");
+        }
         Ok(())
     }
 }

@@ -19,12 +19,23 @@ pub fn build_ui(app: &Application) {
         }
     };
 
+    if let Err(e) = ensure_default_directories(&state) {
+        eprintln!("Failed to create default directories: {}", e);
+    }
+
     let window = ApplicationWindow::builder()
         .application(app)
         .title("WFTPG - SFTP/FTP管理工具")
         .default_width(1000)
         .default_height(750)
         .build();
+
+    let state_clone = Arc::clone(&state);
+    window.connect_delete_event(move |_, _| {
+        let state = state_clone.lock().unwrap();
+        state.stop_all();
+        gtk::glib::Propagation::Proceed
+    });
 
     let notebook = Notebook::new();
 
@@ -45,6 +56,18 @@ pub fn build_ui(app: &Application) {
 
     window.add(&notebook);
     window.show_all();
+}
+
+fn ensure_default_directories(state: &Arc<StdMutex<AppState>>) -> anyhow::Result<()> {
+    let state_guard = state.lock().unwrap();
+    let users = state_guard.user_manager.lock().unwrap();
+    for (_, user) in users.list_users() {
+        let share_dir = std::path::Path::new(&user.home_dir);
+        if !share_dir.exists() {
+            std::fs::create_dir_all(share_dir)?;
+        }
+    }
+    Ok(())
 }
 
 fn show_error_dialog(message: &str) {

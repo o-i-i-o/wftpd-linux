@@ -58,11 +58,16 @@ fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TextView
     text_view
 }
 
-fn populate_log_view(text_view: &TextView, state: &Arc<StdMutex<AppState>>) {
+fn format_log_entries(state: &Arc<StdMutex<AppState>>) -> String {
     let state = state.lock().unwrap();
     let logger = state.logger.lock().unwrap();
     let entries = logger.get_recent_logs(100);
-    let mut text = String::new();
+    
+    if entries.is_empty() {
+        return "暂无日志记录".to_string();
+    }
+    
+    let mut text = String::with_capacity(entries.len() * 100);
     for entry in entries {
         text.push_str(&format!(
             "[{}] {} - {} - {} - {}\n",
@@ -73,9 +78,11 @@ fn populate_log_view(text_view: &TextView, state: &Arc<StdMutex<AppState>>) {
             entry.action.unwrap_or_default()
         ));
     }
-    if text.is_empty() {
-        text = "暂无日志记录".to_string();
-    }
+    text
+}
+
+fn populate_log_view(text_view: &TextView, state: &Arc<StdMutex<AppState>>) {
+    let text = format_log_entries(state);
     if let Some(buffer) = text_view.buffer() {
         buffer.set_text(&text);
     }
@@ -90,23 +97,7 @@ fn setup_button_handlers(
     let state_clone = Arc::clone(state);
     let text_view_clone = text_view.clone();
     refresh_btn.connect_clicked(clone!(@strong state_clone, @strong text_view_clone => move |_| {
-        let state = state_clone.lock().unwrap();
-        let logger = state.logger.lock().unwrap();
-        let entries = logger.get_recent_logs(100);
-        let mut text = String::new();
-        for entry in entries {
-            text.push_str(&format!(
-                "[{}] {} - {} - {} - {}\n",
-                entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
-                entry.level,
-                entry.source,
-                entry.message,
-                entry.action.unwrap_or_default()
-            ));
-        }
-        if text.is_empty() {
-            text = "暂无日志记录".to_string();
-        }
+        let text = format_log_entries(&state_clone);
         if let Some(buffer) = text_view_clone.buffer() {
             buffer.set_text(&text);
         }

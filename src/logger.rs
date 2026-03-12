@@ -53,7 +53,8 @@ impl Logger {
         let (path, current_file, current_size) = if fs::create_dir_all(&path).is_err() {
             let fallback = dirs::cache_dir()
                 .unwrap_or_else(std::env::temp_dir)
-                .join("wftpg");
+                .join("wftpg")
+                .join("logs");
             let _ = fs::create_dir_all(&fallback);
             (fallback, None, 0)
         } else {
@@ -178,10 +179,17 @@ impl Logger {
             eprintln!("Failed to write log: {}", e);
         }
 
+        let level_str = match level {
+            LogLevel::Debug => "DEBUG",
+            LogLevel::Info => "INFO",
+            LogLevel::Warning => "WARN",
+            LogLevel::Error => "ERROR",
+        };
+        
         println!(
             "[{}] [{}] {} - {}",
             entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
-            entry.level,
+            level_str,
             entry.source,
             entry.message
         );
@@ -189,18 +197,18 @@ impl Logger {
 
     fn write_to_file(&mut self, entry: &LogEntry) -> std::io::Result<()> {
         if self.current_file.is_none() || self.current_size >= self.max_size {
-            self.rotate_if_needed()?;
-        }
+                self.rotate_if_needed()?;
+            }
 
         let json = serde_json::to_string(entry)
             .unwrap_or_else(|_| format!("{{\"message\": \"{}\"}}", entry.message));
 
         if let Some(ref mut file) = self.current_file {
             let line = format!("{}\n", json);
-            let bytes = line.as_bytes();
-            file.write_all(bytes)?;
-            self.current_size += bytes.len() as u64;
-        }
+                let bytes = line.as_bytes();
+                file.write_all(bytes)?;
+                self.current_size += bytes.len() as u64;
+            }
 
         Ok(())
     }
@@ -216,6 +224,18 @@ impl Logger {
 
     pub fn info(&mut self, source: &str, message: &str) {
         self.log(LogLevel::Info, source, message, None, None, None);
+    }
+
+    pub fn debug(&mut self, source: &str, message: &str) {
+        self.log(LogLevel::Debug, source, message, None, None, None);
+    }
+
+    pub fn warning(&mut self, source: &str, message: &str) {
+        self.log(LogLevel::Warning, source, message, None, None, None);
+    }
+
+    pub fn error(&mut self, source: &str, message: &str) {
+        self.log(LogLevel::Error, source, message, None, None, None);
     }
 
     pub fn client_action(

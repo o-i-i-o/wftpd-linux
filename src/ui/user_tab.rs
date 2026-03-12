@@ -1,7 +1,7 @@
 use gtk::prelude::*;
 use gtk::{
     Box, Orientation, Label, Button, Entry, Frame, ScrolledWindow, TreeView, ListStore,
-    CellRendererText, TreeViewColumn,
+    CellRendererText, TreeViewColumn, CellRendererToggle, CheckButton,
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -19,30 +19,69 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     container.pack_start(&title_label, false, false, 0);
 
     let add_frame = Frame::new(Some("添加用户"));
-    let add_box = Box::new(Orientation::Horizontal, 5);
+    let add_box = Box::new(Orientation::Vertical, 5);
     add_box.set_margin_top(10);
     add_box.set_margin_bottom(10);
     add_box.set_margin_start(10);
     add_box.set_margin_end(10);
 
-    add_box.pack_start(&Label::new(Some("用户名:")), false, false, 0);
+    let row1 = Box::new(Orientation::Horizontal, 5);
+    row1.pack_start(&Label::new(Some("用户名:")), false, false, 0);
     let username_entry = Entry::new();
     username_entry.set_width_chars(15);
-    add_box.pack_start(&username_entry, false, false, 0);
+    row1.pack_start(&username_entry, false, false, 0);
 
-    add_box.pack_start(&Label::new(Some("密码:")), false, false, 0);
+    row1.pack_start(&Label::new(Some("密码:")), false, false, 0);
     let password_entry = Entry::new();
     password_entry.set_width_chars(15);
     password_entry.set_visibility(false);
-    add_box.pack_start(&password_entry, false, false, 0);
+    row1.pack_start(&password_entry, false, false, 0);
+    add_box.pack_start(&row1, false, false, 0);
 
-    add_box.pack_start(&Label::new(Some("主目录:")), false, false, 0);
+    let row2 = Box::new(Orientation::Horizontal, 5);
+    row2.pack_start(&Label::new(Some("主目录:")), false, false, 0);
     let home_entry = Entry::new();
-    home_entry.set_width_chars(20);
-    home_entry.set_placeholder_text(Some("/home/user"));
-    add_box.pack_start(&home_entry, false, false, 0);
+    home_entry.set_hexpand(true);
+    home_entry.set_placeholder_text(Some("留空则使用默认: /home/用户名/Desktop/文件共享"));
+    row2.pack_start(&home_entry, true, true, 0);
+    add_box.pack_start(&row2, false, false, 0);
 
-    let add_btn = Button::with_label("添加");
+    let perm_frame = Frame::new(Some("权限设置"));
+    let perm_box = Box::new(Orientation::Horizontal, 10);
+    perm_box.set_margin_top(5);
+    perm_box.set_margin_bottom(5);
+    perm_box.set_margin_start(5);
+    perm_box.set_margin_end(5);
+
+    let read_cb = CheckButton::with_label("读取");
+    read_cb.set_active(true);
+    let write_cb = CheckButton::with_label("写入");
+    write_cb.set_active(true);
+    let delete_cb = CheckButton::with_label("删除");
+    delete_cb.set_active(true);
+    let list_cb = CheckButton::with_label("列表");
+    list_cb.set_active(true);
+    let mkdir_cb = CheckButton::with_label("建目录");
+    mkdir_cb.set_active(true);
+    let rmdir_cb = CheckButton::with_label("删目录");
+    rmdir_cb.set_active(true);
+    let rename_cb = CheckButton::with_label("重命名");
+    rename_cb.set_active(true);
+    let append_cb = CheckButton::with_label("追加");
+    append_cb.set_active(true);
+
+    perm_box.pack_start(&read_cb, false, false, 0);
+    perm_box.pack_start(&write_cb, false, false, 0);
+    perm_box.pack_start(&delete_cb, false, false, 0);
+    perm_box.pack_start(&list_cb, false, false, 0);
+    perm_box.pack_start(&mkdir_cb, false, false, 0);
+    perm_box.pack_start(&rmdir_cb, false, false, 0);
+    perm_box.pack_start(&rename_cb, false, false, 0);
+    perm_box.pack_start(&append_cb, false, false, 0);
+    perm_frame.add(&perm_box);
+    add_box.pack_start(&perm_frame, false, false, 0);
+
+    let add_btn = Button::with_label("添加用户");
     add_box.pack_start(&add_btn, false, false, 0);
 
     add_frame.add(&add_box);
@@ -68,34 +107,49 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
         gtk::glib::Type::STRING,
     ]);
 
-    {
-        let state = state.lock().unwrap();
-        let users = state.user_manager.lock().unwrap();
-        for (username, user) in users.list_users() {
-            let iter = store.append();
-            store.set_value(&iter, 0, &username.to_value());
-            store.set_value(&iter, 1, &user.home_dir.to_value());
-            store.set_value(&iter, 2, &user.enabled.to_value());
-            store.set_value(&iter, 3, &user.permissions.to_string().to_value());
-        }
-    }
+    refresh_user_list(&store, state);
 
     let tree = TreeView::with_model(&store);
 
-    for (i, title) in ["用户名", "主目录", "启用", "权限"].iter().enumerate() {
-        let renderer = CellRendererText::new();
-        let column = TreeViewColumn::new();
-        column.set_title(title);
-        gtk::prelude::CellLayoutExt::pack_start(&column, &renderer, true);
-        gtk::prelude::CellLayoutExt::add_attribute(&column, &renderer, "text", i as i32);
-        tree.append_column(&column);
-    }
+    let col_username = TreeViewColumn::new();
+    col_username.set_title("用户名");
+    let renderer_username = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_username, &renderer_username, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_username, &renderer_username, "text", 0);
+    tree.append_column(&col_username);
+
+    let col_home = TreeViewColumn::new();
+    col_home.set_title("主目录");
+    let renderer_home = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_home, &renderer_home, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_home, &renderer_home, "text", 1);
+    tree.append_column(&col_home);
+
+    let col_enabled = TreeViewColumn::new();
+    col_enabled.set_title("启用");
+    let renderer_enabled = CellRendererToggle::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_enabled, &renderer_enabled, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_enabled, &renderer_enabled, "active", 2);
+    tree.append_column(&col_enabled);
+
+    let col_perms = TreeViewColumn::new();
+    col_perms.set_title("权限");
+    let renderer_perms = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_perms, &renderer_perms, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_perms, &renderer_perms, "text", 3);
+    tree.append_column(&col_perms);
 
     scrolled.add(&tree);
     list_box.pack_start(&scrolled, true, true, 0);
 
+    let btn_box = Box::new(Orientation::Horizontal, 10);
     let delete_btn = Button::with_label("删除选中用户");
-    list_box.pack_start(&delete_btn, false, false, 0);
+    let toggle_btn = Button::with_label("启用/禁用切换");
+    let refresh_btn = Button::with_label("刷新列表");
+    btn_box.pack_start(&delete_btn, false, false, 0);
+    btn_box.pack_start(&toggle_btn, false, false, 0);
+    btn_box.pack_start(&refresh_btn, false, false, 0);
+    list_box.pack_start(&btn_box, false, false, 0);
 
     list_frame.add(&list_box);
     container.pack_start(&list_frame, true, true, 0);
@@ -105,8 +159,18 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let username_entry_clone = username_entry.clone();
     let password_entry_clone = password_entry.clone();
     let home_entry_clone = home_entry.clone();
+    let read_cb_clone = read_cb.clone();
+    let write_cb_clone = write_cb.clone();
+    let delete_cb_clone = delete_cb.clone();
+    let list_cb_clone = list_cb.clone();
+    let mkdir_cb_clone = mkdir_cb.clone();
+    let rmdir_cb_clone = rmdir_cb.clone();
+    let rename_cb_clone = rename_cb.clone();
+    let append_cb_clone = append_cb.clone();
     add_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone, @strong username_entry_clone, @strong password_entry_clone, @strong home_entry_clone => move |_| {
+        clone!(@strong state_clone, @strong store_clone, @strong username_entry_clone, @strong password_entry_clone, @strong home_entry_clone,
+               @strong read_cb_clone, @strong write_cb_clone, @strong delete_cb_clone, @strong list_cb_clone,
+               @strong mkdir_cb_clone, @strong rmdir_cb_clone, @strong rename_cb_clone, @strong append_cb_clone => move |_| {
             let username = username_entry_clone.text();
             let password = password_entry_clone.text();
             let home = home_entry_clone.text();
@@ -114,25 +178,42 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
                 let username_str = username.to_string();
                 let password_str = password.to_string();
                 let home_str = if home.is_empty() {
-                    format!("/home/{}", username_str)
+                    get_default_home_dir(&username_str)
                 } else {
                     home.to_string()
                 };
 
+                let perms = wftpg::users::Permissions {
+                    can_read: read_cb_clone.is_active(),
+                    can_write: write_cb_clone.is_active(),
+                    can_delete: delete_cb_clone.is_active(),
+                    can_list: list_cb_clone.is_active(),
+                    can_mkdir: mkdir_cb_clone.is_active(),
+                    can_rmdir: rmdir_cb_clone.is_active(),
+                    can_rename: rename_cb_clone.is_active(),
+                    can_append: append_cb_clone.is_active(),
+                    quota_mb: None,
+                    speed_limit_kbps: None,
+                };
+
                 let state = state_clone.lock().unwrap();
-                let _ = state.user_manager.lock().unwrap().add_user(&username_str, &password_str, &home_str, false);
-                let _ = state.save_users();
+                let mut users = state.user_manager.lock().unwrap();
+                if users.add_user(&username_str, &password_str, &home_str, false).is_ok() {
+                    if let Err(e) = users.update_permissions(&username_str, perms.clone()) {
+                        log::error!("Failed to set permissions: {}", e);
+                    }
+                    let _ = state.save_users();
+                    
+                    if let Err(e) = std::fs::create_dir_all(&home_str) {
+                        log::warn!("Failed to create home directory: {}", e);
+                    }
 
-                let iter = store_clone.append();
-                store_clone.set_value(&iter, 0, &username_str.to_value());
-                store_clone.set_value(&iter, 1, &home_str.to_value());
-                store_clone.set_value(&iter, 2, &true.to_value());
-                store_clone.set_value(&iter, 3, &"读写".to_value());
-
-                username_entry_clone.set_text("");
-                password_entry_clone.set_text("");
-                home_entry_clone.set_text("");
-                log::info!("User {} added", username_str);
+                    refresh_user_list(&store_clone, &state_clone);
+                    username_entry_clone.set_text("");
+                    password_entry_clone.set_text("");
+                    home_entry_clone.set_text("");
+                    log::info!("User {} added with home {}", username_str, home_str);
+                }
             }
         }),
     );
@@ -148,11 +229,60 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
                 let state = state_clone.lock().unwrap();
                 let _ = state.user_manager.lock().unwrap().remove_user(&username);
                 let _ = state.save_users();
-                store_clone.remove(&iter);
+                refresh_user_list(&store_clone, &state_clone);
                 log::info!("User {} deleted", username);
             }
         }),
     );
 
+    let state_clone = Arc::clone(state);
+    let store_clone = store.clone();
+    let tree_clone = tree.clone();
+    toggle_btn.connect_clicked(
+        clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+            let selection = tree_clone.selection();
+            if let Some((model, iter)) = selection.selected() {
+                let username: String = model.value(&iter, 0).get().unwrap_or_default();
+                let current_enabled: bool = model.value(&iter, 2).get().unwrap_or(true);
+                
+                let state = state_clone.lock().unwrap();
+                if state.user_manager.lock().unwrap().set_user_enabled(&username, !current_enabled).is_ok() {
+                    let _ = state.save_users();
+                    refresh_user_list(&store_clone, &state_clone);
+                    log::info!("User {} enabled status toggled to {}", username, !current_enabled);
+                }
+            }
+        }),
+    );
+
+    let state_clone = Arc::clone(state);
+    let store_clone = store.clone();
+    refresh_btn.connect_clicked(
+        clone!(@strong state_clone, @strong store_clone => move |_| {
+            refresh_user_list(&store_clone, &state_clone);
+        }),
+    );
+
     container
+}
+
+fn get_default_home_dir(username: &str) -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        format!("{}/Desktop/文件共享", home)
+    } else {
+        format!("/home/{}/Desktop/文件共享", username)
+    }
+}
+
+fn refresh_user_list(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
+    store.clear();
+    let state = state.lock().unwrap();
+    let users = state.user_manager.lock().unwrap();
+    for (username, user) in users.list_users() {
+        let iter = store.append();
+        store.set_value(&iter, 0, &username.to_value());
+        store.set_value(&iter, 1, &user.home_dir.to_value());
+        store.set_value(&iter, 2, &user.enabled.to_value());
+        store.set_value(&iter, 3, &user.permissions.to_string().to_value());
+    }
 }

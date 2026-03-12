@@ -14,6 +14,7 @@ use crate::config::Config;
 use crate::logger::Logger;
 use crate::users::UserManager;
 
+#[derive(Clone)]
 pub struct SftpServer {
     config: Arc<StdMutex<Config>>,
     user_manager: Arc<StdMutex<UserManager>>,

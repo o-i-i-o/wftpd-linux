@@ -19,25 +19,28 @@ pub fn build_ui(app: &Application) {
         }
     };
 
-    if let Err(e) = ensure_default_directories(&state) {
-        eprintln!("Failed to create default directories: {}", e);
-    }
-
     let window = ApplicationWindow::builder()
         .application(app)
         .title("WFTPG - SFTP/FTP管理工具")
         .default_width(1000)
         .default_height(750)
+        .resizable(true)
+        .decorated(true)
         .build();
+
+    setup_window_for_uos(&window);
 
     let state_clone = Arc::clone(&state);
     window.connect_delete_event(move |_, _| {
-        let state = state_clone.lock().unwrap();
-        state.stop_all();
+        if let Ok(s) = state_clone.lock() {
+            s.stop_all();
+        }
         gtk::glib::Propagation::Proceed
     });
 
     let notebook = Notebook::new();
+    notebook.set_tab_pos(gtk::PositionType::Top);
+    notebook.set_scrollable(true);
 
     let server_box = server_tab::create(&state);
     notebook.append_page(&server_box, Some(&Label::new(Some("服务器配置"))));
@@ -56,18 +59,87 @@ pub fn build_ui(app: &Application) {
 
     window.add(&notebook);
     window.show_all();
+
+    let state_for_dirs = Arc::clone(&state);
+    gtk::glib::MainContext::default().spawn_local(async move {
+        ensure_default_directories_async(&state_for_dirs).await;
+    });
 }
 
-fn ensure_default_directories(state: &Arc<StdMutex<AppState>>) -> anyhow::Result<()> {
-    let state_guard = state.lock().unwrap();
-    let users = state_guard.user_manager.lock().unwrap();
-    for (_, user) in users.list_users() {
-        let share_dir = std::path::Path::new(&user.home_dir);
-        if !share_dir.exists() {
-            std::fs::create_dir_all(share_dir)?;
+fn setup_window_for_uos(window: &ApplicationWindow) {
+    set_window_icon(window);
+    
+    let display = gtk::gdk::Display::default();
+    if let Some(display) = display {
+        let monitor = display.primary_monitor();
+        if let Some(monitor) = monitor {
+            let geometry = monitor.geometry();
+            let scale_factor = monitor.scale_factor();
+            
+            if scale_factor > 1 {
+                let width = (geometry.width() as f32 * 0.7 / scale_factor as f32) as i32;
+                let height = (geometry.height() as f32 * 0.7 / scale_factor as f32) as i32;
+                window.set_default_size(width.min(1200), height.min(900));
+            }
         }
     }
-    Ok(())
+}
+
+fn set_window_icon(window: &ApplicationWindow) {
+    let icon_paths = [
+        "/usr/share/icons/hicolor/scalable/apps/wftpg.svg",
+        "/usr/share/icons/hicolor/256x256/apps/wftpg.png",
+        "/usr/share/icons/hicolor/48x48/apps/wftpg.png",
+        "/usr/share/pixmaps/wftpg.svg",
+        "/usr/share/pixmaps/wftpg.png",
+    ];
+
+    for path in &icon_paths {
+        let icon_path = std::path::Path::new(path);
+        if icon_path.exists() {
+            if let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_file(icon_path) {
+                window.set_icon(Some(&pixbuf));
+                return;
+            }
+        }
+    }
+
+    if let Some(icon_theme) = gtk::IconTheme::default() {
+        for size in [48, 64, 128, 256] {
+            if let Ok(Some(pixbuf)) = icon_theme.load_icon("wftpg", size, gtk::IconLookupFlags::empty()) {
+                window.set_icon(Some(&pixbuf));
+                return;
+            }
+        }
+    }
+}
+
+async fn ensure_default_directories_async(state: &Arc<StdMutex<AppState>>) {
+    let dirs_to_create: Vec<String> = {
+        match state.try_lock() {
+            Ok(s) => {
+                match s.user_manager.try_lock() {
+                    Ok(users) => {
+                        let users_list = users.list_users();
+                        users_list.into_iter()
+                            .map(|(_, user)| user.home_dir.clone())
+                            .collect()
+                    }
+                    Err(_) => return,
+                }
+            }
+            Err(_) => return,
+        }
+    };
+
+    for dir in dirs_to_create {
+        let path = std::path::Path::new(&dir);
+        if !path.exists() {
+            if let Err(e) = std::fs::create_dir_all(path) {
+                eprintln!("Failed to create directory {}: {}", dir, e);
+            }
+        }
+    }
 }
 
 fn show_error_dialog(message: &str) {

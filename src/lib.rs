@@ -1,9 +1,16 @@
+//! WFTPG - SFTP/FTP Server Library
+//!
+//! This library provides the core functionality for the WFTPG SFTP/FTP server.
+
 pub mod config;
 pub mod users;
 pub mod logger;
 pub mod ftp_server;
 pub mod sftp_server;
 pub mod service;
+pub mod ipc;
+
+mod server_manager;
 
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
@@ -11,17 +18,14 @@ use std::path::PathBuf;
 use config::Config;
 use users::UserManager;
 use logger::Logger;
-use ftp_server::FtpServer;
-use sftp_server::SftpServer;
+use server_manager::ServerManager;
 use service::ServiceManager;
 
 pub struct AppState {
     pub config: Arc<Mutex<Config>>,
     pub user_manager: Arc<Mutex<UserManager>>,
     pub logger: Arc<Mutex<Logger>>,
-    pub ftp_server: Arc<Mutex<Option<FtpServer>>>,
-    pub sftp_server: Arc<Mutex<Option<SftpServer>>>,
-    pub sftp_runtime: Arc<Mutex<Option<tokio::runtime::Runtime>>>,
+    server_manager: ServerManager,
     pub service_manager: ServiceManager,
     pub config_path: PathBuf,
     pub users_path: PathBuf,
@@ -45,9 +49,7 @@ impl AppState {
             config: Arc::new(Mutex::new(config)),
             user_manager: Arc::new(Mutex::new(user_manager)),
             logger: Arc::new(Mutex::new(logger)),
-            ftp_server: Arc::new(Mutex::new(None)),
-            sftp_server: Arc::new(Mutex::new(None)),
-            sftp_runtime: Arc::new(Mutex::new(None)),
+            server_manager: ServerManager::new(),
             service_manager: ServiceManager::new(),
             config_path,
             users_path,
@@ -55,96 +57,60 @@ impl AppState {
     }
     
     pub fn save_config(&self) -> anyhow::Result<()> {
-        let config = self.config.lock().unwrap();
+        let config = self.config.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         config.save(&self.config_path)?;
         Ok(())
     }
     
     pub fn save_users(&self) -> anyhow::Result<()> {
-        let users = self.user_manager.lock().unwrap();
+        let users = self.user_manager.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         users.save(&self.users_path)?;
         Ok(())
     }
     
+    // === FTP Service ===
+    
     pub fn start_ftp(&self) -> anyhow::Result<()> {
-        let config = Arc::clone(&self.config);
-        let user_manager = Arc::clone(&self.user_manager);
-        let logger = Arc::clone(&self.logger);
-        
-        let server = FtpServer::new(config, user_manager, logger);
-        server.start()?;
-        
-        let mut ftp_server = self.ftp_server.lock().unwrap();
-        *ftp_server = Some(server);
-        
-        self.logger.lock().unwrap().info("FTP", "FTP server started");
-        Ok(())
+        self.server_manager.start_ftp(
+            Arc::clone(&self.config),
+            Arc::clone(&self.user_manager),
+            Arc::clone(&self.logger),
+        )
     }
     
     pub fn stop_ftp(&self) {
-        let mut ftp_server = self.ftp_server.lock().unwrap();
-        if let Some(server) = ftp_server.take() {
-            server.stop();
-            self.logger.lock().unwrap().info("FTP", "FTP server stopped");
-        }
+        self.server_manager.stop_ftp(&self.logger);
     }
     
     pub fn is_ftp_running(&self) -> bool {
-        let ftp_server = self.ftp_server.lock().unwrap();
-        ftp_server.as_ref().is_some_and(|s| s.is_running())
+        self.server_manager.is_ftp_running()
     }
     
+    // === SFTP Service ===
+    
     pub fn start_sftp(&self) -> anyhow::Result<()> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
-        
-        let config = Arc::clone(&self.config);
-        let user_manager = Arc::clone(&self.user_manager);
-        let logger = Arc::clone(&self.logger);
-        
-        let server = SftpServer::new(config, user_manager, logger);
-        
-        runtime.block_on(async {
-            server.start().await
-        })?;
-        
-        {
-            let mut sftp_server = self.sftp_server.lock().unwrap();
-            *sftp_server = Some(server);
-        }
-        
-        {
-            let mut sftp_runtime = self.sftp_runtime.lock().unwrap();
-            *sftp_runtime = Some(runtime);
-        }
-        
-        self.logger.lock().unwrap().info("SFTP", "SFTP server started");
-        Ok(())
+        self.server_manager.start_sftp(
+            Arc::clone(&self.config),
+            Arc::clone(&self.user_manager),
+            Arc::clone(&self.logger),
+        )
     }
     
     pub fn stop_sftp(&self) {
-        if let Some(runtime) = self.sftp_runtime.lock().unwrap().take() {
-            if let Some(server) = self.sftp_server.lock().unwrap().take() {
-                runtime.block_on(async {
-                    server.stop().await
-                });
-            }
-            runtime.shutdown_background();
-        }
-        self.logger.lock().unwrap().info("SFTP", "SFTP server stopped");
+        self.server_manager.stop_sftp(&self.logger);
     }
     
     pub fn is_sftp_running(&self) -> bool {
-        let sftp_server = self.sftp_server.lock().unwrap();
-        sftp_server.as_ref().is_some_and(|s| s.is_running())
+        self.server_manager.is_sftp_running()
     }
     
+    // === All Services ===
+    
     pub fn start_all(&self) -> anyhow::Result<()> {
-        let config = self.config.lock().unwrap();
-        let ftp_enabled = config.ftp.enabled;
-        let sftp_enabled = config.sftp.enabled;
-        drop(config);
+        let (ftp_enabled, sftp_enabled) = {
+            let config = self.config.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+            (config.ftp.enabled, config.sftp.enabled)
+        };
         
         if ftp_enabled {
             self.start_ftp()?;

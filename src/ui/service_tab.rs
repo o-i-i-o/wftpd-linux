@@ -1,12 +1,8 @@
 use gtk::prelude::*;
-use gtk::{Box, Orientation, Label, Button, Frame};
+use gtk::{Box, Orientation, Label, Button, Frame, glib};
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
 use wftpg::AppState;
-
-fn check_root_permission() -> bool {
-    unsafe { libc::getuid() == 0 }
-}
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -72,88 +68,93 @@ fn setup_service_buttons(
     let state_clone = Arc::clone(state);
     let status_label_clone = status_label.clone();
     install_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone => move |_| {
-        if !check_root_permission() {
-            log::error!("Service installation requires root permission");
-            status_label_clone.set_markup("<span foreground='red'>错误: 需要root权限</span>");
-            return;
-        }
-        let state = state_clone.lock().unwrap();
+        let state = Arc::clone(&state_clone);
+        let status_label = status_label_clone.clone();
         let exe_path = std::env::current_exe().unwrap_or_default();
-        match state.service_manager.install_service(exe_path.to_str().unwrap_or("")) {
-            Ok(_) => {
-                log::info!("Service installed successfully");
-                let _ = state.service_manager.reload_daemon();
-                update_service_status(&state_clone, &status_label_clone);
+        let exe_path_str = exe_path.to_string_lossy().to_string();
+        
+        glib::MainContext::ref_thread_default().spawn_local(async move {
+            if let Ok(s) = state.try_lock() {
+                match s.service_manager.install_service(&exe_path_str) {
+                    Ok(_) => {
+                        log::info!("Service installed successfully");
+                        let _ = s.service_manager.reload_daemon();
+                        update_service_status(&state, &status_label);
+                    }
+                    Err(e) => {
+                        log::error!("Install error: {}", e);
+                        status_label.set_markup(&format!("<span foreground='red'>安装失败: {}</span>", e));
+                    }
+                }
             }
-            Err(e) => {
-                log::error!("Install error: {}", e);
-                status_label_clone.set_markup(&format!("<span foreground='red'>安装失败: {}</span>", e));
-            }
-        }
+        });
     }));
 
     let state_clone = Arc::clone(state);
     let status_label_clone = status_label.clone();
     start_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone => move |_| {
-        if !check_root_permission() {
-            log::error!("Service start requires root permission");
-            status_label_clone.set_markup("<span foreground='red'>错误: 需要root权限</span>");
-            return;
-        }
-        let state = state_clone.lock().unwrap();
-        match state.service_manager.start_service() {
-            Ok(_) => {
-                log::info!("Service started successfully");
-                update_service_status(&state_clone, &status_label_clone);
+        let state = Arc::clone(&state_clone);
+        let status_label = status_label_clone.clone();
+        
+        glib::MainContext::ref_thread_default().spawn_local(async move {
+            if let Ok(s) = state.try_lock() {
+                match s.service_manager.start_service() {
+                    Ok(_) => {
+                        log::info!("Service started successfully");
+                        update_service_status(&state, &status_label);
+                    }
+                    Err(e) => {
+                        log::error!("Start error: {}", e);
+                        status_label.set_markup(&format!("<span foreground='red'>启动失败: {}</span>", e));
+                    }
+                }
             }
-            Err(e) => {
-                log::error!("Start error: {}", e);
-                status_label_clone.set_markup(&format!("<span foreground='red'>启动失败: {}</span>", e));
-            }
-        }
+        });
     }));
 
     let state_clone = Arc::clone(state);
     let status_label_clone = status_label.clone();
     stop_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone => move |_| {
-        if !check_root_permission() {
-            log::error!("Service stop requires root permission");
-            status_label_clone.set_markup("<span foreground='red'>错误: 需要root权限</span>");
-            return;
-        }
-        let state = state_clone.lock().unwrap();
-        match state.service_manager.stop_service() {
-            Ok(_) => {
-                log::info!("Service stopped successfully");
-                update_service_status(&state_clone, &status_label_clone);
+        let state = Arc::clone(&state_clone);
+        let status_label = status_label_clone.clone();
+        
+        glib::MainContext::ref_thread_default().spawn_local(async move {
+            if let Ok(s) = state.try_lock() {
+                match s.service_manager.stop_service() {
+                    Ok(_) => {
+                        log::info!("Service stopped successfully");
+                        update_service_status(&state, &status_label);
+                    }
+                    Err(e) => {
+                        log::error!("Stop error: {}", e);
+                        status_label.set_markup(&format!("<span foreground='red'>停止失败: {}</span>", e));
+                    }
+                }
             }
-            Err(e) => {
-                log::error!("Stop error: {}", e);
-                status_label_clone.set_markup(&format!("<span foreground='red'>停止失败: {}</span>", e));
-            }
-        }
+        });
     }));
 
     let state_clone = Arc::clone(state);
     let status_label_clone = status_label.clone();
     uninstall_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone => move |_| {
-        if !check_root_permission() {
-            log::error!("Service uninstall requires root permission");
-            status_label_clone.set_markup("<span foreground='red'>错误: 需要root权限</span>");
-            return;
-        }
-        let state = state_clone.lock().unwrap();
-        match state.service_manager.uninstall_service() {
-            Ok(_) => {
-                log::info!("Service uninstalled successfully");
-                let _ = state.service_manager.reload_daemon();
-                update_service_status(&state_clone, &status_label_clone);
+        let state = Arc::clone(&state_clone);
+        let status_label = status_label_clone.clone();
+        
+        glib::MainContext::ref_thread_default().spawn_local(async move {
+            if let Ok(s) = state.try_lock() {
+                match s.service_manager.uninstall_service() {
+                    Ok(_) => {
+                        log::info!("Service uninstalled successfully");
+                        let _ = s.service_manager.reload_daemon();
+                        update_service_status(&state, &status_label);
+                    }
+                    Err(e) => {
+                        log::error!("Uninstall error: {}", e);
+                        status_label.set_markup(&format!("<span foreground='red'>卸载失败: {}</span>", e));
+                    }
+                }
             }
-            Err(e) => {
-                log::error!("Uninstall error: {}", e);
-                status_label_clone.set_markup(&format!("<span foreground='red'>卸载失败: {}</span>", e));
-            }
-        }
+        });
     }));
 
     let state_clone = Arc::clone(state);
@@ -178,17 +179,9 @@ fn create_status_frame(container: &Box, state: &Arc<StdMutex<AppState>>, status_
          • 启动服务: 启动已安装的系统服务\n\
          • 停止服务: 停止正在运行的系统服务\n\
          • 卸载服务: 移除已安装的系统服务\n\n\
-         <i>注意: 所有服务操作都需要root权限</i>"
+         <i>注意: 服务操作通过PolicyKit进行权限认证</i>"
     );
     status_box.pack_start(&info_label, false, false, 0);
-
-    let perm_label = Label::new(None);
-    if check_root_permission() {
-        perm_label.set_markup("<span foreground='green'>✓ 当前以root权限运行</span>");
-    } else {
-        perm_label.set_markup("<span foreground='orange'>⚠ 当前非root权限，服务功能受限</span>");
-    }
-    status_box.pack_start(&perm_label, false, false, 0);
 
     status_frame.add(&status_box);
     container.pack_start(&status_frame, false, false, 0);
@@ -197,19 +190,20 @@ fn create_status_frame(container: &Box, state: &Arc<StdMutex<AppState>>, status_
 }
 
 fn update_service_status(state: &Arc<StdMutex<AppState>>, status_label: &Label) {
-    let state = state.lock().unwrap();
-    let sm = &state.service_manager;
-    
-    let service_exists = sm.service_exists();
-    let is_running = if service_exists { sm.is_service_running() } else { false };
-    
-    let status_text = if !service_exists {
-        "<span foreground='gray'>服务状态: 未安装</span>".to_string()
-    } else if is_running {
-        "<span foreground='green'>服务状态: 运行中 ✓</span>".to_string()
-    } else {
-        "<span foreground='orange'>服务状态: 已安装但未运行</span>".to_string()
-    };
-    
-    status_label.set_markup(&status_text);
+    if let Ok(s) = state.try_lock() {
+        let sm = &s.service_manager;
+        
+        let service_exists = sm.service_exists();
+        let is_running = if service_exists { sm.is_service_running() } else { false };
+        
+        let status_text = if !service_exists {
+            "<span foreground='gray'>服务状态: 未安装</span>".to_string()
+        } else if is_running {
+            "<span foreground='green'>服务状态: 运行中 ✓</span>".to_string()
+        } else {
+            "<span foreground='orange'>服务状态: 已安装但未运行</span>".to_string()
+        };
+        
+        status_label.set_markup(&status_text);
+    }
 }

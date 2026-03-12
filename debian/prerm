@@ -2,8 +2,21 @@
 set -e
 
 case "$1" in
-    remove|upgrade|deconfigure)
+    remove|deconfigure)
         update-desktop-database /usr/share/applications 2>/dev/null || true
+        gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+        
+        if command -v systemctl > /dev/null 2>&1; then
+            if systemctl is-active --quiet wftpg 2>/dev/null; then
+                systemctl stop wftpg 2>/dev/null || true
+            fi
+            if systemctl is-enabled --quiet wftpg 2>/dev/null; then
+                systemctl disable wftpg 2>/dev/null || true
+            fi
+        fi
+        ;;
+    
+    upgrade)
         ;;
     
     failed-upgrade)

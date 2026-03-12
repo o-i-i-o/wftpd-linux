@@ -1,8 +1,0 @@
-#!/bin/bash
-
-export XAUTHORITY=$(ls -1 /home/*/.Xauthority 2>/dev/null | head -1)
-export DISPLAY=:0
-export WAYLAND_DISPLAY=wayland-0
-export XDG_RUNTIME_DIR=/run/user/$(id -u $(ls -1 /home | grep -v lost+found | head -1))
-
-exec /usr/bin/wftpg "$@"

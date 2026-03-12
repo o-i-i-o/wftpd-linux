@@ -8,7 +8,7 @@ convert -size 256x256 xc:none \
     -fill white \
     -pointsize 80 \
     -gravity center \
-    -annotate +0-30 "FTP" \
+    -annotate +0-30 "WFTPG" \
     -pointsize 40 \
     -annotate +0+40 "Server" \
     /home/GGFWZX/Desktop/wftpg/ui/wftpg.png 2>/dev/null
@@ -26,7 +26,7 @@ else
     </linearGradient>
   </defs>
   <rect x="20" y="20" width="216" height="216" rx="20" ry="20" fill="url(#grad)"/>
-  <text x="128" y="110" font-family="Arial, sans-serif" font-size="60" font-weight="bold" fill="white" text-anchor="middle">FTP</text>
+  <text x="128" y="110" font-family="Arial, sans-serif" font-size="50" font-weight="bold" fill="white" text-anchor="middle">WFTPG</text>
   <text x="128" y="160" font-family="Arial, sans-serif" font-size="30" fill="white" text-anchor="middle">Server</text>
 </svg>
 EOF

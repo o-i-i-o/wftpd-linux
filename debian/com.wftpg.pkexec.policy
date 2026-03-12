@@ -7,17 +7,120 @@
   <vendor_url>https://github.com/wftpg/wftpg</vendor_url>
   <icon_name>wftpg</icon_name>
   
-  <action id="com.wftpg.pkexec">
-    <description>Run WFTPG as root</description>
-    <description xml:lang="zh_CN">以root权限运行WFTPG</description>
-    <message>Authentication is required to run WFTPG Server Manager</message>
-    <message xml:lang="zh_CN">需要认证才能运行WFTPG服务器管理器</message>
+  <action id="com.wftpg.manage-service">
+    <description>Manage WFTPG systemd service</description>
+    <description xml:lang="zh_CN">管理WFTPG系统服务</description>
+    <message>Authentication is required to manage WFTPG service</message>
+    <message xml:lang="zh_CN">需要认证才能管理WFTPG服务</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/wftpg</annotate>
-    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/systemctl</annotate>
+  </action>
+  
+  <action id="com.wftpg.start-service">
+    <description>Start WFTPG service</description>
+    <description xml:lang="zh_CN">启动WFTPG服务</description>
+    <message>Start WFTPG SFTP/FTP Server</message>
+    <message xml:lang="zh_CN">启动WFTPG SFTP/FTP服务器</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/systemctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">start</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv2">wftpd</annotate>
+  </action>
+  
+  <action id="com.wftpg.stop-service">
+    <description>Stop WFTPG service</description>
+    <description xml:lang="zh_CN">停止WFTPG服务</description>
+    <message>Stop WFTPG SFTP/FTP Server</message>
+    <message xml:lang="zh_CN">停止WFTPG SFTP/FTP服务器</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/systemctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">stop</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv2">wftpd</annotate>
+  </action>
+  
+  <action id="com.wftpg.restart-service">
+    <description>Restart WFTPG service</description>
+    <description xml:lang="zh_CN">重启WFTPG服务</description>
+    <message>Restart WFTPG SFTP/FTP Server</message>
+    <message xml:lang="zh_CN">重启WFTPG SFTP/FTP服务器</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/systemctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">restart</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv2">wftpd</annotate>
+  </action>
+  
+  <action id="com.wftpg.status-service">
+    <description>Get WFTPG service status</description>
+    <description xml:lang="zh_CN">获取WFTPG服务状态</description>
+    <message>Get status of WFTPG SFTP/FTP Server</message>
+    <message xml:lang="zh_CN">获取WFTPG SFTP/FTP服务器状态</message>
+    <defaults>
+      <allow_any>yes</allow_any>
+      <allow_inactive>yes</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/systemctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">status</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv2">wftpd</annotate>
+  </action>
+  
+  <action id="com.wftpg.enable-service">
+    <description>Enable WFTPG service</description>
+    <description xml:lang="zh_CN">启用WFTPG服务</description>
+    <message>Enable WFTPG SFTP/FTP Server</message>
+    <message xml:lang="zh_CN">启用WFTPG SFTP/FTP服务器</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/systemctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">enable</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv2">wftpd</annotate>
+  </action>
+  
+  <action id="com.wftpg.disable-service">
+    <description>Disable WFTPG service</description>
+    <description xml:lang="zh_CN">禁用WFTPG服务</description>
+    <message>Disable WFTPG SFTP/FTP Server</message>
+    <message xml:lang="zh_CN">禁用WFTPG SFTP/FTP服务器</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/systemctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">disable</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv2">wftpd</annotate>
+  </action>
+  
+  <action id="com.wftpg.daemon-reload">
+    <description>Reload systemd daemon</description>
+    <description xml:lang="zh_CN">重新加载systemd守护进程</description>
+    <message>Reload systemd daemon configuration</message>
+    <message xml:lang="zh_CN">重新加载systemd守护进程配置</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/systemctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">daemon-reload</annotate>
   </action>
 </policyconfig>

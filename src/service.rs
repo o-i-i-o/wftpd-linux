@@ -10,24 +10,24 @@ pub struct ServiceManager {
 impl ServiceManager {
     pub fn new() -> Self {
         ServiceManager {
-            service_name: "wftpg".to_string(),
-            service_path: "/etc/systemd/system/wftpg.service".to_string(),
+            service_name: "wftpd".to_string(),
+            service_path: "/lib/systemd/system/wftpd.service".to_string(),
         }
     }
 
     pub fn install_service(&self, binary_path: &str) -> Result<()> {
-        let service_content = format!(
+        let service = format!(
             r#"[Unit]
-Description=WFTPG - SFTP/FTP Server Management Tool
+Description=WFTPG SFTP/FTP Server
 After=network.target
 
 [Service]
 Type=simple
-ExecStart={} --service
+ExecStart={}
 Restart=on-failure
-RestartSec=5
-User=root
-WorkingDirectory=/etc/wftpg
+User=wftpg
+Group=wftpg
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
@@ -35,8 +35,7 @@ WantedBy=multi-user.target
             binary_path
         );
 
-        fs::write(&self.service_path, service_content)?;
-
+        fs::write(&self.service_path, service)?;
         Ok(())
     }
 
@@ -59,9 +58,13 @@ WantedBy=multi-user.target
     }
 
     pub fn stop_service(&self) -> Result<()> {
-        let _status = std::process::Command::new("systemctl")
+        let status = std::process::Command::new("systemctl")
             .args(["stop", &self.service_name])
             .status()?;
+        
+        if !status.success() {
+            anyhow::bail!("Failed to stop service");
+        }
         Ok(())
     }
 

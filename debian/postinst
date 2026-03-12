@@ -1,32 +1,150 @@
 #!/bin/sh
 set -e
 
+WFTPG_USER="wftpg"
+WFTPG_GROUP="wftpg"
+WFTPG_HOME="/var/lib/wftpg"
+
+create_wftpg_user() {
+    if ! id "$WFTPG_USER" > /dev/null 2>&1; then
+        echo "创建 wftpg 系统用户..."
+        useradd --system \
+                --shell /usr/sbin/nologin \
+                --home-dir "$WFTPG_HOME" \
+                --no-create-home \
+                --user-group \
+                --comment "WFTPG SFTP/FTP Server" \
+                "$WFTPG_USER" 2>/dev/null || true
+        
+        if id "$WFTPG_USER" > /dev/null 2>&1; then
+            echo "用户 $WFTPG_USER 创建成功"
+        else
+            echo "警告: 无法创建用户 $WFTPG_USER"
+        fi
+    else
+        echo "用户 $WFTPG_USER 已存在"
+    fi
+}
+
+setup_directories() {
+    mkdir -p /etc/wftpg
+    chmod 755 /etc/wftpg
+    chown root:root /etc/wftpg
+    
+    if [ ! -f /etc/wftpg/config.toml ] && [ -f /etc/wftpg/config.toml.example ]; then
+        cp /etc/wftpg/config.toml.example /etc/wftpg/config.toml
+        chmod 644 /etc/wftpg/config.toml
+        chown root:root /etc/wftpg/config.toml
+        echo "已创建默认配置文件 /etc/wftpg/config.toml"
+    fi
+    
+    mkdir -p /var/log/wftpg
+    chmod 755 /var/log/wftpg
+    
+    mkdir -p /var/lib/wftpg
+    chmod 755 /var/lib/wftpg
+    
+    mkdir -p /var/lib/wftpg/ssh
+    chmod 700 /var/lib/wftpg/ssh
+    
+    mkdir -p /var/lib/wftpg/share
+    chmod 755 /var/lib/wftpg/share
+    
+    if id "$WFTPG_USER" > /dev/null 2>&1; then
+        chown -R "$WFTPG_USER:$WFTPG_GROUP" /var/log/wftpg
+        chown -R "$WFTPG_USER:$WFTPG_GROUP" /var/lib/wftpg
+        chown "$WFTPG_USER:$WFTPG_GROUP" /etc/wftpg
+    else
+        chown -R root:root /var/log/wftpg
+        chown -R root:root /var/lib/wftpg
+    fi
+}
+
+setup_permissions() {
+    if [ -f /usr/bin/wftpd ]; then
+        chmod 755 /usr/bin/wftpd
+        chown root:root /usr/bin/wftpd
+        if command -v setcap > /dev/null 2>&1; then
+            setcap 'cap_net_bind_service=+ep' /usr/bin/wftpd 2>/dev/null || true
+        fi
+    fi
+    
+    if [ -f /usr/bin/wftp-gui ]; then
+        chmod 755 /usr/bin/wftp-gui
+        chown root:root /usr/bin/wftp-gui
+    fi
+    
+    if [ -f /usr/share/polkit-1/actions/com.wftpg.pkexec.policy ]; then
+        chmod 644 /usr/share/polkit-1/actions/com.wftpg.pkexec.policy
+        chown root:root /usr/share/polkit-1/actions/com.wftpg.pkexec.policy
+    fi
+    
+    if [ -f /lib/systemd/system/wftpd.service ]; then
+        chmod 644 /lib/systemd/system/wftpd.service
+        chown root:root /lib/systemd/system/wftpd.service
+    fi
+}
+
+generate_ssh_host_key() {
+    SSH_KEY_DIR="/var/lib/wftpg/ssh"
+    SSH_KEY_FILE="$SSH_KEY_DIR/ssh_host_rsa_key"
+    
+    if [ ! -f "$SSH_KEY_FILE" ]; then
+        echo "生成SSH主机密钥..."
+        ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_FILE" -N "" -q 2>/dev/null || true
+        
+        if [ -f "$SSH_KEY_FILE" ]; then
+            chmod 600 "$SSH_KEY_FILE"
+            chmod 644 "${SSH_KEY_FILE}.pub"
+            if id "$WFTPG_USER" > /dev/null 2>&1; then
+                chown "$WFTPG_USER:$WFTPG_GROUP" "$SSH_KEY_FILE" "${SSH_KEY_FILE}.pub"
+            fi
+            echo "SSH主机密钥生成成功"
+        fi
+    fi
+}
+
 case "$1" in
     configure)
         update-desktop-database /usr/share/applications 2>/dev/null || true
-        update-mime-database /usr/share/mime 2>/dev/null || true
         gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
         
-        if [ ! -d /etc/wftpg ]; then
-            mkdir -p /etc/wftpg
-            chmod 755 /etc/wftpg
+        create_wftpg_user
+        setup_directories
+        setup_permissions
+        generate_ssh_host_key
+        
+        if command -v systemctl > /dev/null 2>&1; then
+            systemctl daemon-reload > /dev/null 2>&1 || true
         fi
         
-        if [ ! -d /var/log/wftpg ]; then
-            mkdir -p /var/log/wftpg
-            chmod 755 /var/log/wftpg
-        fi
-        
-        if [ -f /usr/bin/wftpg-launcher ]; then
-            chmod 755 /usr/bin/wftpg-launcher
-        fi
-        
-        if command -v systemctl >/dev/null 2>&1; then
-            systemctl daemon-reload >/dev/null 2>&1 || true
-        fi
-        
-        echo "WFTPG has been installed successfully."
-        echo "You can launch it from the application menu or run 'wftpg' command."
+        echo ""
+        echo "========================================"
+        echo "  WFTPG 安装完成"
+        echo "========================================"
+        echo ""
+        echo "程序组成:"
+        echo "  wftp-gui    - GUI管理界面"
+        echo "  wftpd       - 后台服务程序"
+        echo ""
+        echo "启动方式:"
+        echo "  1. GUI: 应用程序菜单 -> WFTPG"
+        echo "  2. GUI: 终端运行 wftp-gui"
+        echo "  3. 服务: systemctl start wftpd"
+        echo ""
+        echo "目录结构:"
+        echo "  配置: /etc/wftpg/"
+        echo "  日志: /var/log/wftpg/"
+        echo "  数据: /var/lib/wftpg/"
+        echo ""
+        echo "Systemd服务管理:"
+        echo "  systemctl enable wftpd   # 开机自启"
+        echo "  systemctl start wftpd    # 启动服务"
+        echo "  systemctl status wftpd   # 查看状态"
+        echo ""
+        echo "注意: 后台服务已设置CAP_NET_BIND_SERVICE能力"
+        echo "      可以绑定特权端口(21/22)而无需root权限"
+        echo "========================================"
         ;;
     
     abort-upgrade|abort-remove|abort-deconfigure)

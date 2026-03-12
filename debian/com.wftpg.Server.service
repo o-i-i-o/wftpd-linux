@@ -1,5 +1,0 @@
-[D-BUS Service]
-Name=com.wftpg.Server
-Exec=/usr/bin/wftpg --dbus
-User=root
-SystemdService=wftpg.service

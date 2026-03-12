@@ -1,7 +1,7 @@
 use gtk::prelude::*;
 use gtk::{
     Box, Orientation, Label, Button, Entry, Frame, ScrolledWindow, TreeView, ListStore,
-    CellRendererText, TreeViewColumn, CellRendererToggle, CheckButton,
+    CellRendererText, TreeViewColumn, CellRendererToggle, CheckButton, glib,
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -167,101 +167,125 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let rmdir_cb_clone = rmdir_cb.clone();
     let rename_cb_clone = rename_cb.clone();
     let append_cb_clone = append_cb.clone();
-    add_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone, @strong username_entry_clone, @strong password_entry_clone, @strong home_entry_clone,
-               @strong read_cb_clone, @strong write_cb_clone, @strong delete_cb_clone, @strong list_cb_clone,
-               @strong mkdir_cb_clone, @strong rmdir_cb_clone, @strong rename_cb_clone, @strong append_cb_clone => move |_| {
-            let username = username_entry_clone.text();
-            let password = password_entry_clone.text();
-            let home = home_entry_clone.text();
-            if !username.is_empty() && !password.is_empty() {
-                let username_str = username.to_string();
-                let password_str = password.to_string();
-                let home_str = if home.is_empty() {
-                    get_default_home_dir(&username_str)
-                } else {
-                    home.to_string()
-                };
+    add_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong username_entry_clone, @strong password_entry_clone, @strong home_entry_clone,
+           @strong read_cb_clone, @strong write_cb_clone, @strong delete_cb_clone, @strong list_cb_clone,
+           @strong mkdir_cb_clone, @strong rmdir_cb_clone, @strong rename_cb_clone, @strong append_cb_clone => move |_| {
+        let username = username_entry_clone.text().to_string();
+        let password = password_entry_clone.text().to_string();
+        let home = home_entry_clone.text().to_string();
+        
+        if username.is_empty() || password.is_empty() {
+            return;
+        }
 
-                let perms = wftpg::users::Permissions {
-                    can_read: read_cb_clone.is_active(),
-                    can_write: write_cb_clone.is_active(),
-                    can_delete: delete_cb_clone.is_active(),
-                    can_list: list_cb_clone.is_active(),
-                    can_mkdir: mkdir_cb_clone.is_active(),
-                    can_rmdir: rmdir_cb_clone.is_active(),
-                    can_rename: rename_cb_clone.is_active(),
-                    can_append: append_cb_clone.is_active(),
-                    quota_mb: None,
-                    speed_limit_kbps: None,
-                };
+        let home_str = if home.is_empty() {
+            get_default_home_dir(&username)
+        } else {
+            home
+        };
 
-                let state = state_clone.lock().unwrap();
-                let mut users = state.user_manager.lock().unwrap();
-                if users.add_user(&username_str, &password_str, &home_str, false).is_ok() {
-                    if let Err(e) = users.update_permissions(&username_str, perms.clone()) {
-                        log::error!("Failed to set permissions: {}", e);
+        let perms = wftpg::users::Permissions {
+            can_read: read_cb_clone.is_active(),
+            can_write: write_cb_clone.is_active(),
+            can_delete: delete_cb_clone.is_active(),
+            can_list: list_cb_clone.is_active(),
+            can_mkdir: mkdir_cb_clone.is_active(),
+            can_rmdir: rmdir_cb_clone.is_active(),
+            can_rename: rename_cb_clone.is_active(),
+            can_append: append_cb_clone.is_active(),
+            quota_mb: None,
+            speed_limit_kbps: None,
+        };
+
+        let state = Arc::clone(&state_clone);
+        let store = store_clone.clone();
+        let username_clear = username_entry_clone.clone();
+        let password_clear = password_entry_clone.clone();
+        let home_clear = home_entry_clone.clone();
+        let home_dir = home_str.clone();
+        let uname = username.clone();
+
+        glib::MainContext::ref_thread_default().spawn_local(async move {
+            if let Ok(s) = state.try_lock() {
+                if let Ok(mut users) = s.user_manager.try_lock() {
+                    if users.add_user(&uname, &password, &home_dir, false).is_ok() {
+                        if let Err(e) = users.update_permissions(&uname, perms) {
+                            log::error!("Failed to set permissions: {}", e);
+                        }
+                        let _ = users.save(&s.users_path);
+                        
+                        if let Err(e) = std::fs::create_dir_all(&home_dir) {
+                            log::warn!("Failed to create home directory: {}", e);
+                        }
+
+                        refresh_user_list(&store, &state);
+                        username_clear.set_text("");
+                        password_clear.set_text("");
+                        home_clear.set_text("");
+                        log::info!("User {} added with home {}", uname, home_dir);
                     }
-                    let _ = state.save_users();
-                    
-                    if let Err(e) = std::fs::create_dir_all(&home_str) {
-                        log::warn!("Failed to create home directory: {}", e);
-                    }
-
-                    refresh_user_list(&store_clone, &state_clone);
-                    username_entry_clone.set_text("");
-                    password_entry_clone.set_text("");
-                    home_entry_clone.set_text("");
-                    log::info!("User {} added with home {}", username_str, home_str);
                 }
             }
-        }),
-    );
+        });
+    }));
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
     let tree_clone = tree.clone();
-    delete_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
-            let selection = tree_clone.selection();
-            if let Some((model, iter)) = selection.selected() {
-                let username: String = model.value(&iter, 0).get().unwrap_or_default();
-                let state = state_clone.lock().unwrap();
-                let _ = state.user_manager.lock().unwrap().remove_user(&username);
-                let _ = state.save_users();
-                refresh_user_list(&store_clone, &state_clone);
-                log::info!("User {} deleted", username);
-            }
-        }),
-    );
+    delete_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+        let selection = tree_clone.selection();
+        if let Some((model, iter)) = selection.selected() {
+            let username: String = model.value(&iter, 0).get().unwrap_or_default();
+            let state = Arc::clone(&state_clone);
+            let store = store_clone.clone();
+            let uname = username.clone();
+            
+            glib::MainContext::ref_thread_default().spawn_local(async move {
+                if let Ok(s) = state.try_lock() {
+                    if let Ok(mut users) = s.user_manager.try_lock() {
+                        let _ = users.remove_user(&uname);
+                        let _ = users.save(&s.users_path);
+                    }
+                }
+                refresh_user_list(&store, &state);
+                log::info!("User {} deleted", uname);
+            });
+        }
+    }));
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
     let tree_clone = tree.clone();
-    toggle_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
-            let selection = tree_clone.selection();
-            if let Some((model, iter)) = selection.selected() {
-                let username: String = model.value(&iter, 0).get().unwrap_or_default();
-                let current_enabled: bool = model.value(&iter, 2).get().unwrap_or(true);
-                
-                let state = state_clone.lock().unwrap();
-                if state.user_manager.lock().unwrap().set_user_enabled(&username, !current_enabled).is_ok() {
-                    let _ = state.save_users();
-                    refresh_user_list(&store_clone, &state_clone);
-                    log::info!("User {} enabled status toggled to {}", username, !current_enabled);
+    toggle_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+        let selection = tree_clone.selection();
+        if let Some((model, iter)) = selection.selected() {
+            let username: String = model.value(&iter, 0).get().unwrap_or_default();
+            let current_enabled: bool = model.value(&iter, 2).get().unwrap_or(true);
+            
+            let state = Arc::clone(&state_clone);
+            let store = store_clone.clone();
+            let uname = username.clone();
+            let new_enabled = !current_enabled;
+            
+            glib::MainContext::ref_thread_default().spawn_local(async move {
+                if let Ok(s) = state.try_lock() {
+                    if let Ok(mut users) = s.user_manager.try_lock() {
+                        if users.set_user_enabled(&uname, new_enabled).is_ok() {
+                            let _ = users.save(&s.users_path);
+                        }
+                    }
                 }
-            }
-        }),
-    );
+                refresh_user_list(&store, &state);
+                log::info!("User {} enabled status toggled to {}", uname, new_enabled);
+            });
+        }
+    }));
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
-    refresh_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone => move |_| {
-            refresh_user_list(&store_clone, &state_clone);
-        }),
-    );
+    refresh_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
+        refresh_user_list(&store_clone, &state_clone);
+    }));
 
     container
 }
@@ -276,13 +300,15 @@ fn get_default_home_dir(username: &str) -> String {
 
 fn refresh_user_list(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
     store.clear();
-    let state = state.lock().unwrap();
-    let users = state.user_manager.lock().unwrap();
-    for (username, user) in users.list_users() {
-        let iter = store.append();
-        store.set_value(&iter, 0, &username.to_value());
-        store.set_value(&iter, 1, &user.home_dir.to_value());
-        store.set_value(&iter, 2, &user.enabled.to_value());
-        store.set_value(&iter, 3, &user.permissions.to_string().to_value());
+    if let Ok(s) = state.try_lock() {
+        if let Ok(users) = s.user_manager.try_lock() {
+            for (username, user) in users.list_users() {
+                let iter = store.append();
+                store.set_value(&iter, 0, &username.to_value());
+                store.set_value(&iter, 1, &user.home_dir.to_value());
+                store.set_value(&iter, 2, &user.enabled.to_value());
+                store.set_value(&iter, 3, &user.permissions.to_string().to_value());
+            }
+        }
     }
 }

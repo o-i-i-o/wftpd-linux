@@ -86,7 +86,12 @@ impl Default for Config {
             sftp: SftpConfig {
                 enabled: true,
                 default_home: default_home.clone(),
-                host_key_path: "/etc/wftpg/ssh_host_rsa_key".to_string(),
+                host_key_path: dirs::config_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("wftpg")
+                    .join("ssh_host_rsa_key")
+                    .to_string_lossy()
+                    .to_string(),
                 max_auth_attempts: 3,
                 auth_timeout: 60,
             },
@@ -100,7 +105,12 @@ impl Default for Config {
                 key_path: None,
             },
             logging: LoggingConfig {
-                log_dir: "/var/log/wftpg".to_string(),
+                log_dir: dirs::cache_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("wftpg")
+                    .join("logs")
+                    .to_string_lossy()
+                    .to_string(),
                 log_level: "info".to_string(),
                 max_log_size: 10 * 1024 * 1024,
                 max_log_files: 10,
@@ -123,7 +133,9 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             let config = Self::default();
-            config.save(path)?;
+            if let Err(e) = config.save(path) {
+                eprintln!("Warning: Failed to save default config: {}", e);
+            }
             return Ok(config);
         }
         
@@ -152,11 +164,17 @@ impl Config {
     }
     
     pub fn get_config_path() -> PathBuf {
-        PathBuf::from("/etc/wftpg/config.toml")
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("wftpg")
+            .join("config.toml")
     }
     
     pub fn get_users_path() -> PathBuf {
-        PathBuf::from("/etc/wftpg/users.json")
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("wftpg")
+            .join("users.json")
     }
     
     pub fn is_ip_allowed(&self, ip: &str) -> bool {
@@ -184,14 +202,16 @@ fn ip_matches_cidr(ip: &str, cidr: &str) -> Result<bool> {
         return Ok(true);
     }
     
-    if let Ok(ipv4) = ip.parse::<Ipv4Addr>()
-        && let Ok(net) = cidr.parse::<Ipv4Net>() {
-        return Ok(net.contains(&ipv4));
+    if let Ok(ipv4) = ip.parse::<Ipv4Addr>() {
+        if let Ok(net) = cidr.parse::<Ipv4Net>() {
+            return Ok(net.contains(&ipv4));
+        }
     }
     
-    if let Ok(ipv6) = ip.parse::<Ipv6Addr>()
-        && let Ok(net) = cidr.parse::<Ipv6Net>() {
-        return Ok(net.contains(&ipv6));
+    if let Ok(ipv6) = ip.parse::<Ipv6Addr>() {
+        if let Ok(net) = cidr.parse::<Ipv6Net>() {
+            return Ok(net.contains(&ipv6));
+        }
     }
     
     Ok(ip == cidr)

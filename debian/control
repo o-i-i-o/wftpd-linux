@@ -1,0 +1,19 @@
+Package: wftpg
+Version: 2.0.0
+Section: net
+Priority: optional
+Architecture: arm64
+Maintainer: WFTPG Developer <developer@wftpg.com>
+Description: SFTP/FTP GUI Management Tool
+ SFTP+FTP GUI Management Tool for ARM Linux.
+ A pure Rust + GTK implementation for managing
+ SFTP and FTP servers with a user-friendly interface.
+Description-zh_CN: SFTP/FTP图形化管理工具
+ 适用于ARM Linux的SFTP+FTP图形化管理工具。
+ 使用纯Rust + GTK实现，提供友好的用户界面来管理
+ SFTP和FTP服务器。
+Homepage: https://github.com/wftpg/wftpg
+Depends: libgtk-3-0, libc6,  policykit-1
+Recommends: openssh-server
+Suggests: proftpd-basic
+Installed-Size: 5000

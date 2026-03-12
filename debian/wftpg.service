@@ -1,0 +1,26 @@
+[Unit]
+Description=WFTPG SFTP/FTP Server Manager
+Documentation=https://github.com/wftpg/wftpg
+After=network.target graphical.target
+Wants=graphical.target
+
+[Service]
+Type=dbus
+BusName=com.wftpg.Server
+ExecStart=/usr/bin/wftpg --dbus
+Restart=on-failure
+RestartSec=5
+
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/run/user/0/Xauthority
+Environment=GDK_BACKEND=x11
+Environment=GTK_THEME=Adwaita:light
+
+User=root
+Group=root
+
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SYS_ADMIN
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

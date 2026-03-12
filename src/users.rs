@@ -6,6 +6,7 @@ use argon2::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::path::Path;
 
@@ -52,6 +53,21 @@ impl Permissions {
     }
 }
 
+impl fmt::Display for Permissions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut perms = Vec::new();
+        if self.can_read { perms.push("读"); }
+        if self.can_write { perms.push("写"); }
+        if self.can_delete { perms.push("删"); }
+        if self.can_list { perms.push("列表"); }
+        if self.can_mkdir { perms.push("建目录"); }
+        if self.can_rmdir { perms.push("删目录"); }
+        if self.can_rename { perms.push("重命名"); }
+        if self.can_append { perms.push("追加"); }
+        write!(f, "{}", perms.join(","))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserManager {
     users: HashMap<String, User>,
@@ -67,10 +83,25 @@ impl UserManager {
             return Ok(Self::new());
         }
 
-        let content = fs::read_to_string(path).context("Failed to read users file")?;
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Warning: Failed to read users file: {}", e);
+                return Ok(Self::new());
+            }
+        };
 
-        let manager: UserManager =
-            serde_json::from_str(&content).context("Failed to parse users file")?;
+        if content.trim().is_empty() {
+            return Ok(Self::new());
+        }
+
+        let manager: UserManager = match serde_json::from_str(&content) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Warning: Failed to parse users file: {}", e);
+                return Ok(Self::new());
+            }
+        };
 
         Ok(manager)
     }
@@ -207,7 +238,15 @@ impl UserManager {
         self.users.get(username)
     }
 
+    pub fn get_users(&self) -> &std::collections::HashMap<String, User> {
+        &self.users
+    }
+
     pub fn get_all_users(&self) -> Vec<User> {
         self.users.values().cloned().collect()
+    }
+
+    pub fn list_users(&self) -> impl Iterator<Item = (&String, &User)> {
+        self.users.iter()
     }
 }

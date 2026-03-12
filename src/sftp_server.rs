@@ -66,7 +66,6 @@ impl SftpServer {
             *running = true;
         }
 
-        let config_clone = Arc::clone(&self.config);
         let user_manager_clone = Arc::clone(&self.user_manager);
         let logger_clone = Arc::clone(&self.logger);
         let running_clone = Arc::clone(&self.running);
@@ -84,13 +83,11 @@ impl SftpServer {
                         match accept_result {
                             Ok((socket, peer_addr)) => {
                                 let config = Arc::clone(&config);
-                                let config_clone = Arc::clone(&config_clone);
                                 let user_manager = Arc::clone(&user_manager_clone);
                                 let logger = Arc::clone(&logger_clone);
 
                                 tokio::spawn(async move {
                                     let handler = SftpHandler {
-                                        config: config_clone,
                                         user_manager,
                                         logger,
                                         authenticated: false,
@@ -165,7 +162,6 @@ impl SftpServer {
 }
 
 struct SftpHandler {
-    config: Arc<StdMutex<Config>>,
     user_manager: Arc<StdMutex<UserManager>>,
     logger: Arc<StdMutex<Logger>>,
     authenticated: bool,
@@ -180,7 +176,6 @@ struct SftpState {
     username: Option<String>,
     user_manager: Arc<StdMutex<UserManager>>,
     logger: Arc<StdMutex<Logger>>,
-    config: Arc<StdMutex<Config>>,
     handles: HashMap<String, SftpFileHandle>,
     next_handle_id: u32,
     sftp_version: u32,
@@ -266,19 +261,22 @@ impl russh::server::Handler for SftpHandler {
             }
         };
         
-        if enabled
-            && let Ok(stored_key) = tokio::fs::read_to_string(&user_pubkey_path).await
-            && let Ok(stored_pubkey) = keys::parse_public_key_base64(stored_key.trim())
-            && public_key == &stored_pubkey {
-            self.authenticated = true;
-            self.username = Some(user.to_string());
-            
-            let users = self.user_manager.lock().unwrap();
-            if let Some(u) = users.get_user(user) {
-                self.home_dir = Some(u.home_dir.clone());
-            }
+        if enabled {
+            if let Ok(stored_key) = tokio::fs::read_to_string(&user_pubkey_path).await {
+                if let Ok(stored_pubkey) = keys::parse_public_key_base64(stored_key.trim()) {
+                    if public_key == &stored_pubkey {
+                        self.authenticated = true;
+                        self.username = Some(user.to_string());
+                        
+                        let users = self.user_manager.lock().unwrap();
+                        if let Some(u) = users.get_user(user) {
+                            self.home_dir = Some(u.home_dir.clone());
+                        }
 
-            return Ok(server::Auth::Accept);
+                        return Ok(server::Auth::Accept);
+                    }
+                }
+            }
         }
 
         Ok(server::Auth::Reject { 
@@ -314,7 +312,6 @@ impl russh::server::Handler for SftpHandler {
                 username,
                 user_manager: Arc::clone(&self.user_manager),
                 logger: Arc::clone(&self.logger),
-                config: Arc::clone(&self.config),
                 handles: HashMap::new(),
                 next_handle_id: 0,
                 sftp_version: 3,
@@ -333,22 +330,23 @@ impl russh::server::Handler for SftpHandler {
         data: &[u8],
         session: &mut server::Session,
     ) -> Result<(), Self::Error> {
-        if self.sftp_channel == Some(channel)
-            && let Some(state) = &self.sftp_state {
-            let state_clone = Arc::clone(state);
-            let handle = session.handle();
-            let data_vec = data.to_vec();
-            
-            tokio::spawn(async move {
-                let response = {
-                    let mut state = state_clone.lock().await;
-                    state.process_sftp_data(&data_vec).await
-                };
+        if self.sftp_channel == Some(channel) {
+            if let Some(state) = &self.sftp_state {
+                let state_clone = Arc::clone(state);
+                let handle = session.handle();
+                let data_vec = data.to_vec();
                 
-                if let Ok(resp) = response {
-                    let _ = handle.data(channel, CryptoVec::from_slice(&resp)).await;
-                }
-            });
+                tokio::spawn(async move {
+                    let response = {
+                        let mut state = state_clone.lock().await;
+                        state.process_sftp_data(&data_vec).await
+                    };
+                    
+                    if let Ok(resp) = response {
+                        let _ = handle.data(channel, CryptoVec::from_slice(&resp)).await;
+                    }
+                });
+            }
         }
         Ok(())
     }
@@ -381,9 +379,10 @@ impl SftpState {
 
     fn check_permission(&self, check_fn: impl Fn(&crate::users::Permissions) -> bool) -> bool {
         let users = self.user_manager.lock().unwrap();
-        if let Some(username) = &self.username
-            && let Some(user) = users.get_user(username) {
-            return check_fn(&user.permissions);
+        if let Some(username) = &self.username {
+            if let Some(user) = users.get_user(username) {
+                return check_fn(&user.permissions);
+            }
         }
         false
     }

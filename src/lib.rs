@@ -28,22 +28,20 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new() -> anyhow::Result<Self> {
         let config_path = Config::get_config_path();
         let users_path = Config::get_users_path();
         
-        let config = Config::load(&config_path).unwrap_or_else(|_| Config::default());
-        let user_manager = UserManager::load(&users_path).unwrap_or_else(|_| UserManager::new());
+        let config = Config::load(&config_path)?;
+        let user_manager = UserManager::load(&users_path)?;
         
-        let mut logger = Logger::new(
+        let logger = Logger::new(
             &config.logging.log_dir,
             config.logging.max_log_size,
             config.logging.max_log_files,
         );
         
-        let _ = logger.init();
-        
-        AppState {
+        Ok(AppState {
             config: Arc::new(Mutex::new(config)),
             user_manager: Arc::new(Mutex::new(user_manager)),
             logger: Arc::new(Mutex::new(logger)),
@@ -53,7 +51,7 @@ impl AppState {
             service_manager: ServiceManager::new(),
             config_path,
             users_path,
-        }
+        })
     }
     
     pub fn save_config(&self) -> anyhow::Result<()> {
@@ -166,6 +164,6 @@ impl AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("Failed to create default AppState")
     }
 }

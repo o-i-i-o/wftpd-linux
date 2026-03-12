@@ -712,11 +712,12 @@ fn handle_ftp_connection(
                         let users = user_manager.lock().unwrap();
                         let user = current_user.as_ref().and_then(|u| users.get_user(u));
 
-                        if let Some(user) = user
-                            && !user.permissions.can_read {
+                        if let Some(user) = user {
+                            if !user.permissions.can_read {
                                 stream.write_all(b"550 Permission denied\r\n")?;
                                 continue;
                             }
+                        }
                     }
 
                     let file_size = std::fs::metadata(&file_path)?.len();
@@ -762,8 +763,8 @@ fn handle_ftp_connection(
                         };
 
                         let abort = Arc::clone(&abort_flag);
-                        if let Ok(mut data_stream) = data_result
-                            && let Ok(mut file) = std::fs::File::open(&file_path) {
+                        if let Ok(mut data_stream) = data_result {
+                            if let Ok(mut file) = std::fs::File::open(&file_path) {
                                 use std::io::Seek;
                                 if rest_offset > 0 {
                                     let _ = file.seek(std::io::SeekFrom::Start(rest_offset));
@@ -785,6 +786,7 @@ fn handle_ftp_connection(
                                     }
                                 }
                             }
+                        }
 
                         if passive_mode {
                             let mut listeners = passive_listeners.lock().unwrap();
@@ -820,11 +822,12 @@ fn handle_ftp_connection(
                         let users = user_manager.lock().unwrap();
                         let user = current_user.as_ref().and_then(|u| users.get_user(u));
 
-                        if let Some(user) = user
-                            && !user.permissions.can_write {
+                        if let Some(user) = user {
+                            if !user.permissions.can_write {
                                 stream.write_all(b"550 Permission denied\r\n")?;
                                 continue;
                             }
+                        }
                     }
 
                     let file_path = Path::new(&cwd).join(filename);
@@ -927,11 +930,12 @@ fn handle_ftp_connection(
                         let users = user_manager.lock().unwrap();
                         let user = current_user.as_ref().and_then(|u| users.get_user(u));
 
-                        if let Some(user) = user
-                            && !user.permissions.can_append {
+                        if let Some(user) = user {
+                            if !user.permissions.can_append {
                                 stream.write_all(b"550 Permission denied\r\n")?;
                                 continue;
                             }
+                        }
                     }
 
                     let file_path = Path::new(&cwd).join(filename);
@@ -968,8 +972,8 @@ fn handle_ftp_connection(
                         };
 
                         let abort = Arc::clone(&abort_flag);
-                        if let Ok(mut data_stream) = data_result
-                            && let Ok(mut file) = std::fs::OpenOptions::new()
+                        if let Ok(mut data_stream) = data_result {
+                            if let Ok(mut file) = std::fs::OpenOptions::new()
                                 .append(true)
                                 .create(true)
                                 .open(&file_path)
@@ -990,6 +994,7 @@ fn handle_ftp_connection(
                                     }
                                 }
                             }
+                        }
 
                         if passive_mode {
                             let mut listeners = passive_listeners.lock().unwrap();
@@ -1019,11 +1024,12 @@ fn handle_ftp_connection(
                     let users = user_manager.lock().unwrap();
                     let user = current_user.as_ref().and_then(|u| users.get_user(u));
 
-                    if let Some(user) = user
-                        && !user.permissions.can_delete {
+                    if let Some(user) = user {
+                        if !user.permissions.can_delete {
                             stream.write_all(b"550 Permission denied\r\n")?;
                             continue;
                         }
+                    }
                 }
 
                 if let Some(filename) = arg {
@@ -1053,11 +1059,12 @@ fn handle_ftp_connection(
                     let users = user_manager.lock().unwrap();
                     let user = current_user.as_ref().and_then(|u| users.get_user(u));
 
-                    if let Some(user) = user
-                        && !user.permissions.can_mkdir {
+                    if let Some(user) = user {
+                        if !user.permissions.can_mkdir {
                             stream.write_all(b"550 Permission denied\r\n")?;
                             continue;
                         }
+                    }
                 }
 
                 if let Some(dirname) = arg {
@@ -1087,11 +1094,12 @@ fn handle_ftp_connection(
                     let users = user_manager.lock().unwrap();
                     let user = current_user.as_ref().and_then(|u| users.get_user(u));
 
-                    if let Some(user) = user
-                        && !user.permissions.can_rmdir {
+                    if let Some(user) = user {
+                        if !user.permissions.can_rmdir {
                             stream.write_all(b"550 Permission denied\r\n")?;
                             continue;
                         }
+                    }
                 }
 
                 if let Some(dirname) = arg {
@@ -1121,11 +1129,12 @@ fn handle_ftp_connection(
                     let users = user_manager.lock().unwrap();
                     let user = current_user.as_ref().and_then(|u| users.get_user(u));
 
-                    if let Some(user) = user
-                        && !user.permissions.can_rename {
+                    if let Some(user) = user {
+                        if !user.permissions.can_rename {
                             stream.write_all(b"550 Permission denied\r\n")?;
                             continue;
                         }
+                    }
                 }
 
                 if let Some(from_name) = arg {
@@ -1240,8 +1249,8 @@ fn find_available_passive_port(
 fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
 
-    if let Ok(time) = metadata.modified()
-        && let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+    if let Ok(time) = metadata.modified() {
+        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
             let secs = duration.as_secs();
             let days = secs / 86400;
             let years = 1970 + days / 365;
@@ -1252,16 +1261,18 @@ fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
             let minute = (secs % 3600) / 60;
             return format!("{:04}-{:02}-{:02} {:02}:{:02}", years, months, day, hour, minute);
         }
+    }
     "Jan 01 00:00".to_string()
 }
 
 fn get_file_mtime_raw(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
 
-    if let Ok(time) = metadata.modified()
-        && let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+    if let Ok(time) = metadata.modified() {
+        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
             return format!("{}", duration.as_secs());
         }
+    }
     "0".to_string()
 }
 
@@ -1276,10 +1287,11 @@ fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
 
     facts.push(format!("size={}", metadata.len()));
 
-    if let Ok(time) = metadata.modified()
-        && let Ok(duration) = time.duration_since(std::time::UNIX_EPOCH) {
+    if let Ok(time) = metadata.modified() {
+        if let Ok(duration) = time.duration_since(std::time::UNIX_EPOCH) {
             facts.push(format!("modify={}", duration.as_secs()));
         }
+    }
 
     facts.join("; ")
 }

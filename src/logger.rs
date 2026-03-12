@@ -49,21 +49,41 @@ pub struct Logger {
 impl Logger {
     pub fn new(log_dir: &str, max_size: u64, max_files: usize) -> Self {
         let path = PathBuf::from(log_dir);
+        
+        let (path, current_file, current_size) = if fs::create_dir_all(&path).is_err() {
+            let fallback = dirs::cache_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("wftpg");
+            let _ = fs::create_dir_all(&fallback);
+            (fallback, None, 0)
+        } else {
+            let log_path = path.join(format!("wftpg-{}.log", Utc::now().format("%Y-%m-%d")));
+            let (file, size) = match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                Ok(f) => {
+                    let size = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+                    (Some(f), size)
+                }
+                Err(_) => (None, 0),
+            };
+            (path, file, size)
+        };
 
         Logger {
             log_dir: path,
             max_size,
             max_files,
-            current_file: None,
-            current_size: 0,
+            current_file,
+            current_size,
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(1000))),
             max_buffer_size: 1000,
         }
     }
 
     pub fn init(&mut self) -> std::io::Result<()> {
-        fs::create_dir_all(&self.log_dir)?;
-        self.rotate_if_needed()?;
         Ok(())
     }
 
@@ -188,6 +208,10 @@ impl Logger {
     pub fn get_recent_logs(&self, count: usize) -> Vec<LogEntry> {
         let buffer = self.buffer.lock().unwrap();
         buffer.iter().rev().take(count).cloned().collect()
+    }
+
+    pub fn get_buffer(&self) -> Arc<Mutex<VecDeque<LogEntry>>> {
+        Arc::clone(&self.buffer)
     }
 
     pub fn info(&mut self, source: &str, message: &str) {

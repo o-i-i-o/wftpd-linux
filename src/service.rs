@@ -68,6 +68,17 @@ WantedBy=multi-user.target
         Ok(())
     }
 
+    pub fn restart_service(&self) -> Result<()> {
+        let status = std::process::Command::new("systemctl")
+            .args(["restart", &self.service_name])
+            .status()?;
+        
+        if !status.success() {
+            anyhow::bail!("Failed to restart service");
+        }
+        Ok(())
+    }
+
     pub fn is_service_running(&self) -> bool {
         std::process::Command::new("systemctl")
             .args(["is-active", "--quiet", &self.service_name])

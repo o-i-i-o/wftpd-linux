@@ -3,6 +3,7 @@ pub mod user_tab;
 pub mod security_tab;
 pub mod service_tab;
 pub mod log_tab;
+pub mod file_log_tab;
 
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, Notebook, Label};
@@ -66,6 +67,11 @@ pub fn build_ui(app: &Application) {
     let log_tab_label = Label::new(Some("日志查看"));
     log_tab_label.set_markup("<span size='large'>日志查看</span>");
     notebook.append_page(&log_box, Some(&log_tab_label));
+
+    let file_log_box = file_log_tab::create(&state);
+    let file_log_tab_label = Label::new(Some("文件操作日志"));
+    file_log_tab_label.set_markup("<span size='large'>文件操作日志</span>");
+    notebook.append_page(&file_log_box, Some(&file_log_tab_label));
 
     window.add(&notebook);
     window.show_all();

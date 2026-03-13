@@ -25,6 +25,8 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FtpConfig {
     pub enabled: bool,
+    #[serde(default = "default_bind_ip")]
+    pub bind_ip: String,
     pub default_home: String,
     pub passive_ports: (u16, u16),
     pub welcome_message: String,
@@ -37,6 +39,10 @@ pub struct FtpConfig {
     pub encoding: String,
 }
 
+fn default_bind_ip() -> String {
+    "0.0.0.0".to_string()
+}
+
 fn default_encoding() -> String {
     "UTF-8".to_string()
 }
@@ -44,6 +50,8 @@ fn default_encoding() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SftpConfig {
     pub enabled: bool,
+    #[serde(default = "default_bind_ip")]
+    pub bind_ip: String,
     pub default_home: String,
     pub host_key_path: String,
     pub max_auth_attempts: u32,
@@ -92,6 +100,7 @@ impl Default for Config {
             },
             ftp: FtpConfig {
                 enabled: true,
+                bind_ip: "0.0.0.0".to_string(),
                 default_home: "/var/lib/wftpg/share".to_string(),
                 passive_ports: (50000, 51000),
                 welcome_message: "Welcome to WFTPG FTP Server".to_string(),
@@ -102,6 +111,7 @@ impl Default for Config {
             },
             sftp: SftpConfig {
                 enabled: true,
+                bind_ip: "0.0.0.0".to_string(),
                 default_home: "/var/lib/wftpg/share".to_string(),
                 host_key_path: "/var/lib/wftpg/ssh/ssh_host_rsa_key".to_string(),
                 max_auth_attempts: 3,

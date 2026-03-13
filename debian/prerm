@@ -7,11 +7,18 @@ case "$1" in
         gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
         
         if command -v systemctl > /dev/null 2>&1; then
-            if systemctl is-active --quiet wftpg 2>/dev/null; then
-                systemctl stop wftpg 2>/dev/null || true
+            if systemctl is-active --quiet wftpd 2>/dev/null; then
+                systemctl stop wftpd 2>/dev/null || true
             fi
-            if systemctl is-enabled --quiet wftpg 2>/dev/null; then
-                systemctl disable wftpg 2>/dev/null || true
+            if systemctl is-enabled --quiet wftpd 2>/dev/null; then
+                systemctl disable wftpd 2>/dev/null || true
+            fi
+            
+            if systemctl is-active --quiet wftpg-dbus 2>/dev/null; then
+                systemctl stop wftpg-dbus 2>/dev/null || true
+            fi
+            if systemctl is-enabled --quiet wftpg-dbus 2>/dev/null; then
+                systemctl disable wftpg-dbus 2>/dev/null || true
             fi
         fi
         ;;

@@ -5,6 +5,7 @@
 pub mod config;
 pub mod users;
 pub mod logger;
+pub mod file_logger;
 pub mod ftp_server;
 pub mod sftp_server;
 pub mod service;
@@ -20,6 +21,7 @@ use std::path::PathBuf;
 use config::Config;
 use users::UserManager;
 use logger::Logger;
+use file_logger::FileLogger;
 use server_manager::ServerManager;
 use service::ServiceManager;
 
@@ -27,6 +29,7 @@ pub struct AppState {
     pub config: Arc<Mutex<Config>>,
     pub user_manager: Arc<Mutex<UserManager>>,
     pub logger: Arc<Mutex<Logger>>,
+    pub file_logger: Arc<Mutex<FileLogger>>,
     server_manager: ServerManager,
     pub service_manager: ServiceManager,
     pub config_path: PathBuf,
@@ -47,10 +50,16 @@ impl AppState {
             config.logging.max_log_files,
         );
         
+        let file_logger = FileLogger::new(
+            &config.logging.log_dir,
+            config.logging.max_log_size,
+        );
+        
         Ok(AppState {
             config: Arc::new(Mutex::new(config)),
             user_manager: Arc::new(Mutex::new(user_manager)),
             logger: Arc::new(Mutex::new(logger)),
+            file_logger: Arc::new(Mutex::new(file_logger)),
             server_manager: ServerManager::new(),
             service_manager: ServiceManager::new(),
             config_path,
@@ -70,13 +79,12 @@ impl AppState {
         Ok(())
     }
     
-    // === FTP Service ===
-    
     pub fn start_ftp(&self) -> anyhow::Result<()> {
         self.server_manager.start_ftp(
             Arc::clone(&self.config),
             Arc::clone(&self.user_manager),
             Arc::clone(&self.logger),
+            Arc::clone(&self.file_logger),
         )
     }
     
@@ -88,13 +96,12 @@ impl AppState {
         self.server_manager.is_ftp_running()
     }
     
-    // === SFTP Service ===
-    
     pub fn start_sftp(&self) -> anyhow::Result<()> {
         self.server_manager.start_sftp(
             Arc::clone(&self.config),
             Arc::clone(&self.user_manager),
             Arc::clone(&self.logger),
+            Arc::clone(&self.file_logger),
         )
     }
     
@@ -105,8 +112,6 @@ impl AppState {
     pub fn is_sftp_running(&self) -> bool {
         self.server_manager.is_sftp_running()
     }
-    
-    // === All Services ===
     
     pub fn start_all(&self) -> anyhow::Result<()> {
         let (ftp_enabled, sftp_enabled) = {

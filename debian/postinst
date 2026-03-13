@@ -31,11 +31,22 @@ setup_directories() {
     chmod 755 /etc/wftpg
     chown root:root /etc/wftpg
     
+    mkdir -p /etc/wftpg/keys
+    chmod 755 /etc/wftpg/keys
+    chown root:root /etc/wftpg/keys
+    
     if [ ! -f /etc/wftpg/config.toml ] && [ -f /etc/wftpg/config.toml.example ]; then
         cp /etc/wftpg/config.toml.example /etc/wftpg/config.toml
         chmod 644 /etc/wftpg/config.toml
         chown root:root /etc/wftpg/config.toml
         echo "已创建默认配置文件 /etc/wftpg/config.toml"
+    fi
+    
+    if [ ! -f /etc/wftpg/users.json ] && [ -f /etc/wftpg/users.json.example ]; then
+        cp /etc/wftpg/users.json.example /etc/wftpg/users.json
+        chmod 644 /etc/wftpg/users.json
+        chown root:root /etc/wftpg/users.json
+        echo "已创建默认用户配置 /etc/wftpg/users.json"
     fi
     
     mkdir -p /var/log/wftpg
@@ -74,6 +85,11 @@ setup_permissions() {
         chown root:root /usr/bin/wftp-gui
     fi
     
+    if [ -f /usr/libexec/wftpg-dbus ]; then
+        chmod 755 /usr/libexec/wftpg-dbus
+        chown root:root /usr/libexec/wftpg-dbus
+    fi
+    
     if [ -f /usr/share/polkit-1/actions/com.wftpg.pkexec.policy ]; then
         chmod 644 /usr/share/polkit-1/actions/com.wftpg.pkexec.policy
         chown root:root /usr/share/polkit-1/actions/com.wftpg.pkexec.policy
@@ -82,6 +98,16 @@ setup_permissions() {
     if [ -f /lib/systemd/system/wftpd.service ]; then
         chmod 644 /lib/systemd/system/wftpd.service
         chown root:root /lib/systemd/system/wftpd.service
+    fi
+    
+    if [ -f /lib/systemd/system/wftpg-dbus.service ]; then
+        chmod 644 /lib/systemd/system/wftpg-dbus.service
+        chown root:root /lib/systemd/system/wftpg-dbus.service
+    fi
+    
+    if [ -f /etc/dbus-1/system.d/com.wftpg-dbus.conf ]; then
+        chmod 644 /etc/dbus-1/system.d/com.wftpg-dbus.conf
+        chown root:root /etc/dbus-1/system.d/com.wftpg-dbus.conf
     fi
 }
 
@@ -104,6 +130,18 @@ generate_ssh_host_key() {
     fi
 }
 
+enable_services() {
+    if command -v systemctl > /dev/null 2>&1; then
+        systemctl daemon-reload > /dev/null 2>&1 || true
+        
+        if [ -f /lib/systemd/system/wftpg-dbus.service ]; then
+            systemctl enable wftpg-dbus > /dev/null 2>&1 || true
+            systemctl start wftpg-dbus > /dev/null 2>&1 || true
+            echo "已启用并启动 wftpg-dbus 服务"
+        fi
+    fi
+}
+
 case "$1" in
     configure)
         update-desktop-database /usr/share/applications 2>/dev/null || true
@@ -113,10 +151,7 @@ case "$1" in
         setup_directories
         setup_permissions
         generate_ssh_host_key
-        
-        if command -v systemctl > /dev/null 2>&1; then
-            systemctl daemon-reload > /dev/null 2>&1 || true
-        fi
+        enable_services
         
         echo ""
         echo "========================================"
@@ -126,6 +161,7 @@ case "$1" in
         echo "程序组成:"
         echo "  wftp-gui    - GUI管理界面"
         echo "  wftpd       - 后台服务程序"
+        echo "  wftpg-dbus  - D-Bus配置服务"
         echo ""
         echo "启动方式:"
         echo "  1. GUI: 应用程序菜单 -> WFTPG"

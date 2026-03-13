@@ -1,10 +1,9 @@
-//! Server Manager - Manages FTP and SFTP server instances
-
 use std::sync::{Arc, Mutex};
 
 use crate::config::Config;
 use crate::users::UserManager;
 use crate::logger::Logger;
+use crate::file_logger::FileLogger;
 use crate::ftp_server::FtpServer;
 use crate::sftp_server::SftpServer;
 
@@ -23,93 +22,68 @@ impl ServerManager {
         }
     }
     
-    // === FTP Server ===
-    
     pub fn start_ftp(
         &self,
         config: Arc<Mutex<Config>>,
         user_manager: Arc<Mutex<UserManager>>,
         logger: Arc<Mutex<Logger>>,
+        file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
-        let server = FtpServer::new(config, user_manager, Arc::clone(&logger));
+        let mut ftp_server = self.ftp_server.lock().unwrap();
+        if ftp_server.is_some() {
+            return Ok(());
+        }
+        
+        let server = FtpServer::new(config, user_manager, logger, file_logger);
         server.start()?;
-        
-        let mut ftp_server = self.ftp_server.lock()
-            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
         *ftp_server = Some(server);
-        
         Ok(())
     }
     
     pub fn stop_ftp(&self, logger: &Arc<Mutex<Logger>>) {
-        let server = {
-            let mut ftp_server = match self.ftp_server.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            ftp_server.take()
-        };
-        
-        if let Some(srv) = server {
-            srv.stop();
+        let mut ftp_server = self.ftp_server.lock().unwrap();
+        if let Some(server) = ftp_server.take() {
+            server.stop();
             if let Ok(mut log) = logger.lock() {
                 log.info("FTP", "FTP server stopped");
             }
         }
+        *ftp_server = None;
     }
     
     pub fn is_ftp_running(&self) -> bool {
-        let ftp_server = match self.ftp_server.lock() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
+        let ftp_server = self.ftp_server.lock().unwrap();
         ftp_server.as_ref().is_some_and(|s| s.is_running())
     }
-    
-    // === SFTP Server ===
     
     pub fn start_sftp(
         &self,
         config: Arc<Mutex<Config>>,
         user_manager: Arc<Mutex<UserManager>>,
         logger: Arc<Mutex<Logger>>,
+        file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
-        let worker_threads = std::cmp::min(
-            4,
-            std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(2)
-        );
+        let sftp_server = self.sftp_server.lock().unwrap();
+        if sftp_server.is_some() {
+            return Ok(());
+        }
+        drop(sftp_server);
         
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads)
+            .worker_threads(2)
             .enable_all()
-            .thread_keep_alive(std::time::Duration::from_secs(60))
-            .max_blocking_threads(8)
             .build()?;
         
-        let server = SftpServer::new(config, user_manager, Arc::clone(&logger));
+        let server = SftpServer::new(config, user_manager, Arc::clone(&logger), file_logger);
         
         {
-            let mut sftp_server = self.sftp_server.lock()
-                .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-            *sftp_server = Some(server.clone());
+            let mut rt = self.sftp_runtime.lock().unwrap();
+            *rt = Some(runtime);
         }
         
-        let logger_for_async = Arc::clone(&logger);
-        runtime.spawn(async move {
-            if let Err(e) = server.start().await {
-                eprintln!("SFTP server error: {}", e);
-                if let Ok(mut log) = logger_for_async.lock() {
-                    log.error("SFTP", &format!("SFTP server error: {}", e));
-                }
-            }
-        });
-        
         {
-            let mut sftp_runtime = self.sftp_runtime.lock()
-                .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-            *sftp_runtime = Some(runtime);
+            let mut srv = self.sftp_server.lock().unwrap();
+            *srv = Some(server);
         }
         
         if let Ok(mut log) = logger.lock() {
@@ -121,18 +95,12 @@ impl ServerManager {
     
     pub fn stop_sftp(&self, logger: &Arc<Mutex<Logger>>) {
         let runtime = {
-            let mut sftp_runtime = match self.sftp_runtime.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
+            let mut sftp_runtime = self.sftp_runtime.lock().unwrap();
             sftp_runtime.take()
         };
         
         let server = {
-            let mut sftp_server = match self.sftp_server.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
+            let mut sftp_server = self.sftp_server.lock().unwrap();
             sftp_server.take()
         };
         
@@ -149,10 +117,7 @@ impl ServerManager {
     }
     
     pub fn is_sftp_running(&self) -> bool {
-        let sftp_server = match self.sftp_server.lock() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
+        let sftp_server = self.sftp_server.lock().unwrap();
         sftp_server.as_ref().is_some_and(|s| s.is_running())
     }
 }

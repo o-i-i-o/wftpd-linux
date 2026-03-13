@@ -1,7 +1,7 @@
 use gtk::prelude::*;
 use gtk::{
     Box, Orientation, Label, Button, Entry, Frame, ScrolledWindow, TreeView, ListStore,
-    CellRendererText, TreeViewColumn, CellRendererToggle, CheckButton, glib, Dialog,
+    CellRendererText, TreeViewColumn, CellRendererToggle, CheckButton, Dialog,
     DialogFlags, ResponseType, SpinButton, Adjustment,
 };
 use gtk::glib::clone;
@@ -34,6 +34,7 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
         gtk::glib::Type::STRING,
         gtk::glib::Type::BOOL,
         gtk::glib::Type::STRING,
+        gtk::glib::Type::STRING,
     ]);
 
     refresh_user_list(&store, state);
@@ -64,6 +65,15 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     gtk::prelude::CellLayoutExt::pack_start(&col_enabled, &renderer_enabled, true);
     gtk::prelude::CellLayoutExt::add_attribute(&col_enabled, &renderer_enabled, "active", 2);
     tree.append_column(&col_enabled);
+
+    let col_quota = TreeViewColumn::new();
+    col_quota.set_title("配额");
+    col_quota.set_resizable(true);
+    col_quota.set_min_width(80);
+    let renderer_quota = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_quota, &renderer_quota, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_quota, &renderer_quota, "text", 4);
+    tree.append_column(&col_quota);
 
     let col_perms = TreeViewColumn::new();
     col_perms.set_title("权限");
@@ -491,11 +501,15 @@ fn refresh_user_list(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
     if let Ok(s) = state.try_lock() {
         if let Ok(users) = s.user_manager.try_lock() {
             for (username, user) in users.list_users() {
+                let quota_str = user.permissions.quota_mb
+                    .map(|q| format!("{} MB", q))
+                    .unwrap_or_else(|| "无限制".to_string());
                 let iter = store.append();
                 store.set_value(&iter, 0, &username.to_value());
                 store.set_value(&iter, 1, &user.home_dir.to_value());
                 store.set_value(&iter, 2, &user.enabled.to_value());
                 store.set_value(&iter, 3, &user.permissions.to_string().to_value());
+                store.set_value(&iter, 4, &quota_str.to_value());
             }
         }
     }

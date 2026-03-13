@@ -59,6 +59,7 @@ fn setup_service_buttons(
     install_btn: &Button,
     start_btn: &Button,
     stop_btn: &Button,
+    restart_btn: &Button,
     uninstall_btn: &Button,
     refresh_btn: &Button,
     status_label: &Label,
@@ -126,6 +127,28 @@ fn setup_service_buttons(
                     Err(e) => {
                         log::error!("Stop error: {}", e);
                         status_label.set_markup(&format!("<span foreground='red'>停止失败: {}</span>", e));
+                    }
+                }
+            }
+        });
+    }));
+
+    let state_clone = Arc::clone(state);
+    let status_label_clone = status_label.clone();
+    restart_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone => move |_| {
+        let state = Arc::clone(&state_clone);
+        let status_label = status_label_clone.clone();
+        
+        glib::MainContext::ref_thread_default().spawn_local(async move {
+            if let Ok(s) = state.try_lock() {
+                match s.service_manager.restart_service() {
+                    Ok(_) => {
+                        log::info!("Service restarted successfully");
+                        update_service_status(&state, &status_label);
+                    }
+                    Err(e) => {
+                        log::error!("Restart error: {}", e);
+                        status_label.set_markup(&format!("<span foreground='red'>重启失败: {}</span>", e));
                     }
                 }
             }

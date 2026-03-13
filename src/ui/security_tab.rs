@@ -1,7 +1,7 @@
 use gtk::prelude::*;
 use gtk::{
     Box, Orientation, Label, Button, Entry, Frame, ScrolledWindow, TreeView, ListStore,
-    CellRendererText, TreeViewColumn, SpinButton, Adjustment, glib,
+    CellRendererText, TreeViewColumn, SpinButton, Adjustment,
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -55,7 +55,7 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
     hint.set_markup("<i>提示: 超过最大登录尝试次数后，IP将被临时封禁指定时长</i>");
     box_.pack_start(&hint, false, false, 0);
 
-    let save_btn = Button::with_label("保存登录安全设置");
+    let save_btn = Button::with_label("保存设置");
     let state_clone = Arc::clone(state);
     let max_attempts_clone = max_attempts_spin.clone();
     let ban_duration_clone = ban_duration_spin.clone();

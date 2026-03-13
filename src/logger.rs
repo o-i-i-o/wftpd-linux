@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,19 +54,16 @@ impl Logger {
             eprintln!("Warning: Failed to create log directory {}: {}", path.display(), e);
         }
         
-        let log_path = path.join(format!("wftpg-{}.log", Utc::now().format("%Y-%m-%d")));
-        let (file, size) = match OpenOptions::new()
+        let (log_path, size) = Self::get_available_log_path(&path);
+        let file = match OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log_path)
         {
-            Ok(f) => {
-                let size = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-                (Some(f), size)
-            }
+            Ok(f) => Some(f),
             Err(e) => {
                 eprintln!("Warning: Failed to open log file: {}", e);
-                (None, 0)
+                None
             }
         };
 
@@ -85,46 +82,65 @@ impl Logger {
         Ok(())
     }
 
-    fn get_log_file_path(&self) -> PathBuf {
-        self.log_dir
-            .join(format!("wftpg-{}.log", Utc::now().format("%Y-%m-%d")))
+    fn get_available_log_path(log_dir: &Path) -> (PathBuf, u64) {
+        let date_str = Utc::now().format("%Y-%m-%d");
+        let mut seq = 0;
+        
+        loop {
+            let filename = if seq == 0 {
+                format!("wftpg-{}.log", date_str)
+            } else {
+                format!("wftpg-{}-{}.log", date_str, seq)
+            };
+            let log_path = log_dir.join(&filename);
+            
+            if !log_path.exists() {
+                return (log_path, 0);
+            }
+            
+            if let Ok(metadata) = fs::metadata(&log_path) {
+                let size = metadata.len();
+                return (log_path, size);
+            }
+            
+            seq += 1;
+        }
     }
 
     fn rotate_if_needed(&mut self) -> std::io::Result<()> {
-        let log_path = self.get_log_file_path();
-
-        if log_path.exists() {
-            let metadata = fs::metadata(&log_path)?;
-            self.current_size = metadata.len();
-
-            if self.current_size >= self.max_size {
-                self.rotate_logs()?;
-                self.current_size = 0;
-            }
+        if self.current_size >= self.max_size {
+            let new_path = self.get_new_log_path();
+            self.current_file = Some(
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&new_path)?,
+            );
+            self.current_size = 0;
+            self.cleanup_old_logs()?;
         }
-
-        self.current_file = Some(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)?,
-        );
 
         Ok(())
     }
 
-    fn rotate_logs(&mut self) -> std::io::Result<()> {
-        let log_path = self.get_log_file_path();
-        let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-        let rotated_path = self.log_dir.join(format!("wftpg-{}.log", timestamp));
-
-        if log_path.exists() {
-            fs::rename(&log_path, &rotated_path)?;
+    fn get_new_log_path(&self) -> PathBuf {
+        let date_str = Utc::now().format("%Y-%m-%d");
+        let mut seq = 0;
+        
+        loop {
+            let filename = if seq == 0 {
+                format!("wftpg-{}.log", date_str)
+            } else {
+                format!("wftpg-{}-{}.log", date_str, seq)
+            };
+            let log_path = self.log_dir.join(&filename);
+            
+            if !log_path.exists() {
+                return log_path;
+            }
+            
+            seq += 1;
         }
-
-        self.cleanup_old_logs()?;
-
-        Ok(())
     }
 
     fn cleanup_old_logs(&self) -> std::io::Result<()> {

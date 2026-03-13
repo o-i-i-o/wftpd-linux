@@ -115,8 +115,8 @@ fn create_status_and_control_frame(
 
     setup_ftp_toggle_button(state, &ftp_btn, &ftp_status);
     setup_sftp_toggle_button(state, &sftp_btn, &sftp_status);
-    setup_ftp_restart_button(state, &restart_ftp_btn, &ftp_status);
-    setup_sftp_restart_button(state, &restart_sftp_btn, &sftp_status);
+    setup_ftp_restart_button(state, &restart_ftp_btn, &ftp_status, &ftp_btn);
+    setup_sftp_restart_button(state, &restart_sftp_btn, &sftp_status, &sftp_btn);
 
     (ftp_status, sftp_status, ftp_btn, sftp_btn)
 }
@@ -263,15 +263,17 @@ fn setup_sftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
     }));
 }
 
-fn setup_ftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, status: &Label) {
+fn setup_ftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, status: &Label, toggle_btn: &Button) {
     let status_clone = status.clone();
     let button_clone = button.clone();
     let state_clone = Arc::clone(state);
+    let toggle_btn_clone = toggle_btn.clone();
     
-    button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone => move |_| {
+    button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone, @strong toggle_btn_clone => move |_| {
         status_clone.set_text("FTP: 重启中...");
         let status = status_clone.clone();
         let state = Arc::clone(&state_clone);
+        let toggle = toggle_btn_clone.clone();
         
         glib::MainContext::ref_thread_default().spawn_local(async move {
             let _ = IpcClient::stop_ftp();
@@ -281,6 +283,7 @@ fn setup_ftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
                 Ok(response) => {
                     if response.success {
                         status.set_markup("<span foreground='green'>运行中 ✓</span>");
+                        toggle.set_label("停止");
                         if let Ok(s) = state.try_lock() {
                             if let Ok(mut log) = s.logger.try_lock() {
                                 log.info("FTP", "FTP服务已重启");
@@ -288,25 +291,29 @@ fn setup_ftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
                         }
                     } else {
                         status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
+                        toggle.set_label("启动");
                     }
                 }
                 Err(e) => {
                     status.set_markup(&format!("<span foreground='red'>错误 - {}</span>", e));
+                    toggle.set_label("启动");
                 }
             }
         });
     }));
 }
 
-fn setup_sftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, status: &Label) {
+fn setup_sftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, status: &Label, toggle_btn: &Button) {
     let status_clone = status.clone();
     let button_clone = button.clone();
     let state_clone = Arc::clone(state);
+    let toggle_btn_clone = toggle_btn.clone();
     
-    button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone => move |_| {
+    button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone, @strong toggle_btn_clone => move |_| {
         status_clone.set_text("SFTP: 重启中...");
         let status = status_clone.clone();
         let state = Arc::clone(&state_clone);
+        let toggle = toggle_btn_clone.clone();
         
         glib::MainContext::ref_thread_default().spawn_local(async move {
             let _ = IpcClient::stop_sftp();
@@ -316,6 +323,7 @@ fn setup_sftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, s
                 Ok(response) => {
                     if response.success {
                         status.set_markup("<span foreground='green'>运行中 ✓</span>");
+                        toggle.set_label("停止");
                         if let Ok(s) = state.try_lock() {
                             if let Ok(mut log) = s.logger.try_lock() {
                                 log.info("SFTP", "SFTP服务已重启");
@@ -323,10 +331,12 @@ fn setup_sftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, s
                         }
                     } else {
                         status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
+                        toggle.set_label("启动");
                     }
                 }
                 Err(e) => {
                     status.set_markup(&format!("<span foreground='red'>错误 - {}</span>", e));
+                    toggle.set_label("启动");
                 }
             }
         });
@@ -344,11 +354,13 @@ fn create_ftp_config_frame(
     config_box.set_margin_start(10);
     config_box.set_margin_end(10);
 
-    let (ftp_enabled_cb, anon_cb, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, 
+    let (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, 
          default_home_entry, max_speed_spin, encoding_combo) = load_ftp_config(state);
 
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&ftp_enabled_cb, false, false, 0);
+    row1.pack_start(&Label::new(Some("绑定地址:")), false, false, 0);
+    row1.pack_start(&bind_ip_entry, false, false, 0);
     row1.pack_start(&Label::new(Some("端口:")), false, false, 0);
     row1.pack_start(&ftp_port_spin, false, false, 0);
     row1.pack_start(&anon_cb, false, false, 0);
@@ -384,7 +396,7 @@ fn create_ftp_config_frame(
     config_box.pack_start(&row5, false, false, 0);
 
     setup_ftp_save_button(
-        state, &save_btn, &ftp_enabled_cb, &anon_cb, &ftp_port_spin,
+        state, &save_btn, &ftp_enabled_cb, &anon_cb, &bind_ip_entry, &ftp_port_spin,
         &passive_start_spin, &passive_end_spin, &welcome_entry, 
         &default_home_entry, &max_speed_spin, &encoding_combo,
     );
@@ -393,9 +405,12 @@ fn create_ftp_config_frame(
     container.pack_start(&config_frame, false, false, 0);
 }
 
-fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton, SpinButton, SpinButton, SpinButton, Entry, Entry, SpinButton, ComboBoxText) {
+fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton, Entry, SpinButton, SpinButton, SpinButton, Entry, Entry, SpinButton, ComboBoxText) {
     let ftp_enabled_cb = CheckButton::with_label("启用FTP服务");
     let anon_cb = CheckButton::with_label("允许匿名访问");
+    let bind_ip_entry = Entry::new();
+    bind_ip_entry.set_width_chars(15);
+    bind_ip_entry.set_placeholder_text(Some("0.0.0.0"));
     let ftp_port_spin = create_spin_button(1.0, 65535.0, 1.0);
     let passive_start_spin = create_spin_button(1024.0, 65535.0, 1.0);
     let passive_end_spin = create_spin_button(1024.0, 65535.0, 1.0);
@@ -412,6 +427,7 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
         if let Ok(cfg) = s.config.try_lock() {
             ftp_enabled_cb.set_active(cfg.ftp.enabled);
             anon_cb.set_active(cfg.ftp.allow_anonymous);
+            bind_ip_entry.set_text(&cfg.ftp.bind_ip);
             ftp_port_spin.set_value(cfg.server.ftp_port as f64);
             passive_start_spin.set_value(cfg.ftp.passive_ports.0 as f64);
             passive_end_spin.set_value(cfg.ftp.passive_ports.1 as f64);
@@ -423,7 +439,7 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
         }
     }
 
-    (ftp_enabled_cb, anon_cb, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, default_home_entry, max_speed_spin, encoding_combo)
+    (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, default_home_entry, max_speed_spin, encoding_combo)
 }
 
 fn setup_ftp_save_button(
@@ -431,6 +447,7 @@ fn setup_ftp_save_button(
     save_btn: &Button,
     ftp_enabled_cb: &CheckButton,
     anon_cb: &CheckButton,
+    bind_ip_entry: &Entry,
     ftp_port_spin: &SpinButton,
     passive_start_spin: &SpinButton,
     passive_end_spin: &SpinButton,
@@ -442,6 +459,7 @@ fn setup_ftp_save_button(
     let state_clone = Arc::clone(state);
     let ftp_enabled_clone = ftp_enabled_cb.clone();
     let anon_clone = anon_cb.clone();
+    let bind_ip_clone = bind_ip_entry.clone();
     let ftp_port_clone = ftp_port_spin.clone();
     let passive_start_clone = passive_start_spin.clone();
     let passive_end_clone = passive_end_spin.clone();
@@ -451,11 +469,12 @@ fn setup_ftp_save_button(
     let encoding_clone = encoding_combo.clone();
     
     save_btn.connect_clicked(clone!(@strong state_clone, @strong ftp_enabled_clone, @strong anon_clone,
-               @strong ftp_port_clone, @strong passive_start_clone, @strong passive_end_clone, 
+               @strong bind_ip_clone, @strong ftp_port_clone, @strong passive_start_clone, @strong passive_end_clone, 
                @strong welcome_clone, @strong default_home_clone, @strong max_speed_clone, 
                @strong encoding_clone => move |_| {
         let enabled = ftp_enabled_clone.is_active();
         let anon = anon_clone.is_active();
+        let bind_ip = bind_ip_clone.text().to_string();
         let ftp_port = ftp_port_clone.value() as u16;
         let start = passive_start_clone.value() as u16;
         let end = passive_end_clone.value() as u16;
@@ -469,6 +488,7 @@ fn setup_ftp_save_button(
                 if let Ok(mut cfg) = s.config.try_lock() {
                     cfg.ftp.enabled = enabled;
                     cfg.ftp.allow_anonymous = anon;
+                    cfg.ftp.bind_ip = if bind_ip.is_empty() { "0.0.0.0".to_string() } else { bind_ip };
                     cfg.server.ftp_port = ftp_port;
                     cfg.ftp.passive_ports = (start.min(end), start.max(end));
                     cfg.ftp.welcome_message = welcome;
@@ -485,8 +505,9 @@ fn setup_ftp_save_button(
                 if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut log) = s.logger.try_lock() {
                         log.info("CONFIG", &format!(
-                            "FTP配置已保存: 启用={}, 端口={}, 编码={}",
+                            "FTP配置已保存: 启用={}, 绑定={}, 端口={}, 编码={}",
                             if enabled { "是" } else { "否" },
+                            bind_ip_clone.text(),
                             ftp_port,
                             encoding
                         ));

@@ -13,12 +13,14 @@ use tokio::sync::Mutex;
 use crate::config::Config;
 use crate::logger::Logger;
 use crate::users::UserManager;
+use crate::file_logger::{FileLogger, FileLogInfo};
 
 #[derive(Clone)]
 pub struct SftpServer {
     config: Arc<StdMutex<Config>>,
     user_manager: Arc<StdMutex<UserManager>>,
     logger: Arc<StdMutex<Logger>>,
+    file_logger: Arc<StdMutex<FileLogger>>,
     running: Arc<StdMutex<bool>>,
     shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
@@ -28,11 +30,13 @@ impl SftpServer {
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
         logger: Arc<StdMutex<Logger>>,
+        file_logger: Arc<StdMutex<FileLogger>>,
     ) -> Self {
         SftpServer {
             config,
             user_manager,
             logger,
+            file_logger,
             running: Arc::new(StdMutex::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
         }
@@ -69,6 +73,7 @@ impl SftpServer {
 
         let user_manager_clone = Arc::clone(&self.user_manager);
         let logger_clone = Arc::clone(&self.logger);
+        let file_logger_clone = Arc::clone(&self.file_logger);
         let running_clone = Arc::clone(&self.running);
 
         let bind_addr = format!("{}:{}", bind_ip, sftp_port);
@@ -86,12 +91,14 @@ impl SftpServer {
                                 let config = Arc::clone(&config);
                                 let user_manager = Arc::clone(&user_manager_clone);
                                 let logger = Arc::clone(&logger_clone);
+                                let file_logger = Arc::clone(&file_logger_clone);
                                 let client_ip = peer_addr.ip().to_string();
 
                                 tokio::spawn(async move {
                                     let handler = SftpHandler {
                                         user_manager,
                                         logger,
+                                        file_logger,
                                         authenticated: false,
                                         username: None,
                                         home_dir: None,
@@ -167,6 +174,7 @@ impl SftpServer {
 struct SftpHandler {
     user_manager: Arc<StdMutex<UserManager>>,
     logger: Arc<StdMutex<Logger>>,
+    file_logger: Arc<StdMutex<FileLogger>>,
     authenticated: bool,
     username: Option<String>,
     home_dir: Option<String>,
@@ -180,6 +188,7 @@ struct SftpState {
     username: Option<String>,
     user_manager: Arc<StdMutex<UserManager>>,
     logger: Arc<StdMutex<Logger>>,
+    file_logger: Arc<StdMutex<FileLogger>>,
     handles: HashMap<String, SftpFileHandle>,
     next_handle_id: u32,
     sftp_version: u32,
@@ -193,6 +202,7 @@ enum SftpFileHandle {
         path: PathBuf,
         file: tokio::fs::File,
         locked: bool,
+        existed: bool,
     },
     Dir {
         path: PathBuf,
@@ -352,6 +362,7 @@ impl russh::server::Handler for SftpHandler {
                 username,
                 user_manager: Arc::clone(&self.user_manager),
                 logger: Arc::clone(&self.logger),
+                file_logger: Arc::clone(&self.file_logger),
                 handles: HashMap::new(),
                 next_handle_id: 0,
                 sftp_version: 3,
@@ -593,10 +604,20 @@ impl SftpState {
                 self.logger.lock().unwrap().client_action(
                     "SFTP",
                     &format!("Read {} bytes from {:?}", n, path),
-                    "",
+                    &self.client_ip,
                     self.username.as_deref(),
                     "READ",
                 );
+
+                if n > 0 {
+                    self.file_logger.lock().unwrap().log_download(
+                        self.username.as_deref().unwrap_or("anonymous"),
+                        &self.client_ip,
+                        &path.to_string_lossy(),
+                        n as u64,
+                        "SFTP",
+                    );
+                }
 
                 Ok(self.build_data_packet(id, &buffer))
             }
@@ -618,7 +639,7 @@ impl SftpState {
 
         let handle = self.handles.get_mut(&handle_str);
         match handle {
-            Some(SftpFileHandle::File { path, file, .. }) => {
+            Some(SftpFileHandle::File { path, file, existed, .. }) => {
                 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
                 let _ = file.seek(std::io::SeekFrom::Start(offset)).await;
                 file.write_all(write_data).await?;
@@ -627,10 +648,28 @@ impl SftpState {
                 self.logger.lock().unwrap().client_action(
                     "SFTP",
                     &format!("Wrote {} bytes to {:?}", data_len, path),
-                    "",
+                    &self.client_ip,
                     self.username.as_deref(),
                     "WRITE",
                 );
+
+                if *existed {
+                    self.file_logger.lock().unwrap().log_update(
+                        self.username.as_deref().unwrap_or("anonymous"),
+                        &self.client_ip,
+                        &path.to_string_lossy(),
+                        data_len as u64,
+                        "SFTP",
+                    );
+                } else {
+                    self.file_logger.lock().unwrap().log_upload(
+                        self.username.as_deref().unwrap_or("anonymous"),
+                        &self.client_ip,
+                        &path.to_string_lossy(),
+                        data_len as u64,
+                        "SFTP",
+                    );
+                }
 
                 Ok(self.build_status_packet(id, 0, "OK", ""))
             }
@@ -649,10 +688,16 @@ impl SftpState {
         let full_path = self.resolve_path(&path);
 
         if tokio::fs::remove_file(&full_path).await.is_ok() {
+            self.file_logger.lock().unwrap().log_delete(
+                self.username.as_deref().unwrap_or("anonymous"),
+                &self.client_ip,
+                &full_path.to_string_lossy(),
+                "SFTP",
+            );
             self.logger.lock().unwrap().client_action(
                 "SFTP",
                 &format!("Removed file: {}", path),
-                "",
+                &self.client_ip,
                 self.username.as_deref(),
                 "DELETE",
             );
@@ -673,10 +718,16 @@ impl SftpState {
         let full_path = self.resolve_path(&path);
 
         if tokio::fs::create_dir_all(&full_path).await.is_ok() {
+            self.file_logger.lock().unwrap().log_mkdir(
+                self.username.as_deref().unwrap_or("anonymous"),
+                &self.client_ip,
+                &full_path.to_string_lossy(),
+                "SFTP",
+            );
             self.logger.lock().unwrap().client_action(
                 "SFTP",
                 &format!("Created directory: {}", path),
-                "",
+                &self.client_ip,
                 self.username.as_deref(),
                 "MKDIR",
             );
@@ -697,10 +748,16 @@ impl SftpState {
         let full_path = self.resolve_path(&path);
 
         if tokio::fs::remove_dir_all(&full_path).await.is_ok() {
+            self.file_logger.lock().unwrap().log_rmdir(
+                self.username.as_deref().unwrap_or("anonymous"),
+                &self.client_ip,
+                &full_path.to_string_lossy(),
+                "SFTP",
+            );
             self.logger.lock().unwrap().client_action(
                 "SFTP",
                 &format!("Removed directory: {}", path),
-                "",
+                &self.client_ip,
                 self.username.as_deref(),
                 "RMDIR",
             );
@@ -724,10 +781,17 @@ impl SftpState {
         let new_full = self.resolve_path(&new_path);
 
         if tokio::fs::rename(&old_full, &new_full).await.is_ok() {
+            self.file_logger.lock().unwrap().log_rename(
+                self.username.as_deref().unwrap_or("anonymous"),
+                &self.client_ip,
+                &old_full.to_string_lossy(),
+                &new_full.to_string_lossy(),
+                "SFTP",
+            );
             self.logger.lock().unwrap().client_action(
                 "SFTP",
                 &format!("Renamed: {} -> {}", old_path, new_path),
-                "",
+                &self.client_ip,
                 self.username.as_deref(),
                 "RENAME",
             );
@@ -784,7 +848,13 @@ impl SftpState {
         let path = self.parse_string(data, 5)?;
 
         let full_path = self.resolve_path(&path);
-        let resolved = full_path.canonicalize().unwrap_or(full_path);
+        
+        let resolved = if full_path.exists() {
+            full_path.canonicalize().unwrap_or(full_path)
+        } else {
+            full_path
+        };
+        
         let path_str = resolved.to_string_lossy().to_string();
 
         let mut payload = vec![104];
@@ -800,10 +870,25 @@ impl SftpState {
     }
 
     fn resolve_path(&self, path: &str) -> PathBuf {
-        if path.starts_with('/') {
-            PathBuf::from(path)
+        let clean_path = path.trim();
+        
+        if clean_path == "." || clean_path == "./" {
+            return PathBuf::from(&self.home_dir);
+        }
+        
+        if clean_path == ".." || clean_path.starts_with("../") {
+            return PathBuf::from(&self.home_dir);
+        }
+        
+        if clean_path.starts_with('/') {
+            let p = PathBuf::from(clean_path);
+            if p.starts_with(&self.home_dir) {
+                p
+            } else {
+                PathBuf::from(&self.home_dir)
+            }
         } else {
-            PathBuf::from(&self.home_dir).join(path)
+            PathBuf::from(&self.home_dir).join(clean_path)
         }
     }
 
@@ -906,6 +991,7 @@ impl SftpState {
         }
 
         let full_path = self.resolve_path(&path);
+        let file_existed = full_path.exists();
 
         let file_result = if pflags & 0x00000002 != 0 {
             if pflags & 0x00000010 != 0 {
@@ -939,6 +1025,7 @@ impl SftpState {
                     path: full_path,
                     file,
                     locked: false,
+                    existed: file_existed,
                 });
                 Ok(self.build_handle_packet(id, &handle))
             }
@@ -983,10 +1070,20 @@ impl SftpState {
         let full_target = self.resolve_path(&target);
 
         if tokio::fs::symlink(&full_target, &full_link).await.is_ok() {
+            self.file_logger.lock().unwrap().log(FileLogInfo {
+                username: self.username.as_deref().unwrap_or("anonymous"),
+                client_ip: &self.client_ip,
+                operation: "SYMLINK",
+                file_path: &format!("{} -> {}", full_link.to_string_lossy(), full_target.to_string_lossy()),
+                file_size: 0,
+                protocol: "SFTP",
+                success: true,
+                message: "符号链接创建成功",
+            });
             self.logger.lock().unwrap().client_action(
                 "SFTP",
                 &format!("Created symlink: {} -> {}", link_path, target),
-                "",
+                &self.client_ip,
                 self.username.as_deref(),
                 "SYMLINK",
             );
@@ -1006,7 +1103,7 @@ impl SftpState {
 
         let handle = self.handles.get_mut(&handle_str);
         match handle {
-            Some(SftpFileHandle::File { path, file, locked }) => {
+            Some(SftpFileHandle::File { path, file, locked, .. }) => {
                 if *locked {
                     return Ok(self.build_status_packet(id, 0, "Already locked", ""));
                 }
@@ -1019,7 +1116,7 @@ impl SftpState {
                         self.logger.lock().unwrap().client_action(
                             "SFTP",
                             &format!("Locked file: {:?}", path),
-                            "",
+                            &self.client_ip,
                             self.username.as_deref(),
                             "LOCK",
                         );
@@ -1038,7 +1135,7 @@ impl SftpState {
 
         let handle = self.handles.get_mut(&handle_str);
         match handle {
-            Some(SftpFileHandle::File { path, file, locked }) => {
+            Some(SftpFileHandle::File { path, file, locked, .. }) => {
                 if !*locked {
                     return Ok(self.build_status_packet(id, 0, "Not locked", ""));
                 }
@@ -1051,7 +1148,7 @@ impl SftpState {
                         self.logger.lock().unwrap().client_action(
                             "SFTP",
                             &format!("Unlocked file: {:?}", path),
-                            "",
+                            &self.client_ip,
                             self.username.as_deref(),
                             "UNLOCK",
                         );
@@ -1208,11 +1305,21 @@ impl SftpState {
         let dst_full = self.resolve_path(&dst_path);
 
         match tokio::fs::copy(&src_full, &dst_full).await {
-            Ok(_) => {
+            Ok(size) => {
+                self.file_logger.lock().unwrap().log(FileLogInfo {
+                    username: self.username.as_deref().unwrap_or("anonymous"),
+                    client_ip: &self.client_ip,
+                    operation: "COPY",
+                    file_path: &format!("{} -> {}", src_full.to_string_lossy(), dst_full.to_string_lossy()),
+                    file_size: size,
+                    protocol: "SFTP",
+                    success: true,
+                    message: "文件复制成功",
+                });
                 self.logger.lock().unwrap().client_action(
                     "SFTP",
                     &format!("Copied: {} -> {}", src_path, dst_path),
-                    "",
+                    &self.client_ip,
                     self.username.as_deref(),
                     "COPY",
                 );
@@ -1238,10 +1345,20 @@ impl SftpState {
         {
             match tokio::fs::hard_link(&src_full, &dst_full).await {
                 Ok(_) => {
+                    self.file_logger.lock().unwrap().log(FileLogInfo {
+                        username: self.username.as_deref().unwrap_or("anonymous"),
+                        client_ip: &self.client_ip,
+                        operation: "HARDLINK",
+                        file_path: &format!("{} -> {}", src_full.to_string_lossy(), dst_full.to_string_lossy()),
+                        file_size: 0,
+                        protocol: "SFTP",
+                        success: true,
+                        message: "硬链接创建成功",
+                    });
                     self.logger.lock().unwrap().client_action(
                         "SFTP",
                         &format!("Hardlink: {} -> {}", src_path, dst_path),
-                        "",
+                        &self.client_ip,
                         self.username.as_deref(),
                         "HARDLINK",
                     );

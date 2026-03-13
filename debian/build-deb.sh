@@ -270,17 +270,18 @@ else
     fi
 fi
 
-if [ ! -f "${TARGET_DIR}/wftpg" ]; then
-    log_error "编译失败: 未找到可执行文件 ${TARGET_DIR}/wftpg"
+if [ ! -f "${TARGET_DIR}/wftp-gui" ]; then
+    log_error "编译失败: 未找到可执行文件 ${TARGET_DIR}/wftp-gui"
     exit 1
 fi
 
-log_success "找到已编译的可执行文件: ${TARGET_DIR}/wftpg"
+log_success "找到已编译的可执行文件: ${TARGET_DIR}/wftp-gui"
 
 log_info "[3/9] 创建DEB包目录结构..."
 DEB_DIR="${BUILD_DIR}/${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}"
 mkdir -p "${DEB_DIR}/DEBIAN"
 mkdir -p "${DEB_DIR}/usr/bin"
+mkdir -p "${DEB_DIR}/usr/libexec"
 mkdir -p "${DEB_DIR}/usr/share/applications"
 mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps"
 mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps"
@@ -291,6 +292,9 @@ mkdir -p "${DEB_DIR}/usr/share/doc/${PACKAGE_NAME}"
 mkdir -p "${DEB_DIR}/etc/wftpg"
 mkdir -p "${DEB_DIR}/var/log/wftpg"
 mkdir -p "${DEB_DIR}/usr/share/${PACKAGE_NAME}"
+mkdir -p "${DEB_DIR}/etc/dbus-1/system.d"
+mkdir -p "${DEB_DIR}/usr/share/dbus-1/system-services"
+mkdir -p "${DEB_DIR}/etc/wftpg/keys"
 
 log_info "[4/9] 复制可执行文件..."
 
@@ -306,6 +310,13 @@ if [ -f "${TARGET_DIR}/wftpd" ]; then
     chmod 755 "${DEB_DIR}/usr/bin/wftpd"
     chown root:root "${DEB_DIR}/usr/bin/wftpd"
     log_info "  已复制: wftpd (后台服务程序)"
+fi
+
+if [ -f "${TARGET_DIR}/wftpg-dbus" ]; then
+    cp "${TARGET_DIR}/wftpg-dbus" "${DEB_DIR}/usr/libexec/"
+    chmod 755 "${DEB_DIR}/usr/libexec/wftpg-dbus"
+    chown root:root "${DEB_DIR}/usr/libexec/wftpg-dbus"
+    log_info "  已复制: wftpg-dbus (D-Bus配置服务)"
 fi
 
 log_info "[5/9] 复制桌面文件..."
@@ -373,6 +384,24 @@ if [ -f "${SCRIPT_DIR}/wftpd.service" ]; then
     log_info "  已复制: wftpd.service"
 fi
 
+if [ -f "${SCRIPT_DIR}/wftpg-dbus.service" ]; then
+    cp "${SCRIPT_DIR}/wftpg-dbus.service" "${DEB_DIR}/lib/systemd/system/"
+    chmod 644 "${DEB_DIR}/lib/systemd/system/wftpg-dbus.service"
+    log_info "  已复制: wftpg-dbus.service"
+fi
+
+if [ -f "${SCRIPT_DIR}/com.wftpg-dbus.conf" ]; then
+    cp "${SCRIPT_DIR}/com.wftpg-dbus.conf" "${DEB_DIR}/etc/dbus-1/system.d/"
+    chmod 644 "${DEB_DIR}/etc/dbus-1/system.d/com.wftpg-dbus.conf"
+    log_info "  已复制: com.wftpg-dbus.conf"
+fi
+
+if [ -f "${SCRIPT_DIR}/com.wftpg.service" ]; then
+    cp "${SCRIPT_DIR}/com.wftpg.service" "${DEB_DIR}/usr/share/dbus-1/system-services/"
+    chmod 644 "${DEB_DIR}/usr/share/dbus-1/system-services/com.wftpg.service"
+    log_info "  已复制: com.wftpg.service (D-Bus服务声明)"
+fi
+
 log_info "[8/9] 创建配置文件模板..."
 cat > "${DEB_DIR}/etc/wftpg/config.toml.example" << 'EOF'
 # WFTPG 配置文件
@@ -388,7 +417,8 @@ idle_timeout = 600
 
 [ftp]
 enabled = true
-default_home = "/home/user/Desktop/共享"
+bind_ip = "0.0.0.0"
+default_home = "/var/lib/wftpg/share"
 passive_ports = [50000, 51000]
 welcome_message = "Welcome to WFTPG FTP Server"
 allow_anonymous = false
@@ -397,7 +427,8 @@ encoding = "UTF-8"
 
 [sftp]
 enabled = true
-default_home = "/home/user/Desktop/共享"
+bind_ip = "0.0.0.0"
+default_home = "/var/lib/wftpg/share"
 host_key_path = "/var/lib/wftpg/ssh/ssh_host_rsa_key"
 max_auth_attempts = 3
 auth_timeout = 60
@@ -419,6 +450,14 @@ log_to_file = true
 log_to_gui = true
 EOF
 chmod 644 "${DEB_DIR}/etc/wftpg/config.toml.example"
+
+log_info "创建默认用户配置..."
+cat > "${DEB_DIR}/etc/wftpg/users.json.example" << 'EOF'
+{
+  "users": {}
+}
+EOF
+chmod 644 "${DEB_DIR}/etc/wftpg/users.json.example"
 
 log_info "[9/9] 创建DEBIAN控制文件..."
 

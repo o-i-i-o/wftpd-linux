@@ -1,11 +1,13 @@
 use gtk::prelude::*;
 use gtk::{
-    Box, Orientation, Label, Button, TextView, ScrolledWindow, Entry, Frame, SpinButton,
-    Adjustment, CheckButton, ComboBoxText, glib,
+    Box, Orientation, Label, Button, ScrolledWindow, Entry, Frame, SpinButton,
+    Adjustment, CheckButton, ComboBoxText, TreeView, ListStore, CellRendererText, 
+    TreeViewColumn, glib,
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
 use wftpg::AppState;
+use std::fs;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -16,10 +18,10 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
 
     create_log_config_frame(&container, state);
 
-    let (refresh_btn, clear_btn, auto_refresh_cb) = create_control_buttons(&container);
-    let text_view = create_log_view(&container, state);
+    let (refresh_btn, clear_btn, auto_refresh_cb, log_file_combo) = create_control_buttons(&container, state);
+    let tree_view = create_log_view(&container, state);
 
-    setup_button_handlers(state, &text_view, &refresh_btn, &clear_btn, &auto_refresh_cb);
+    setup_button_handlers(state, &tree_view, &refresh_btn, &clear_btn, &auto_refresh_cb, &log_file_combo);
 
     container
 }
@@ -102,7 +104,7 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     row3.pack_start(&log_to_gui_cb, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
 
-    let save_btn = Button::with_label("保存日志配置");
+    let save_btn = Button::with_label("保存");
     let state_clone = Arc::clone(state);
     let log_dir_clone = log_dir_entry.clone();
     let log_level_clone = log_level_combo.clone();
@@ -146,10 +148,17 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     container.pack_start(&frame, false, false, 0);
 }
 
-fn create_control_buttons(container: &Box) -> (Button, Button, CheckButton) {
+fn create_control_buttons(container: &Box, state: &Arc<StdMutex<AppState>>) -> (Button, Button, CheckButton, ComboBoxText) {
     let control_box = Box::new(Orientation::Horizontal, 10);
 
-    let refresh_btn = Button::with_label("刷新日志");
+    control_box.pack_start(&Label::new(Some("日志文件:")), false, false, 0);
+    
+    let log_file_combo = ComboBoxText::new();
+    log_file_combo.set_hexpand(true);
+    populate_log_files(&log_file_combo, state);
+    control_box.pack_start(&log_file_combo, true, true, 0);
+
+    let refresh_btn = Button::with_label("刷新");
     let clear_btn = Button::with_label("清空显示");
     let auto_refresh_cb = CheckButton::with_label("自动刷新");
     auto_refresh_cb.set_active(true);
@@ -159,105 +168,234 @@ fn create_control_buttons(container: &Box) -> (Button, Button, CheckButton) {
     control_box.pack_start(&auto_refresh_cb, false, false, 0);
     container.pack_start(&control_box, false, false, 0);
 
-    (refresh_btn, clear_btn, auto_refresh_cb)
+    (refresh_btn, clear_btn, auto_refresh_cb, log_file_combo)
 }
 
-fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TextView {
+fn populate_log_files(combo: &ComboBoxText, state: &Arc<StdMutex<AppState>>) {
+    combo.remove_all();
+    
+    let log_dir = if let Ok(s) = state.try_lock() {
+        if let Ok(config) = s.config.try_lock() {
+            config.logging.log_dir.clone()
+        } else {
+            "/var/log/wftpg".to_string()
+        }
+    } else {
+        "/var/log/wftpg".to_string()
+    };
+
+    combo.append(Some("current"), "当前日志 (内存缓冲)");
+    
+    if let Ok(entries) = fs::read_dir(&log_dir) {
+        let mut log_files: Vec<(String, String)> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("wftpg-") && name.ends_with(".log")
+            })
+            .map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let path = e.path().to_string_lossy().to_string();
+                (name, path)
+            })
+            .collect();
+        
+        log_files.sort_by(|a, b| b.0.cmp(&a.0));
+        
+        for (name, path) in log_files {
+            combo.append(Some(&path), &name);
+        }
+    }
+    
+    combo.set_active_id(Some("current"));
+}
+
+fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TreeView {
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .build();
 
-    let text_view = TextView::new();
-    text_view.set_editable(false);
-    text_view.set_monospace(true);
-    text_view.set_left_margin(10);
-    text_view.set_right_margin(10);
-    text_view.set_top_margin(10);
-    text_view.set_bottom_margin(10);
+    let store = ListStore::new(&[
+        gtk::glib::Type::STRING,
+        gtk::glib::Type::STRING,
+        gtk::glib::Type::STRING,
+        gtk::glib::Type::STRING,
+        gtk::glib::Type::STRING,
+        gtk::glib::Type::STRING,
+    ]);
 
-    populate_log_view(&text_view, state);
+    populate_log_store(&store, state, "current");
 
-    scrolled.add(&text_view);
+    let tree = TreeView::with_model(&store);
+
+    let col_time = TreeViewColumn::new();
+    col_time.set_title("时间");
+    col_time.set_resizable(true);
+    col_time.set_min_width(150);
+    let renderer_time = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_time, &renderer_time, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_time, &renderer_time, "text", 0);
+    tree.append_column(&col_time);
+
+    let col_level = TreeViewColumn::new();
+    col_level.set_title("级别");
+    col_level.set_resizable(true);
+    col_level.set_min_width(60);
+    let renderer_level = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_level, &renderer_level, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_level, &renderer_level, "text", 1);
+    tree.append_column(&col_level);
+
+    let col_source = TreeViewColumn::new();
+    col_source.set_title("来源");
+    col_source.set_resizable(true);
+    col_source.set_min_width(80);
+    let renderer_source = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_source, &renderer_source, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_source, &renderer_source, "text", 2);
+    tree.append_column(&col_source);
+
+    let col_message = TreeViewColumn::new();
+    col_message.set_title("消息");
+    col_message.set_resizable(true);
+    col_message.set_min_width(300);
+    let renderer_message = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_message, &renderer_message, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_message, &renderer_message, "text", 3);
+    tree.append_column(&col_message);
+
+    let col_client = TreeViewColumn::new();
+    col_client.set_title("客户端IP");
+    col_client.set_resizable(true);
+    col_client.set_min_width(120);
+    let renderer_client = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_client, &renderer_client, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_client, &renderer_client, "text", 4);
+    tree.append_column(&col_client);
+
+    let col_action = TreeViewColumn::new();
+    col_action.set_title("操作");
+    col_action.set_resizable(true);
+    col_action.set_min_width(80);
+    let renderer_action = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_action, &renderer_action, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_action, &renderer_action, "text", 5);
+    tree.append_column(&col_action);
+
+    scrolled.add(&tree);
     container.pack_start(&scrolled, true, true, 0);
 
-    text_view
+    tree
 }
 
-fn format_log_entries(state: &Arc<StdMutex<AppState>>) -> String {
-    if let Ok(s) = state.try_lock() {
-        if let Ok(logger) = s.logger.try_lock() {
-            let entries = logger.get_recent_logs(100);
-            
-            if entries.is_empty() {
-                return "暂无日志记录".to_string();
+fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source: &str) {
+    store.clear();
+    
+    if source == "current" {
+        if let Ok(s) = state.try_lock() {
+            if let Ok(logger) = s.logger.try_lock() {
+                let entries = logger.get_recent_logs(500);
+                for entry in entries.into_iter().rev() {
+                    let iter = store.append();
+                    store.set_value(&iter, 0, &entry.timestamp.format("%Y-%m-%d %H:%M:%S").to_string().to_value());
+                    store.set_value(&iter, 1, &entry.level.to_string().to_value());
+                    store.set_value(&iter, 2, &entry.source.to_value());
+                    store.set_value(&iter, 3, &entry.message.to_value());
+                    store.set_value(&iter, 4, &entry.client_ip.unwrap_or_default().to_value());
+                    store.set_value(&iter, 5, &entry.action.unwrap_or_default().to_value());
+                }
             }
-            
-            let mut text = String::with_capacity(entries.len() * 100);
-            for entry in entries {
-                text.push_str(&format!(
-                    "[{}] {} - {} - {} - {}\n",
-                    entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
-                    entry.level,
-                    entry.source,
-                    entry.message,
-                    entry.action.unwrap_or_default()
-                ));
-            }
-            return text;
         }
-    }
-    "无法获取日志".to_string()
-}
-
-fn populate_log_view(text_view: &TextView, state: &Arc<StdMutex<AppState>>) {
-    let text = format_log_entries(state);
-    if let Some(buffer) = text_view.buffer() {
-        buffer.set_text(&text);
+    } else {
+        match fs::read_to_string(source) {
+            Ok(content) => {
+                for line in content.lines().rev().take(500) {
+                    if let Ok(entry) = serde_json::from_str::<wftpg::logger::LogEntry>(line) {
+                        let iter = store.append();
+                        store.set_value(&iter, 0, &entry.timestamp.format("%Y-%m-%d %H:%M:%S").to_string().to_value());
+                        store.set_value(&iter, 1, &entry.level.to_string().to_value());
+                        store.set_value(&iter, 2, &entry.source.to_value());
+                        store.set_value(&iter, 3, &entry.message.to_value());
+                        store.set_value(&iter, 4, &entry.client_ip.unwrap_or_default().to_value());
+                        store.set_value(&iter, 5, &entry.action.unwrap_or_default().to_value());
+                    }
+                }
+            }
+            Err(e) => {
+                let iter = store.append();
+                store.set_value(&iter, 3, &format!("无法读取日志文件: {}", e).to_value());
+            }
+        }
     }
 }
 
 fn setup_button_handlers(
     state: &Arc<StdMutex<AppState>>,
-    text_view: &TextView,
+    tree_view: &TreeView,
     refresh_btn: &Button,
     clear_btn: &Button,
     auto_refresh_cb: &CheckButton,
+    log_file_combo: &ComboBoxText,
 ) {
     let state_clone = Arc::clone(state);
-    let text_view_clone = text_view.clone();
-    refresh_btn.connect_clicked(clone!(@strong state_clone, @strong text_view_clone => move |_| {
-        let state = Arc::clone(&state_clone);
-        let text_view = text_view_clone.clone();
-        
-        glib::MainContext::ref_thread_default().spawn_local(async move {
-            let text = format_log_entries(&state);
-            if let Some(buffer) = text_view.buffer() {
-                buffer.set_text(&text);
+    let tree_view_clone = tree_view.clone();
+    let log_file_combo_clone = log_file_combo.clone();
+    refresh_btn.connect_clicked(clone!(@strong state_clone, @strong tree_view_clone, @strong log_file_combo_clone => move |_| {
+        let source = log_file_combo_clone.active_id()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "current".to_string());
+        if let Some(store) = tree_view_clone.model() {
+            if let Ok(store) = store.downcast::<ListStore>() {
+                populate_log_store(&store, &state_clone, &source);
             }
-        });
+        }
     }));
 
-    let text_view_clone = text_view.clone();
-    clear_btn.connect_clicked(clone!(@strong text_view_clone => move |_| {
-        if let Some(buffer) = text_view_clone.buffer() {
-            buffer.set_text("");
+    let tree_view_clone = tree_view.clone();
+    clear_btn.connect_clicked(clone!(@strong tree_view_clone => move |_| {
+        if let Some(store) = tree_view_clone.model() {
+            if let Ok(store) = store.downcast::<ListStore>() {
+                store.clear();
+            }
         }
     }));
 
     let state_clone = Arc::clone(state);
-    let text_view_clone = text_view.clone();
+    let tree_view_clone = tree_view.clone();
     let auto_refresh_cb_clone = auto_refresh_cb.clone();
+    let log_file_combo_clone = log_file_combo.clone();
     
     glib::timeout_add_seconds_local(2, move || {
         if auto_refresh_cb_clone.is_active() {
-            let text = format_log_entries(&state_clone);
-            if let Some(buffer) = text_view_clone.buffer() {
-                buffer.set_text(&text);
+            let source = log_file_combo_clone.active_id()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "current".to_string());
+            
+            if source == "current" {
+                if let Some(store) = tree_view_clone.model() {
+                    if let Ok(store) = store.downcast::<ListStore>() {
+                        populate_log_store(&store, &state_clone, &source);
+                    }
+                }
             }
         }
         glib::ControlFlow::Continue
     });
+
+    let state_clone = Arc::clone(state);
+    let tree_view_clone = tree_view.clone();
+    log_file_combo.connect_changed(clone!(@strong state_clone, @strong tree_view_clone, @strong log_file_combo => move |_| {
+        let source = log_file_combo.active_id()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "current".to_string());
+        if let Some(store) = tree_view_clone.model() {
+            if let Ok(store) = store.downcast::<ListStore>() {
+                populate_log_store(&store, &state_clone, &source);
+            }
+        }
+    }));
 }
 
 fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {

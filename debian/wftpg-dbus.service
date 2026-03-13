@@ -1,0 +1,13 @@
+[Unit]
+Description=WFTPG D-Bus Configuration Service
+Documentation=https://github.com/wftpg/wftpg
+After=dbus.service
+
+[Service]
+Type=dbus
+BusName=com.wftpg
+ExecStart=/usr/libexec/wftpg-dbus
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

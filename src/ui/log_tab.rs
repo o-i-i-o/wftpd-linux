@@ -14,10 +14,6 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     container.set_margin_start(10);
     container.set_margin_end(10);
 
-    let title_label = Label::new(Some("<b>日志查看</b>"));
-    title_label.set_use_markup(true);
-    container.pack_start(&title_label, false, false, 0);
-
     create_log_config_frame(&container, state);
 
     let (refresh_btn, clear_btn, auto_refresh_cb) = create_control_buttons(&container);

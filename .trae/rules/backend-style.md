@@ -2,3 +2,4 @@
 - 每次修改必须执行cargo clippy检查并修复问题
 - 不允许隐藏任何告警信息
 - 符合Rust代码规范，且代码优雅，避免使用复杂的语法和模式
+- 执行需要root权限的命令时，必须使用sudo命令，如systemctl restart wftpd

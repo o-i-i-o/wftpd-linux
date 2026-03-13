@@ -43,19 +43,29 @@ pub fn build_ui(app: &Application) {
     notebook.set_scrollable(true);
 
     let server_box = server_tab::create(&state);
-    notebook.append_page(&server_box, Some(&Label::new(Some("服务器配置"))));
+    let server_tab_label = Label::new(Some("服务器配置"));
+    server_tab_label.set_markup("<span size='large'>服务器配置</span>");
+    notebook.append_page(&server_box, Some(&server_tab_label));
 
     let user_box = user_tab::create(&state);
-    notebook.append_page(&user_box, Some(&Label::new(Some("用户管理"))));
+    let user_tab_label = Label::new(Some("用户管理"));
+    user_tab_label.set_markup("<span size='large'>用户管理</span>");
+    notebook.append_page(&user_box, Some(&user_tab_label));
 
     let security_box = security_tab::create(&state);
-    notebook.append_page(&security_box, Some(&Label::new(Some("安全设置"))));
+    let security_tab_label = Label::new(Some("安全设置"));
+    security_tab_label.set_markup("<span size='large'>安全设置</span>");
+    notebook.append_page(&security_box, Some(&security_tab_label));
 
     let service_box = service_tab::create(&state);
-    notebook.append_page(&service_box, Some(&Label::new(Some("系统服务"))));
+    let service_tab_label = Label::new(Some("系统服务"));
+    service_tab_label.set_markup("<span size='large'>系统服务</span>");
+    notebook.append_page(&service_box, Some(&service_tab_label));
 
     let log_box = log_tab::create(&state);
-    notebook.append_page(&log_box, Some(&Label::new(Some("日志查看"))));
+    let log_tab_label = Label::new(Some("日志查看"));
+    log_tab_label.set_markup("<span size='large'>日志查看</span>");
+    notebook.append_page(&log_box, Some(&log_tab_label));
 
     window.add(&notebook);
     window.show_all();

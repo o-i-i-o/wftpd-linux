@@ -11,10 +11,6 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     container.set_margin_start(10);
     container.set_margin_end(10);
 
-    let title_label = Label::new(Some("<b>系统服务</b>"));
-    title_label.set_use_markup(true);
-    container.pack_start(&title_label, false, false, 0);
-
     let status_label = create_control_frame(&container, state);
     create_status_frame(&container, state, &status_label);
 
@@ -38,14 +34,16 @@ fn create_control_frame(container: &Box, state: &Arc<StdMutex<AppState>>) -> Lab
     let install_btn = Button::with_label("安装服务");
     let start_btn = Button::with_label("启动服务");
     let stop_btn = Button::with_label("停止服务");
+    let restart_btn = Button::with_label("重启服务");
     let uninstall_btn = Button::with_label("卸载服务");
     let refresh_btn = Button::with_label("刷新状态");
 
-    setup_service_buttons(state, &install_btn, &start_btn, &stop_btn, &uninstall_btn, &refresh_btn, &status_label);
+    setup_service_buttons(state, &install_btn, &start_btn, &stop_btn, &restart_btn, &uninstall_btn, &refresh_btn, &status_label);
 
     button_box.pack_start(&install_btn, false, false, 0);
     button_box.pack_start(&start_btn, false, false, 0);
     button_box.pack_start(&stop_btn, false, false, 0);
+    button_box.pack_start(&restart_btn, false, false, 0);
     button_box.pack_start(&uninstall_btn, false, false, 0);
     button_box.pack_start(&refresh_btn, false, false, 0);
     control_box.pack_start(&button_box, false, false, 0);

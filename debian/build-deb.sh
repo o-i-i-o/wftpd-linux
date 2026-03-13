@@ -375,28 +375,48 @@ fi
 
 log_info "[8/9] 创建配置文件模板..."
 cat > "${DEB_DIR}/etc/wftpg/config.toml.example" << 'EOF'
-# WFTPG 配置文件示例
+# WFTPG 配置文件
 # 复制此文件到 /etc/wftpg/config.toml 进行自定义配置
 
 [server]
-# 默认SFTP端口
-sftp_port = 22
-# 默认FTP端口
+bind_ip = "0.0.0.0"
 ftp_port = 21
-# 最大连接数
+sftp_port = 22
 max_connections = 100
+connection_timeout = 300
+idle_timeout = 600
 
-[logging]
-# 日志级别: trace, debug, info, warn, error
-level = "info"
-# 日志文件路径
-path = "/var/log/wftpg/wftpg.log"
+[ftp]
+enabled = true
+default_home = "/home/user/Desktop/共享"
+passive_ports = [50000, 51000]
+welcome_message = "Welcome to WFTPG FTP Server"
+allow_anonymous = false
+max_speed_kbps = 0
+encoding = "UTF-8"
+
+[sftp]
+enabled = true
+default_home = "/home/user/Desktop/共享"
+host_key_path = "/var/lib/wftpg/ssh/ssh_host_rsa_key"
+max_auth_attempts = 3
+auth_timeout = 60
+log_level = "info"
 
 [security]
-# 是否允许root登录
-allow_root_login = false
-# 密码最小长度
-min_password_length = 8
+allowed_ips = ["0.0.0.0/0"]
+denied_ips = []
+max_login_attempts = 5
+ban_duration = 300
+require_ssl = false
+
+[logging]
+log_dir = "/var/log/wftpg"
+log_level = "info"
+max_log_size = 10485760
+max_log_files = 10
+log_to_file = true
+log_to_gui = true
 EOF
 chmod 644 "${DEB_DIR}/etc/wftpg/config.toml.example"
 

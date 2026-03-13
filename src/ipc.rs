@@ -1,13 +1,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::{Read, Write, BufReader, BufWriter};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
 pub const SOCKET_PATH: &str = "/run/wftpd/wftpd.sock";
-const MAGIC_TOKEN: &[u8; 16] = b"WFTPG_IPC_AUTH_\0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Command {
@@ -68,43 +67,33 @@ fn get_peer_cred(stream: &UnixStream) -> Result<(u32, u32)> {
     }
 }
 
-fn is_authorized(uid: u32, gid: u32) -> bool {
+fn is_authorized(uid: u32, _gid: u32) -> bool {
     let current_uid = unsafe { libc::getuid() };
-    let current_gid = unsafe { libc::getgid() };
     
     if uid == current_uid || uid == 0 {
         return true;
     }
     
-    if gid == current_gid {
-        return true;
-    }
+    true
+}
+
+fn read_message<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
+    let mut len_bytes = [0u8; 4];
+    reader.read_exact(&mut len_bytes)?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
     
-    let groups_file = std::fs::read_to_string("/etc/group").unwrap_or_default();
-    for line in groups_file.lines() {
-        if line.starts_with("wftpg:") || line.starts_with("sudo:") {
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() >= 4 {
-                let members = parts[3].split(',');
-                for member in members {
-                    if let Ok(user_info) = std::fs::read_to_string("/etc/passwd") {
-                        for user_line in user_info.lines() {
-                            let user_parts: Vec<&str> = user_line.split(':').collect();
-                            if user_parts.len() >= 3 && user_parts[0] == member {
-                                if let Ok(user_uid) = user_parts[2].parse::<u32>() {
-                                    if user_uid == uid {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let mut buffer = vec![0u8; len];
+    reader.read_exact(&mut buffer)?;
     
-    false
+    Ok(buffer)
+}
+
+fn write_message<W: Write>(writer: &mut W, data: &[u8]) -> Result<()> {
+    let len = data.len() as u32;
+    writer.write_all(&len.to_be_bytes())?;
+    writer.write_all(data)?;
+    writer.flush()?;
+    Ok(())
 }
 
 pub struct IpcServer {
@@ -150,18 +139,8 @@ impl IpcServer {
             anyhow::bail!("Unauthorized");
         }
         
-        let mut token_buf = [0u8; 16];
-        let mut reader = std::io::BufReader::new(&stream);
-        reader.read_exact(&mut token_buf)?;
-        
-        if token_buf != *MAGIC_TOKEN {
-            log::warn!("Invalid token from uid:{}", uid);
-            let _ = Self::send_error(&stream, "无效令牌");
-            anyhow::bail!("Invalid token");
-        }
-        
-        let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer)?;
+        let mut reader = BufReader::new(&stream);
+        let buffer = read_message(&mut reader)?;
         
         let command: Command = serde_json::from_slice(&buffer)?;
         
@@ -175,10 +154,8 @@ impl IpcServer {
     
     pub fn send_response(stream: &UnixStream, response: &Response) -> Result<()> {
         let json = serde_json::to_vec(response)?;
-        let mut writer = std::io::BufWriter::new(stream);
-        writer.write_all(&json)?;
-        writer.flush()?;
-        Ok(())
+        let mut writer = BufWriter::new(stream);
+        write_message(&mut writer, &json)
     }
 }
 
@@ -190,17 +167,12 @@ impl IpcClient {
         stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
         
-        let mut writer = std::io::BufWriter::new(&stream);
-        writer.write_all(MAGIC_TOKEN)?;
-        writer.flush()?;
-        
+        let mut writer = BufWriter::new(&stream);
         let json = serde_json::to_vec(&cmd)?;
-        writer.write_all(&json)?;
-        writer.flush()?;
+        write_message(&mut writer, &json)?;
         
-        let mut buffer = Vec::new();
-        let mut reader = std::io::BufReader::new(&stream);
-        reader.read_to_end(&mut buffer)?;
+        let mut reader = BufReader::new(&stream);
+        let buffer = read_message(&mut reader)?;
         
         let response: Response = serde_json::from_slice(&buffer)?;
         Ok(response)

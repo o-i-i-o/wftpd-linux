@@ -1,11 +1,13 @@
 use gtk::prelude::*;
 use gtk::{
     Box, Orientation, Label, Button, Entry, Frame, ScrolledWindow, TreeView, ListStore,
-    CellRendererText, TreeViewColumn, CellRendererToggle, CheckButton, glib,
+    CellRendererText, TreeViewColumn, CellRendererToggle, CheckButton, glib, Dialog,
+    DialogFlags, ResponseType, SpinButton, Adjustment,
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
 use wftpg::AppState;
+use wftpg::dbus_client;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -13,79 +15,6 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     container.set_margin_bottom(10);
     container.set_margin_start(10);
     container.set_margin_end(10);
-
-    let title_label = Label::new(Some("<b>用户管理</b>"));
-    title_label.set_use_markup(true);
-    container.pack_start(&title_label, false, false, 0);
-
-    let add_frame = Frame::new(Some("添加用户"));
-    let add_box = Box::new(Orientation::Vertical, 5);
-    add_box.set_margin_top(10);
-    add_box.set_margin_bottom(10);
-    add_box.set_margin_start(10);
-    add_box.set_margin_end(10);
-
-    let row1 = Box::new(Orientation::Horizontal, 5);
-    row1.pack_start(&Label::new(Some("用户名:")), false, false, 0);
-    let username_entry = Entry::new();
-    username_entry.set_width_chars(15);
-    row1.pack_start(&username_entry, false, false, 0);
-
-    row1.pack_start(&Label::new(Some("密码:")), false, false, 0);
-    let password_entry = Entry::new();
-    password_entry.set_width_chars(15);
-    password_entry.set_visibility(false);
-    row1.pack_start(&password_entry, false, false, 0);
-    add_box.pack_start(&row1, false, false, 0);
-
-    let row2 = Box::new(Orientation::Horizontal, 5);
-    row2.pack_start(&Label::new(Some("主目录:")), false, false, 0);
-    let home_entry = Entry::new();
-    home_entry.set_hexpand(true);
-    home_entry.set_placeholder_text(Some("留空则使用默认: /home/用户名/Desktop/文件共享"));
-    row2.pack_start(&home_entry, true, true, 0);
-    add_box.pack_start(&row2, false, false, 0);
-
-    let perm_frame = Frame::new(Some("权限设置"));
-    let perm_box = Box::new(Orientation::Horizontal, 10);
-    perm_box.set_margin_top(5);
-    perm_box.set_margin_bottom(5);
-    perm_box.set_margin_start(5);
-    perm_box.set_margin_end(5);
-
-    let read_cb = CheckButton::with_label("读取");
-    read_cb.set_active(true);
-    let write_cb = CheckButton::with_label("写入");
-    write_cb.set_active(true);
-    let delete_cb = CheckButton::with_label("删除");
-    delete_cb.set_active(true);
-    let list_cb = CheckButton::with_label("列表");
-    list_cb.set_active(true);
-    let mkdir_cb = CheckButton::with_label("建目录");
-    mkdir_cb.set_active(true);
-    let rmdir_cb = CheckButton::with_label("删目录");
-    rmdir_cb.set_active(true);
-    let rename_cb = CheckButton::with_label("重命名");
-    rename_cb.set_active(true);
-    let append_cb = CheckButton::with_label("追加");
-    append_cb.set_active(true);
-
-    perm_box.pack_start(&read_cb, false, false, 0);
-    perm_box.pack_start(&write_cb, false, false, 0);
-    perm_box.pack_start(&delete_cb, false, false, 0);
-    perm_box.pack_start(&list_cb, false, false, 0);
-    perm_box.pack_start(&mkdir_cb, false, false, 0);
-    perm_box.pack_start(&rmdir_cb, false, false, 0);
-    perm_box.pack_start(&rename_cb, false, false, 0);
-    perm_box.pack_start(&append_cb, false, false, 0);
-    perm_frame.add(&perm_box);
-    add_box.pack_start(&perm_frame, false, false, 0);
-
-    let add_btn = Button::with_label("添加用户");
-    add_box.pack_start(&add_btn, false, false, 0);
-
-    add_frame.add(&add_box);
-    container.pack_start(&add_frame, false, false, 0);
 
     let list_frame = Frame::new(Some("用户列表"));
     let list_box = Box::new(Orientation::Vertical, 5);
@@ -97,7 +26,7 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .min_content_height(200)
+        .min_content_height(300)
         .build();
 
     let store = ListStore::new(&[
@@ -113,6 +42,8 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
 
     let col_username = TreeViewColumn::new();
     col_username.set_title("用户名");
+    col_username.set_resizable(true);
+    col_username.set_min_width(100);
     let renderer_username = CellRendererText::new();
     gtk::prelude::CellLayoutExt::pack_start(&col_username, &renderer_username, true);
     gtk::prelude::CellLayoutExt::add_attribute(&col_username, &renderer_username, "text", 0);
@@ -120,6 +51,8 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
 
     let col_home = TreeViewColumn::new();
     col_home.set_title("主目录");
+    col_home.set_resizable(true);
+    col_home.set_min_width(200);
     let renderer_home = CellRendererText::new();
     gtk::prelude::CellLayoutExt::pack_start(&col_home, &renderer_home, true);
     gtk::prelude::CellLayoutExt::add_attribute(&col_home, &renderer_home, "text", 1);
@@ -134,6 +67,7 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
 
     let col_perms = TreeViewColumn::new();
     col_perms.set_title("权限");
+    col_perms.set_resizable(true);
     let renderer_perms = CellRendererText::new();
     gtk::prelude::CellLayoutExt::pack_start(&col_perms, &renderer_perms, true);
     gtk::prelude::CellLayoutExt::add_attribute(&col_perms, &renderer_perms, "text", 3);
@@ -143,9 +77,13 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     list_box.pack_start(&scrolled, true, true, 0);
 
     let btn_box = Box::new(Orientation::Horizontal, 10);
-    let delete_btn = Button::with_label("删除选中用户");
-    let toggle_btn = Button::with_label("启用/禁用切换");
+    let add_btn = Button::with_label("新建用户");
+    let edit_btn = Button::with_label("编辑用户");
+    let delete_btn = Button::with_label("删除用户");
+    let toggle_btn = Button::with_label("启用/禁用");
     let refresh_btn = Button::with_label("刷新列表");
+    btn_box.pack_start(&add_btn, false, false, 0);
+    btn_box.pack_start(&edit_btn, false, false, 0);
     btn_box.pack_start(&delete_btn, false, false, 0);
     btn_box.pack_start(&toggle_btn, false, false, 0);
     btn_box.pack_start(&refresh_btn, false, false, 0);
@@ -153,6 +91,215 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
 
     list_frame.add(&list_box);
     container.pack_start(&list_frame, true, true, 0);
+
+    let state_clone = Arc::clone(state);
+    let store_clone = store.clone();
+    add_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
+        show_user_dialog(None, &state_clone, &store_clone);
+    }));
+
+    let state_clone = Arc::clone(state);
+    let store_clone = store.clone();
+    let tree_clone = tree.clone();
+    edit_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+        let selection = tree_clone.selection();
+        if let Some((model, iter)) = selection.selected() {
+            let username: String = model.value(&iter, 0).get().unwrap_or_default();
+            show_user_dialog(Some(&username), &state_clone, &store_clone);
+        }
+    }));
+
+    let state_clone = Arc::clone(state);
+    let store_clone = store.clone();
+    let tree_clone = tree.clone();
+    delete_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+        let selection = tree_clone.selection();
+        if let Some((model, iter)) = selection.selected() {
+            let username: String = model.value(&iter, 0).get().unwrap_or_default();
+            show_confirm_dialog(&username, &state_clone, &store_clone);
+        }
+    }));
+
+    let state_clone = Arc::clone(state);
+    let store_clone = store.clone();
+    let tree_clone = tree.clone();
+    toggle_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+        let selection = tree_clone.selection();
+        if let Some((model, iter)) = selection.selected() {
+            let username: String = model.value(&iter, 0).get().unwrap_or_default();
+            let current_enabled: bool = model.value(&iter, 2).get().unwrap_or(true);
+            
+            let store = store_clone.clone();
+            let uname = username.clone();
+            let new_enabled = !current_enabled;
+            
+            let users_json = {
+                if let Ok(s) = state_clone.try_lock() {
+                    if let Ok(mut users) = s.user_manager.try_lock() {
+                        if users.set_user_enabled(&uname, new_enabled).is_ok() {
+                            serde_json::to_string(&*users).unwrap_or_default()
+                        } else { return; }
+                    } else { return; }
+                } else { return; }
+            };
+            
+            match dbus_client::write_users_via_dbus(&users_json) {
+                Ok(()) => {
+                    let action = if new_enabled { "enabled" } else { "disabled" };
+                    let _ = dbus_client::write_audit_log(
+                        "gui-user",
+                        "USER_TOGGLE",
+                        &uname,
+                        &format!("User {} status changed to {}", uname, action)
+                    );
+                    log::info!("User {} enabled status toggled to {}", uname, new_enabled);
+                }
+                Err(e) => {
+                    log::error!("Failed to save users: {}", e);
+                }
+            }
+            refresh_user_list(&store, &state_clone);
+        }
+    }));
+
+    let state_clone = Arc::clone(state);
+    let store_clone = store.clone();
+    refresh_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
+        refresh_user_list(&store_clone, &state_clone);
+    }));
+
+    container
+}
+
+fn show_user_dialog(
+    username: Option<&str>,
+    state: &Arc<StdMutex<AppState>>,
+    store: &ListStore,
+) {
+    let dialog = Dialog::with_buttons(
+        Some(if username.is_some() { "编辑用户" } else { "新建用户" }),
+        None::<&gtk::Window>,
+        DialogFlags::MODAL,
+        &[
+            ("取消", ResponseType::Cancel),
+            ("确定", ResponseType::Ok),
+        ],
+    );
+    dialog.set_default_size(400, 350);
+    
+    let content = dialog.content_area();
+    let box_ = Box::new(Orientation::Vertical, 10);
+    box_.set_margin_top(10);
+    box_.set_margin_bottom(10);
+    box_.set_margin_start(10);
+    box_.set_margin_end(10);
+
+    let row1 = Box::new(Orientation::Horizontal, 5);
+    row1.pack_start(&Label::new(Some("用户名:")), false, false, 0);
+    let username_entry = Entry::new();
+    username_entry.set_width_chars(20);
+    if let Some(name) = username {
+        username_entry.set_text(name);
+        username_entry.set_sensitive(false);
+    }
+    row1.pack_start(&username_entry, true, true, 0);
+    box_.pack_start(&row1, false, false, 0);
+
+    let row2 = Box::new(Orientation::Horizontal, 5);
+    row2.pack_start(&Label::new(Some("密码:")), false, false, 0);
+    let password_entry = Entry::new();
+    password_entry.set_width_chars(20);
+    password_entry.set_visibility(false);
+    if username.is_some() {
+        password_entry.set_placeholder_text(Some("留空则不修改密码"));
+    }
+    row2.pack_start(&password_entry, true, true, 0);
+    box_.pack_start(&row2, false, false, 0);
+
+    let row3 = Box::new(Orientation::Horizontal, 5);
+    row3.pack_start(&Label::new(Some("主目录:")), false, false, 0);
+    let home_entry = Entry::new();
+    home_entry.set_width_chars(20);
+    home_entry.set_placeholder_text(Some("留空则使用默认目录"));
+    row3.pack_start(&home_entry, true, true, 0);
+    box_.pack_start(&row3, false, false, 0);
+
+    let perm_frame = Frame::new(Some("权限设置"));
+    let perm_box = Box::new(Orientation::Horizontal, 10);
+    perm_box.set_margin_top(5);
+    perm_box.set_margin_bottom(5);
+    perm_box.set_margin_start(5);
+    perm_box.set_margin_end(5);
+
+    let read_cb = CheckButton::with_label("读取");
+    let write_cb = CheckButton::with_label("写入");
+    let delete_cb = CheckButton::with_label("删除");
+    let list_cb = CheckButton::with_label("列表");
+    let mkdir_cb = CheckButton::with_label("建目录");
+    let rmdir_cb = CheckButton::with_label("删目录");
+    let rename_cb = CheckButton::with_label("重命名");
+    let append_cb = CheckButton::with_label("追加");
+
+    read_cb.set_active(true);
+    write_cb.set_active(true);
+    delete_cb.set_active(true);
+    list_cb.set_active(true);
+    mkdir_cb.set_active(true);
+    rmdir_cb.set_active(true);
+    rename_cb.set_active(true);
+    append_cb.set_active(true);
+
+    perm_box.pack_start(&read_cb, false, false, 0);
+    perm_box.pack_start(&write_cb, false, false, 0);
+    perm_box.pack_start(&delete_cb, false, false, 0);
+    perm_box.pack_start(&list_cb, false, false, 0);
+    perm_box.pack_start(&mkdir_cb, false, false, 0);
+    perm_box.pack_start(&rmdir_cb, false, false, 0);
+    perm_box.pack_start(&rename_cb, false, false, 0);
+    perm_box.pack_start(&append_cb, false, false, 0);
+    perm_frame.add(&perm_box);
+    box_.pack_start(&perm_frame, false, false, 0);
+
+    let quota_frame = Frame::new(Some("配额设置"));
+    let quota_box = Box::new(Orientation::Horizontal, 10);
+    quota_box.set_margin_top(5);
+    quota_box.set_margin_bottom(5);
+    quota_box.set_margin_start(5);
+    quota_box.set_margin_end(5);
+
+    let quota_cb = CheckButton::with_label("启用配额");
+    let quota_spin = create_spin_button(1.0, 1000000.0, 100.0);
+    quota_box.pack_start(&quota_cb, false, false, 0);
+    quota_box.pack_start(&Label::new(Some("配额(MB):")), false, false, 0);
+    quota_box.pack_start(&quota_spin, false, false, 0);
+    quota_frame.add(&quota_box);
+    box_.pack_start(&quota_frame, false, false, 0);
+
+    if let Some(name) = username {
+        if let Ok(s) = state.try_lock() {
+            if let Ok(users) = s.user_manager.try_lock() {
+                if let Some(user) = users.get_user(name) {
+                    home_entry.set_text(&user.home_dir);
+                    read_cb.set_active(user.permissions.can_read);
+                    write_cb.set_active(user.permissions.can_write);
+                    delete_cb.set_active(user.permissions.can_delete);
+                    list_cb.set_active(user.permissions.can_list);
+                    mkdir_cb.set_active(user.permissions.can_mkdir);
+                    rmdir_cb.set_active(user.permissions.can_rmdir);
+                    rename_cb.set_active(user.permissions.can_rename);
+                    append_cb.set_active(user.permissions.can_append);
+                    
+                    if let Some(quota) = user.permissions.quota_mb {
+                        quota_cb.set_active(true);
+                        quota_spin.set_value(quota as f64);
+                    }
+                }
+            }
+        }
+    }
+
+    content.add(&box_);
+    content.show_all();
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
@@ -167,127 +314,168 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let rmdir_cb_clone = rmdir_cb.clone();
     let rename_cb_clone = rename_cb.clone();
     let append_cb_clone = append_cb.clone();
-    add_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong username_entry_clone, @strong password_entry_clone, @strong home_entry_clone,
+    let quota_cb_clone = quota_cb.clone();
+    let quota_spin_clone = quota_spin.clone();
+    let edit_username = username.map(|s| s.to_string());
+
+    dialog.connect_response(clone!(@strong state_clone, @strong store_clone, @strong username_entry_clone, @strong password_entry_clone, @strong home_entry_clone,
            @strong read_cb_clone, @strong write_cb_clone, @strong delete_cb_clone, @strong list_cb_clone,
-           @strong mkdir_cb_clone, @strong rmdir_cb_clone, @strong rename_cb_clone, @strong append_cb_clone => move |_| {
-        let username = username_entry_clone.text().to_string();
-        let password = password_entry_clone.text().to_string();
-        let home = home_entry_clone.text().to_string();
-        
-        if username.is_empty() || password.is_empty() {
-            return;
-        }
+           @strong mkdir_cb_clone, @strong rmdir_cb_clone, @strong rename_cb_clone, @strong append_cb_clone,
+           @strong quota_cb_clone, @strong quota_spin_clone, @strong edit_username => move |dlg, resp| {
+        if resp == ResponseType::Ok {
+            let uname = username_entry_clone.text().to_string();
+            let password = password_entry_clone.text().to_string();
+            let home = home_entry_clone.text().to_string();
+            
+            if uname.is_empty() {
+                return;
+            }
 
-        let home_str = if home.is_empty() {
-            get_default_home_dir(&username)
-        } else {
-            home
-        };
+            let perms = wftpg::users::Permissions {
+                can_read: read_cb_clone.is_active(),
+                can_write: write_cb_clone.is_active(),
+                can_delete: delete_cb_clone.is_active(),
+                can_list: list_cb_clone.is_active(),
+                can_mkdir: mkdir_cb_clone.is_active(),
+                can_rmdir: rmdir_cb_clone.is_active(),
+                can_rename: rename_cb_clone.is_active(),
+                can_append: append_cb_clone.is_active(),
+                quota_mb: if quota_cb_clone.is_active() {
+                    Some(quota_spin_clone.value() as u64)
+                } else {
+                    None
+                },
+                speed_limit_kbps: None,
+            };
 
-        let perms = wftpg::users::Permissions {
-            can_read: read_cb_clone.is_active(),
-            can_write: write_cb_clone.is_active(),
-            can_delete: delete_cb_clone.is_active(),
-            can_list: list_cb_clone.is_active(),
-            can_mkdir: mkdir_cb_clone.is_active(),
-            can_rmdir: rmdir_cb_clone.is_active(),
-            can_rename: rename_cb_clone.is_active(),
-            can_append: append_cb_clone.is_active(),
-            quota_mb: None,
-            speed_limit_kbps: None,
-        };
+            let state = Arc::clone(&state_clone);
+            let store = store_clone.clone();
+            let home_dir = if home.is_empty() {
+                get_default_home_dir(&uname)
+            } else {
+                home.clone()
+            };
+            let pwd = password.clone();
+            let username = uname.clone();
+            let is_edit = edit_username.is_some();
 
-        let state = Arc::clone(&state_clone);
-        let store = store_clone.clone();
-        let username_clear = username_entry_clone.clone();
-        let password_clear = password_entry_clone.clone();
-        let home_clear = home_entry_clone.clone();
-        let home_dir = home_str.clone();
-        let uname = username.clone();
-
-        glib::MainContext::ref_thread_default().spawn_local(async move {
-            if let Ok(s) = state.try_lock() {
-                if let Ok(mut users) = s.user_manager.try_lock() {
-                    if users.add_user(&uname, &password, &home_dir, false).is_ok() {
-                        if let Err(e) = users.update_permissions(&uname, perms) {
-                            log::error!("Failed to set permissions: {}", e);
-                        }
-                        let _ = users.save(&s.users_path);
+            let users_json = {
+                if let Ok(s) = state.try_lock() {
+                    if let Ok(mut users) = s.user_manager.try_lock() {
+                        let success = if is_edit {
+                            if !pwd.is_empty() {
+                                let _ = users.update_password(&username, &pwd);
+                            }
+                            let _ = users.update_home_dir(&username, &home_dir);
+                            let _ = users.update_permissions(&username, perms);
+                            true
+                        } else {
+                            if pwd.is_empty() {
+                                false
+                            } else {
+                                users.add_user(&username, &pwd, &home_dir, false).is_ok()
+                            }
+                        };
                         
-                        if let Err(e) = std::fs::create_dir_all(&home_dir) {
-                            log::warn!("Failed to create home directory: {}", e);
-                        }
-
-                        refresh_user_list(&store, &state);
-                        username_clear.set_text("");
-                        password_clear.set_text("");
-                        home_clear.set_text("");
-                        log::info!("User {} added with home {}", uname, home_dir);
-                    }
+                        if success {
+                            if !is_edit {
+                                let _ = users.update_permissions(&username, perms);
+                            }
+                            if !is_edit {
+                                let _ = std::fs::create_dir_all(&home_dir);
+                            }
+                            serde_json::to_string(&*users).unwrap_or_default()
+                        } else { return; }
+                    } else { return; }
+                } else { return; }
+            };
+            
+            match dbus_client::write_users_via_dbus(&users_json) {
+                Ok(()) => {
+                    let action_type = if is_edit { "USER_MODIFY" } else { "USER_CREATE" };
+                    let _ = dbus_client::write_audit_log(
+                        "gui-user",
+                        action_type,
+                        &username,
+                        &format!("User {} {}", username, if is_edit { "modified" } else { "created" })
+                    );
+                    log::info!("User {} saved", username);
+                }
+                Err(e) => {
+                    log::error!("Failed to save users: {}", e);
                 }
             }
-        });
-    }));
-
-    let state_clone = Arc::clone(state);
-    let store_clone = store.clone();
-    let tree_clone = tree.clone();
-    delete_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
-        let selection = tree_clone.selection();
-        if let Some((model, iter)) = selection.selected() {
-            let username: String = model.value(&iter, 0).get().unwrap_or_default();
-            let state = Arc::clone(&state_clone);
-            let store = store_clone.clone();
-            let uname = username.clone();
-            
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                if let Ok(s) = state.try_lock() {
-                    if let Ok(mut users) = s.user_manager.try_lock() {
-                        let _ = users.remove_user(&uname);
-                        let _ = users.save(&s.users_path);
-                    }
-                }
-                refresh_user_list(&store, &state);
-                log::info!("User {} deleted", uname);
-            });
+            refresh_user_list(&store, &state);
         }
+        dlg.close();
     }));
+
+    dialog.run();
+}
+
+fn show_confirm_dialog(
+    username: &str,
+    state: &Arc<StdMutex<AppState>>,
+    store: &ListStore,
+) {
+    let dialog = Dialog::with_buttons(
+        Some("确认删除"),
+        None::<&gtk::Window>,
+        DialogFlags::MODAL,
+        &[
+            ("取消", ResponseType::Cancel),
+            ("删除", ResponseType::Ok),
+        ],
+    );
+    dialog.set_default_size(300, 100);
+    
+    let content = dialog.content_area();
+    let label = Label::new(Some(&format!("确定要删除用户 \"{}\" 吗？", username)));
+    label.set_margin_top(20);
+    label.set_margin_bottom(20);
+    label.set_margin_start(20);
+    label.set_margin_end(20);
+    content.add(&label);
+    content.show_all();
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
-    let tree_clone = tree.clone();
-    toggle_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
-        let selection = tree_clone.selection();
-        if let Some((model, iter)) = selection.selected() {
-            let username: String = model.value(&iter, 0).get().unwrap_or_default();
-            let current_enabled: bool = model.value(&iter, 2).get().unwrap_or(true);
-            
-            let state = Arc::clone(&state_clone);
+    let uname = username.to_string();
+
+    dialog.connect_response(clone!(@strong state_clone, @strong store_clone, @strong uname => move |dlg, resp| {
+        if resp == ResponseType::Ok {
             let store = store_clone.clone();
-            let uname = username.clone();
-            let new_enabled = !current_enabled;
+            let username = uname.clone();
             
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                if let Ok(s) = state.try_lock() {
+            let users_json = {
+                if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut users) = s.user_manager.try_lock() {
-                        if users.set_user_enabled(&uname, new_enabled).is_ok() {
-                            let _ = users.save(&s.users_path);
-                        }
-                    }
+                        let _ = users.remove_user(&username);
+                        serde_json::to_string(&*users).unwrap_or_default()
+                    } else { return; }
+                } else { return; }
+            };
+            
+            match dbus_client::write_users_via_dbus(&users_json) {
+                Ok(()) => {
+                    let _ = dbus_client::write_audit_log(
+                        "gui-user",
+                        "USER_DELETE",
+                        &username,
+                        &format!("User {} deleted", username)
+                    );
+                    log::info!("User {} deleted", username);
                 }
-                refresh_user_list(&store, &state);
-                log::info!("User {} enabled status toggled to {}", uname, new_enabled);
-            });
+                Err(e) => {
+                    log::error!("Failed to save users: {}", e);
+                }
+            }
+            refresh_user_list(&store, &state_clone);
         }
+        dlg.close();
     }));
 
-    let state_clone = Arc::clone(state);
-    let store_clone = store.clone();
-    refresh_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
-        refresh_user_list(&store_clone, &state_clone);
-    }));
-
-    container
+    dialog.run();
 }
 
 fn get_default_home_dir(username: &str) -> String {
@@ -311,4 +499,13 @@ fn refresh_user_list(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
             }
         }
     }
+}
+
+fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {
+    let adjustment = Adjustment::new(min, min, max, step, step * 10.0, 0.0);
+    SpinButton::builder()
+        .adjustment(&adjustment)
+        .digits(0)
+        .width_chars(8)
+        .build()
 }

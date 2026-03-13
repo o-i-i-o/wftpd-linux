@@ -9,6 +9,8 @@ pub mod ftp_server;
 pub mod sftp_server;
 pub mod service;
 pub mod ipc;
+pub mod dbus_client;
+pub mod gui_logger;
 
 mod server_manager;
 

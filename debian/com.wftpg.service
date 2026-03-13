@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=com.wftpg
+Exec=/usr/libexec/wftpg-dbus
+User=root
+SystemdService=wftpg-dbus.service

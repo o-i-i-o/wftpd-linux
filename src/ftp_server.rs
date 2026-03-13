@@ -17,6 +17,7 @@ pub struct FtpServer {
     user_manager: Arc<Mutex<UserManager>>,
     logger: Arc<Mutex<Logger>>,
     running: Arc<Mutex<bool>>,
+    listener: Arc<Mutex<Option<TcpListener>>>,
     passive_listeners: PassiveListenerMap,
 }
 
@@ -31,6 +32,7 @@ impl FtpServer {
             user_manager,
             logger,
             running: Arc::new(Mutex::new(false)),
+            listener: Arc::new(Mutex::new(None)),
             passive_listeners: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -41,11 +43,18 @@ impl FtpServer {
             (cfg.server.bind_ip.clone(), cfg.server.ftp_port)
         };
         let bind_addr = format!("{}:{}", bind_ip, ftp_port);
+        
         let listener = TcpListener::bind(&bind_addr)?;
-
+        listener.set_nonblocking(true)?;
+        
         {
             let mut running = self.running.lock().unwrap();
             *running = true;
+        }
+        
+        {
+            let mut listener_guard = self.listener.lock().unwrap();
+            *listener_guard = Some(listener.try_clone()?);
         }
 
         let config = Arc::clone(&self.config);
@@ -53,16 +62,17 @@ impl FtpServer {
         let logger = Arc::clone(&self.logger);
         let running = Arc::clone(&self.running);
         let passive_listeners = Arc::clone(&self.passive_listeners);
+        let server_listener = Arc::clone(&self.listener);
 
         std::thread::spawn(move || {
-            for stream in listener.incoming() {
+            loop {
                 let is_running = *running.lock().unwrap();
                 if !is_running {
                     break;
                 }
 
-                match stream {
-                    Ok(stream) => {
+                match listener.accept() {
+                    Ok((stream, _)) => {
                         let config = Arc::clone(&config);
                         let user_manager = Arc::clone(&user_manager);
                         let logger = Arc::clone(&logger);
@@ -79,10 +89,23 @@ impl FtpServer {
                             }
                         });
                     }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
                     Err(e) => {
+                        let is_running = *running.lock().unwrap();
+                        if !is_running {
+                            break;
+                        }
                         eprintln!("Failed to accept connection: {}", e);
                     }
                 }
+            }
+            
+            {
+                let mut listener_guard = server_listener.lock().unwrap();
+                *listener_guard = None;
             }
         });
 
@@ -90,15 +113,23 @@ impl FtpServer {
     }
 
     pub fn stop(&self) {
-        let mut running = self.running.lock().unwrap();
-        *running = false;
+        {
+            let mut running = self.running.lock().unwrap();
+            *running = false;
+        }
+        
+        {
+            let mut listener_guard = self.listener.lock().unwrap();
+            *listener_guard = None;
+        }
 
         let mut listeners = self.passive_listeners.lock().unwrap();
         listeners.clear();
     }
 
     pub fn is_running(&self) -> bool {
-        *self.running.lock().unwrap()
+        let listener_guard = self.listener.lock().unwrap();
+        listener_guard.is_some()
     }
 }
 
@@ -117,6 +148,9 @@ fn handle_ftp_connection(
     {
         let cfg = config.lock().unwrap();
         if !cfg.is_ip_allowed(&remote_ip) {
+            if let Ok(mut log) = logger.try_lock() {
+                log.warning("FTP", &format!("Connection rejected from {} by IP filter", remote_ip));
+            }
             let response = b"530 Connection denied by IP filter\r\n";
             stream.write_all(response)?;
             return Ok(());
@@ -198,9 +232,23 @@ fn handle_ftp_connection(
                             );
                         }
                         Ok(false) => {
+                            logger.lock().unwrap().client_action(
+                                "FTP",
+                                &format!("Authentication failed for user {}", username),
+                                &remote_ip,
+                                Some(username),
+                                "AUTH_FAIL",
+                            );
                             stream.write_all(b"530 Not logged in, user cannot be authenticated\r\n")?;
                         }
-                        Err(_) => {
+                        Err(e) => {
+                            logger.lock().unwrap().client_action(
+                                "FTP",
+                                &format!("Authentication error for user {}: {}", username, e),
+                                &remote_ip,
+                                Some(username),
+                                "AUTH_ERROR",
+                            );
                             stream.write_all(b"530 Not logged in\r\n")?;
                         }
                     }

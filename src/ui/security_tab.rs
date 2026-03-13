@@ -6,6 +6,7 @@ use gtk::{
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
 use wftpg::AppState;
+use wftpg::dbus_client;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -13,10 +14,6 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     container.set_margin_bottom(10);
     container.set_margin_start(10);
     container.set_margin_end(10);
-
-    let title_label = Label::new(Some("<b>安全设置</b>"));
-    title_label.set_use_markup(true);
-    container.pack_start(&title_label, false, false, 0);
 
     create_login_security_frame(&container, state);
     create_ip_whitelist_frame(&container, state);
@@ -64,20 +61,33 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
     let ban_duration_clone = ban_duration_spin.clone();
     save_btn.connect_clicked(
         clone!(@strong state_clone, @strong max_attempts_clone, @strong ban_duration_clone => move |_| {
-            let state = Arc::clone(&state_clone);
             let max_attempts = max_attempts_clone.value() as u32;
             let ban_duration = ban_duration_clone.value() as u64;
             
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                if let Ok(s) = state.try_lock() {
+            let config_str = {
+                if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut config) = s.config.try_lock() {
                         config.security.max_login_attempts = max_attempts;
                         config.security.ban_duration = ban_duration;
-                        let _ = config.save(&s.config_path);
-                        log::info!("Login security settings saved");
-                    }
+                        toml::to_string_pretty(&*config).unwrap_or_default()
+                    } else { return; }
+                } else { return; }
+            };
+            
+            match dbus_client::write_config_via_dbus(&config_str) {
+                Ok(()) => {
+                    let _ = dbus_client::write_audit_log(
+                        "gui-security",
+                        "SECURITY_CONFIG",
+                        "login_settings",
+                        &format!("Login security updated: max_attempts={}, ban_duration={}s", max_attempts, ban_duration)
+                    );
+                    log::info!("Login security settings saved");
                 }
-            });
+                Err(e) => {
+                    log::error!("Failed to save security settings: {}", e);
+                }
+            }
         }),
     );
     box_.pack_start(&save_btn, false, false, 0);
@@ -114,6 +124,9 @@ fn create_ip_whitelist_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     let add_btn = Button::with_label("添加");
     add_box.pack_start(&add_btn, false, false, 0);
 
+    let delete_btn = Button::with_label("删除选中IP");
+    add_box.pack_start(&delete_btn, false, false, 0);
+
     let clear_btn = Button::with_label("清空白名单");
     add_box.pack_start(&clear_btn, false, false, 0);
 
@@ -142,9 +155,6 @@ fn create_ip_whitelist_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
 
     scrolled.add(&tree);
     ip_box.pack_start(&scrolled, true, true, 0);
-
-    let delete_btn = Button::with_label("删除选中IP");
-    ip_box.pack_start(&delete_btn, false, false, 0);
 
     ip_frame.add(&ip_box);
     container.pack_start(&ip_frame, true, true, 0);
@@ -188,6 +198,9 @@ fn create_ip_blacklist_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     let add_btn = Button::with_label("添加");
     add_box.pack_start(&add_btn, false, false, 0);
 
+    let delete_btn = Button::with_label("删除选中IP");
+    add_box.pack_start(&delete_btn, false, false, 0);
+
     let clear_btn = Button::with_label("清空黑名单");
     add_box.pack_start(&clear_btn, false, false, 0);
 
@@ -196,7 +209,7 @@ fn create_ip_blacklist_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .min_content_height(80)
+        .min_content_height(100)
         .build();
 
     let store = ListStore::new(&[gtk::glib::Type::STRING]);
@@ -213,9 +226,6 @@ fn create_ip_blacklist_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
 
     scrolled.add(&tree);
     ip_box.pack_start(&scrolled, true, true, 0);
-
-    let delete_btn = Button::with_label("删除选中IP");
-    ip_box.pack_start(&delete_btn, false, false, 0);
 
     ip_frame.add(&ip_box);
     container.pack_start(&ip_frame, true, true, 0);
@@ -267,24 +277,31 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                 log::warn!("Invalid IP or CIDR format: {}", ip_str);
                 return;
             }
-            let state = Arc::clone(&state_clone);
             let store = store_clone.clone();
             let ip_entry = ip_entry_clone.clone();
             let ip_to_add = ip_str.clone();
             
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                if let Ok(s) = state.try_lock() {
+            let config_str = {
+                if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut config) = s.config.try_lock() {
                         if !config.security.allowed_ips.contains(&ip_to_add) {
                             config.security.allowed_ips.push(ip_to_add.clone());
-                            let _ = config.save(&s.config_path);
-                            refresh_whitelist(&store, &state);
-                            ip_entry.set_text("");
-                            log::info!("IP {} added to whitelist", ip_to_add);
                         }
-                    }
+                        toml::to_string_pretty(&*config).unwrap_or_default()
+                    } else { return; }
+                } else { return; }
+            };
+            
+            match dbus_client::write_config_via_dbus(&config_str) {
+                Ok(()) => {
+                    refresh_whitelist(&store, &state_clone);
+                    ip_entry.set_text("");
+                    log::info!("IP {} added to whitelist", ip_to_add);
                 }
-            });
+                Err(e) => {
+                    log::error!("Failed to add IP to whitelist: {}", e);
+                }
+            }
         }
     }));
 
@@ -295,57 +312,78 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
         let selection = tree_clone.selection();
         if let Some((model, iter)) = selection.selected() {
             let ip: String = model.value(&iter, 0).get().unwrap_or_default();
-            let state = Arc::clone(&state_clone);
             let store = store_clone.clone();
             let ip_to_remove = ip.clone();
             
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                if let Ok(s) = state.try_lock() {
+            let config_str = {
+                if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut config) = s.config.try_lock() {
                         config.security.allowed_ips.retain(|x| x != &ip_to_remove);
-                        let _ = config.save(&s.config_path);
-                        refresh_whitelist(&store, &state);
-                        log::info!("IP {} removed from whitelist", ip_to_remove);
-                    }
+                        toml::to_string_pretty(&*config).unwrap_or_default()
+                    } else { return; }
+                } else { return; }
+            };
+            
+            match dbus_client::write_config_via_dbus(&config_str) {
+                Ok(()) => {
+                    refresh_whitelist(&store, &state_clone);
+                    log::info!("IP {} removed from whitelist", ip_to_remove);
                 }
-            });
+                Err(e) => {
+                    log::error!("Failed to remove IP from whitelist: {}", e);
+                }
+            }
         }
     }));
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     widgets.clear_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
-        let state = Arc::clone(&state_clone);
         let store = store_clone.clone();
         
-        glib::MainContext::ref_thread_default().spawn_local(async move {
-            if let Ok(s) = state.try_lock() {
+        let config_str = {
+            if let Ok(s) = state_clone.try_lock() {
                 if let Ok(mut config) = s.config.try_lock() {
                     config.security.allowed_ips.clear();
-                    let _ = config.save(&s.config_path);
-                    refresh_whitelist(&store, &state);
-                    log::info!("Whitelist cleared");
-                }
+                    toml::to_string_pretty(&*config).unwrap_or_default()
+                } else { return; }
+            } else { return; }
+        };
+        
+        match dbus_client::write_config_via_dbus(&config_str) {
+            Ok(()) => {
+                refresh_whitelist(&store, &state_clone);
+                log::info!("Whitelist cleared");
             }
-        });
+            Err(e) => {
+                log::error!("Failed to clear whitelist: {}", e);
+            }
+        }
     }));
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     widgets.allow_all_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
-        let state = Arc::clone(&state_clone);
         let store = store_clone.clone();
         
-        glib::MainContext::ref_thread_default().spawn_local(async move {
-            if let Ok(s) = state.try_lock() {
+        let config_str = {
+            if let Ok(s) = state_clone.try_lock() {
                 if let Ok(mut config) = s.config.try_lock() {
                     config.security.allowed_ips = vec!["0.0.0.0/0".to_string()];
-                    let _ = config.save(&s.config_path);
-                    refresh_whitelist(&store, &state);
-                    log::info!("Allow all IPs set");
-                }
+                    toml::to_string_pretty(&*config).unwrap_or_default()
+                } else { return; }
+            } else { return; }
+        };
+        
+        match dbus_client::write_config_via_dbus(&config_str) {
+            Ok(()) => {
+                refresh_whitelist(&store, &state_clone);
+                log::info!("Allow all IPs set");
             }
-        });
+            Err(e) => {
+                log::error!("Failed to set allow all IPs: {}", e);
+            }
+        }
     }));
 }
 
@@ -361,24 +399,31 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
                 log::warn!("Invalid IP or CIDR format: {}", ip_str);
                 return;
             }
-            let state = Arc::clone(&state_clone);
             let store = store_clone.clone();
             let ip_entry = ip_entry_clone.clone();
             let ip_to_add = ip_str.clone();
             
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                if let Ok(s) = state.try_lock() {
+            let config_str = {
+                if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut config) = s.config.try_lock() {
                         if !config.security.denied_ips.contains(&ip_to_add) {
                             config.security.denied_ips.push(ip_to_add.clone());
-                            let _ = config.save(&s.config_path);
-                            refresh_blacklist(&store, &state);
-                            ip_entry.set_text("");
-                            log::info!("IP {} added to blacklist", ip_to_add);
                         }
-                    }
+                        toml::to_string_pretty(&*config).unwrap_or_default()
+                    } else { return; }
+                } else { return; }
+            };
+            
+            match dbus_client::write_config_via_dbus(&config_str) {
+                Ok(()) => {
+                    refresh_blacklist(&store, &state_clone);
+                    ip_entry.set_text("");
+                    log::info!("IP {} added to blacklist", ip_to_add);
                 }
-            });
+                Err(e) => {
+                    log::error!("Failed to add IP to blacklist: {}", e);
+                }
+            }
         }
     }));
 
@@ -389,39 +434,53 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
         let selection = tree_clone.selection();
         if let Some((model, iter)) = selection.selected() {
             let ip: String = model.value(&iter, 0).get().unwrap_or_default();
-            let state = Arc::clone(&state_clone);
             let store = store_clone.clone();
             let ip_to_remove = ip.clone();
             
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                if let Ok(s) = state.try_lock() {
+            let config_str = {
+                if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut config) = s.config.try_lock() {
                         config.security.denied_ips.retain(|x| x != &ip_to_remove);
-                        let _ = config.save(&s.config_path);
-                        refresh_blacklist(&store, &state);
-                        log::info!("IP {} removed from blacklist", ip_to_remove);
-                    }
+                        toml::to_string_pretty(&*config).unwrap_or_default()
+                    } else { return; }
+                } else { return; }
+            };
+            
+            match dbus_client::write_config_via_dbus(&config_str) {
+                Ok(()) => {
+                    refresh_blacklist(&store, &state_clone);
+                    log::info!("IP {} removed from blacklist", ip_to_remove);
                 }
-            });
+                Err(e) => {
+                    log::error!("Failed to remove IP from blacklist: {}", e);
+                }
+            }
         }
     }));
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     widgets.clear_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
-        let state = Arc::clone(&state_clone);
         let store = store_clone.clone();
         
-        glib::MainContext::ref_thread_default().spawn_local(async move {
-            if let Ok(s) = state.try_lock() {
+        let config_str = {
+            if let Ok(s) = state_clone.try_lock() {
                 if let Ok(mut config) = s.config.try_lock() {
                     config.security.denied_ips.clear();
-                    let _ = config.save(&s.config_path);
-                    refresh_blacklist(&store, &state);
-                    log::info!("Blacklist cleared");
-                }
+                    toml::to_string_pretty(&*config).unwrap_or_default()
+                } else { return; }
+            } else { return; }
+        };
+        
+        match dbus_client::write_config_via_dbus(&config_str) {
+            Ok(()) => {
+                refresh_blacklist(&store, &state_clone);
+                log::info!("Blacklist cleared");
             }
-        });
+            Err(e) => {
+                log::error!("Failed to clear blacklist: {}", e);
+            }
+        }
     }));
 }
 

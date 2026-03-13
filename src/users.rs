@@ -22,7 +22,7 @@ pub struct User {
     pub is_admin: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Permissions {
     pub can_read: bool,
     pub can_write: bool,

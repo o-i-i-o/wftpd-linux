@@ -29,7 +29,16 @@ pub struct FtpConfig {
     pub passive_ports: (u16, u16),
     pub welcome_message: String,
     pub allow_anonymous: bool,
+    #[serde(default)]
     pub anonymous_home: Option<String>,
+    #[serde(default)]
+    pub max_speed_kbps: u64,
+    #[serde(default = "default_encoding")]
+    pub encoding: String,
+}
+
+fn default_encoding() -> String {
+    "UTF-8".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +48,12 @@ pub struct SftpConfig {
     pub host_key_path: String,
     pub max_auth_attempts: u32,
     pub auth_timeout: u64,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,7 +63,9 @@ pub struct SecurityConfig {
     pub max_login_attempts: u32,
     pub ban_duration: u64,
     pub require_ssl: bool,
+    #[serde(default)]
     pub cert_path: Option<String>,
+    #[serde(default)]
     pub key_path: Option<String>,
 }
 
@@ -64,8 +81,6 @@ pub struct LoggingConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        let default_home = get_default_share_path();
-        
         Config {
             server: ServerConfig {
                 bind_ip: "0.0.0.0".to_string(),
@@ -77,23 +92,21 @@ impl Default for Config {
             },
             ftp: FtpConfig {
                 enabled: true,
-                default_home: default_home.clone(),
+                default_home: "/var/lib/wftpg/share".to_string(),
                 passive_ports: (50000, 51000),
                 welcome_message: "Welcome to WFTPG FTP Server".to_string(),
                 allow_anonymous: false,
                 anonymous_home: None,
+                max_speed_kbps: 0,
+                encoding: "UTF-8".to_string(),
             },
             sftp: SftpConfig {
                 enabled: true,
-                default_home: default_home.clone(),
-                host_key_path: dirs::config_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join("wftpg")
-                    .join("ssh_host_rsa_key")
-                    .to_string_lossy()
-                    .to_string(),
+                default_home: "/var/lib/wftpg/share".to_string(),
+                host_key_path: "/var/lib/wftpg/ssh/ssh_host_rsa_key".to_string(),
                 max_auth_attempts: 3,
                 auth_timeout: 60,
+                log_level: "info".to_string(),
             },
             security: SecurityConfig {
                 allowed_ips: vec!["0.0.0.0/0".to_string()],
@@ -105,12 +118,7 @@ impl Default for Config {
                 key_path: None,
             },
             logging: LoggingConfig {
-                log_dir: dirs::cache_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join("wftpg")
-                    .join("logs")
-                    .to_string_lossy()
-                    .to_string(),
+                log_dir: "/var/log/wftpg".to_string(),
                 log_level: "info".to_string(),
                 max_log_size: 10 * 1024 * 1024,
                 max_log_files: 10,
@@ -118,14 +126,6 @@ impl Default for Config {
                 log_to_gui: true,
             },
         }
-    }
-}
-
-fn get_default_share_path() -> String {
-    if let Some(home) = dirs::home_dir() {
-        home.join("Desktop").join("共享").to_string_lossy().to_string()
-    } else {
-        "/tmp/share".to_string()
     }
 }
 
@@ -164,17 +164,11 @@ impl Config {
     }
     
     pub fn get_config_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("wftpg")
-            .join("config.toml")
+        PathBuf::from("/etc/wftpg/config.toml")
     }
     
     pub fn get_users_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("wftpg")
-            .join("users.json")
+        PathBuf::from("/etc/wftpg/users.json")
     }
     
     pub fn is_ip_allowed(&self, ip: &str) -> bool {

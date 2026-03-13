@@ -86,6 +86,7 @@ impl SftpServer {
                                 let config = Arc::clone(&config);
                                 let user_manager = Arc::clone(&user_manager_clone);
                                 let logger = Arc::clone(&logger_clone);
+                                let client_ip = peer_addr.ip().to_string();
 
                                 tokio::spawn(async move {
                                     let handler = SftpHandler {
@@ -96,6 +97,7 @@ impl SftpServer {
                                         home_dir: None,
                                         sftp_channel: None,
                                         sftp_state: None,
+                                        client_ip: client_ip.clone(),
                                     };
 
                                     if let Err(e) = russh::server::run_stream(config, socket, handler).await {
@@ -170,6 +172,7 @@ struct SftpHandler {
     home_dir: Option<String>,
     sftp_channel: Option<ChannelId>,
     sftp_state: Option<Arc<Mutex<SftpState>>>,
+    client_ip: String,
 }
 
 struct SftpState {
@@ -182,6 +185,7 @@ struct SftpState {
     sftp_version: u32,
     buffer: Vec<u8>,
     locked_files: HashSet<PathBuf>,
+    client_ip: String,
 }
 
 enum SftpFileHandle {
@@ -219,7 +223,7 @@ impl russh::server::Handler for SftpHandler {
                 self.logger.lock().unwrap().client_action(
                     "SFTP",
                     &format!("User {} logged in", user),
-                    "",
+                    &self.client_ip,
                     Some(user),
                     "LOGIN",
                 );
@@ -230,8 +234,8 @@ impl russh::server::Handler for SftpHandler {
                 self.logger.lock().unwrap().client_action(
                     "SFTP",
                     &format!("Failed login attempt for user {}", user),
-                    "",
-                    None,
+                    &self.client_ip,
+                    Some(user),
                     "AUTH_FAIL",
                 );
                 Ok(server::Auth::Reject { 
@@ -239,7 +243,14 @@ impl russh::server::Handler for SftpHandler {
                     partial_success: false,
                 })
             }
-            Err(_) => {
+            Err(e) => {
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    &format!("Authentication error for user {}: {}", user, e),
+                    &self.client_ip,
+                    Some(user),
+                    "AUTH_ERROR",
+                );
                 Ok(server::Auth::Reject { 
                     proceed_with_methods: None,
                     partial_success: false,
@@ -262,23 +273,51 @@ impl russh::server::Handler for SftpHandler {
             }
         };
         
-        if enabled {
-            if let Ok(stored_key) = tokio::fs::read_to_string(&user_pubkey_path).await {
-                if let Ok(stored_pubkey) = keys::parse_public_key_base64(stored_key.trim()) {
-                    if public_key == &stored_pubkey {
-                        self.authenticated = true;
-                        self.username = Some(user.to_string());
-                        
-                        let users = self.user_manager.lock().unwrap();
-                        if let Some(u) = users.get_user(user) {
-                            self.home_dir = Some(u.home_dir.clone());
-                        }
-
-                        return Ok(server::Auth::Accept);
+        if !enabled {
+            self.logger.lock().unwrap().client_action(
+                "SFTP",
+                &format!("Public key auth failed for user {}: user not found or disabled", user),
+                &self.client_ip,
+                Some(user),
+                "AUTH_FAIL",
+            );
+            return Ok(server::Auth::Reject { 
+                proceed_with_methods: None,
+                partial_success: false,
+            });
+        }
+        
+        if let Ok(stored_key) = tokio::fs::read_to_string(&user_pubkey_path).await {
+            if let Ok(stored_pubkey) = keys::parse_public_key_base64(stored_key.trim()) {
+                if public_key == &stored_pubkey {
+                    self.authenticated = true;
+                    self.username = Some(user.to_string());
+                    
+                    let users = self.user_manager.lock().unwrap();
+                    if let Some(u) = users.get_user(user) {
+                        self.home_dir = Some(u.home_dir.clone());
                     }
+
+                    self.logger.lock().unwrap().client_action(
+                        "SFTP",
+                        &format!("User {} logged in via public key", user),
+                        &self.client_ip,
+                        Some(user),
+                        "LOGIN",
+                    );
+
+                    return Ok(server::Auth::Accept);
                 }
             }
         }
+
+        self.logger.lock().unwrap().client_action(
+            "SFTP",
+            &format!("Public key auth failed for user {}: key mismatch or not found", user),
+            &self.client_ip,
+            Some(user),
+            "AUTH_FAIL",
+        );
 
         Ok(server::Auth::Reject { 
             proceed_with_methods: None,
@@ -318,6 +357,7 @@ impl russh::server::Handler for SftpHandler {
                 sftp_version: 3,
                 buffer: Vec::new(),
                 locked_files: HashSet::new(),
+                client_ip: self.client_ip.clone(),
             })));
         } else {
             let _ = session.channel_failure(channel);

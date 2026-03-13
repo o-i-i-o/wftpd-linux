@@ -50,35 +50,32 @@ impl Logger {
     pub fn new(log_dir: &str, max_size: u64, max_files: usize) -> Self {
         let path = PathBuf::from(log_dir);
         
-        let (path, current_file, current_size) = if fs::create_dir_all(&path).is_err() {
-            let fallback = dirs::cache_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join("wftpg")
-                .join("logs");
-            let _ = fs::create_dir_all(&fallback);
-            (fallback, None, 0)
-        } else {
-            let log_path = path.join(format!("wftpg-{}.log", Utc::now().format("%Y-%m-%d")));
-            let (file, size) = match OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-            {
-                Ok(f) => {
-                    let size = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-                    (Some(f), size)
-                }
-                Err(_) => (None, 0),
-            };
-            (path, file, size)
+        if let Err(e) = fs::create_dir_all(&path) {
+            eprintln!("Warning: Failed to create log directory {}: {}", path.display(), e);
+        }
+        
+        let log_path = path.join(format!("wftpg-{}.log", Utc::now().format("%Y-%m-%d")));
+        let (file, size) = match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            Ok(f) => {
+                let size = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+                (Some(f), size)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to open log file: {}", e);
+                (None, 0)
+            }
         };
 
         Logger {
             log_dir: path,
             max_size,
             max_files,
-            current_file,
-            current_size,
+            current_file: file,
+            current_size: size,
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(1000))),
             max_buffer_size: 1000,
         }

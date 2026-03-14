@@ -19,15 +19,41 @@ impl ServiceManager {
         let service = format!(
             r#"[Unit]
 Description=WFTPG SFTP/FTP Server
-After=network.target
+Documentation=https://github.com/wftpg/wftpg
+After=network.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart={}
 Restart=on-failure
+RestartSec=5
+
 User=wftpg
 Group=wftpg
+
+WorkingDirectory=/var/lib/wftpg
+
+RuntimeDirectory=wftpd
+RuntimeDirectoryMode=0770
+
+Environment=HOME=/var/lib/wftpg
+Environment=XDG_CONFIG_HOME=/var/lib/wftpg/config
+Environment=XDG_CACHE_HOME=/var/lib/wftpg/cache
+
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+NoNewPrivileges=true
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+ReadWritePaths=/var/log/wftpg /var/lib/wftpg /etc/wftpg /run/wftpd
+
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
@@ -36,7 +62,76 @@ WantedBy=multi-user.target
         );
 
         fs::write(&self.service_path, service)?;
+        
+        self.setup_wftpg_user_permissions()?;
+        
         Ok(())
+    }
+
+    fn setup_wftpg_user_permissions(&self) -> Result<()> {
+        if let Some(current_user) = self.get_current_gui_user() {
+            let status = std::process::Command::new("usermod")
+                .args(["-aG", "wftpg", &current_user])
+                .status()?;
+            
+            if status.success() {
+                log::info!("Added {} to wftpg group for service access", current_user);
+            } else {
+                log::warn!("Failed to add {} to wftpg group, permissions may need manual setup", current_user);
+            }
+        }
+        
+        Ok(())
+    }
+
+    fn get_current_gui_user(&self) -> Option<String> {
+        if let Ok(user) = std::env::var("SUDO_USER") {
+            return Some(user);
+        }
+        
+        if let Ok(user) = std::env::var("PKEXEC_UID") {
+            if let Ok(uid) = user.parse::<u32>() {
+                return self.get_username_by_uid(uid);
+            }
+        }
+        
+        if let Ok(user) = std::env::var("USER") {
+            if user != "root" {
+                return Some(user);
+            }
+        }
+        
+        self.get_session_user()
+    }
+
+    fn get_username_by_uid(&self, uid: u32) -> Option<String> {
+        use std::ffi::CStr;
+        
+        unsafe {
+            let pwd = libc::getpwuid(uid);
+            if !pwd.is_null() {
+                let name = CStr::from_ptr((*pwd).pw_name);
+                return name.to_str().ok().map(|s| s.to_string());
+            }
+        }
+        None
+    }
+
+    fn get_session_user(&self) -> Option<String> {
+        let output = std::process::Command::new("loginctl")
+            .args(["list-sessions", "--no-legend"])
+            .output()
+            .ok()?;
+        
+        let sessions = String::from_utf8_lossy(&output.stdout);
+        for line in sessions.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                return Some(parts[2].to_string());
+            }
+        }
+        
+        None
     }
 
     pub fn uninstall_service(&self) -> Result<()> {
@@ -100,6 +195,36 @@ WantedBy=multi-user.target
             anyhow::bail!("Failed to reload daemon");
         }
         Ok(())
+    }
+
+    pub fn enable_service(&self) -> Result<()> {
+        let status = std::process::Command::new("systemctl")
+            .args(["enable", &self.service_name])
+            .status()?;
+        
+        if !status.success() {
+            anyhow::bail!("Failed to enable service");
+        }
+        Ok(())
+    }
+
+    pub fn disable_service(&self) -> Result<()> {
+        let status = std::process::Command::new("systemctl")
+            .args(["disable", &self.service_name])
+            .status()?;
+        
+        if !status.success() {
+            anyhow::bail!("Failed to disable service");
+        }
+        Ok(())
+    }
+
+    pub fn is_service_enabled(&self) -> bool {
+        std::process::Command::new("systemctl")
+            .args(["is-enabled", "--quiet", &self.service_name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }
 

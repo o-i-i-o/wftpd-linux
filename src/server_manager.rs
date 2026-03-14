@@ -76,6 +76,10 @@ impl ServerManager {
         
         let server = SftpServer::new(config, user_manager, Arc::clone(&logger), file_logger);
         
+        runtime.block_on(async {
+            server.start().await
+        })?;
+        
         {
             let mut rt = self.sftp_runtime.lock().unwrap();
             *rt = Some(runtime);
@@ -87,7 +91,7 @@ impl ServerManager {
         }
         
         if let Ok(mut log) = logger.lock() {
-            log.info("SFTP", "SFTP server starting...");
+            log.info("SFTP", "SFTP server started successfully");
         }
         
         Ok(())

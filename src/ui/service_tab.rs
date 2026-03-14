@@ -1,5 +1,5 @@
 use gtk::prelude::*;
-use gtk::{Box, Orientation, Label, Button, Frame, glib};
+use gtk::{Box, Orientation, Label, Button, Frame, glib, CheckButton};
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
 use wftpg::AppState;
@@ -11,13 +11,13 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     container.set_margin_start(10);
     container.set_margin_end(10);
 
-    let status_label = create_control_frame(&container, state);
-    create_status_frame(&container, state, &status_label);
+    let (status_label, autostart_btn) = create_control_frame(&container, state);
+    create_status_frame(&container, state, &status_label, &autostart_btn);
 
     container
 }
 
-fn create_control_frame(container: &Box, state: &Arc<StdMutex<AppState>>) -> Label {
+fn create_control_frame(container: &Box, state: &Arc<StdMutex<AppState>>) -> (Label, CheckButton) {
     let control_frame = Frame::new(Some("服务控制"));
     let control_box = Box::new(Orientation::Vertical, 10);
     control_box.set_margin_top(10);
@@ -38,7 +38,10 @@ fn create_control_frame(container: &Box, state: &Arc<StdMutex<AppState>>) -> Lab
     let uninstall_btn = Button::with_label("卸载服务");
     let refresh_btn = Button::with_label("刷新状态");
 
-    setup_service_buttons(state, &install_btn, &start_btn, &stop_btn, &restart_btn, &uninstall_btn, &refresh_btn, &status_label);
+    let autostart_btn = CheckButton::with_label("开机自启");
+    update_autostart_status(state, &autostart_btn);
+
+    setup_service_buttons(state, &install_btn, &start_btn, &stop_btn, &restart_btn, &uninstall_btn, &refresh_btn, &autostart_btn, &status_label);
 
     button_box.pack_start(&install_btn, false, false, 0);
     button_box.pack_start(&start_btn, false, false, 0);
@@ -48,10 +51,14 @@ fn create_control_frame(container: &Box, state: &Arc<StdMutex<AppState>>) -> Lab
     button_box.pack_start(&refresh_btn, false, false, 0);
     control_box.pack_start(&button_box, false, false, 0);
 
+    let autostart_box = Box::new(Orientation::Horizontal, 10);
+    autostart_box.pack_start(&autostart_btn, false, false, 0);
+    control_box.pack_start(&autostart_box, false, false, 0);
+
     control_frame.add(&control_box);
     container.pack_start(&control_frame, false, false, 0);
 
-    status_label
+    (status_label, autostart_btn)
 }
 
 fn setup_service_buttons(
@@ -62,13 +69,16 @@ fn setup_service_buttons(
     restart_btn: &Button,
     uninstall_btn: &Button,
     refresh_btn: &Button,
+    autostart_btn: &CheckButton,
     status_label: &Label,
 ) {
     let state_clone = Arc::clone(state);
     let status_label_clone = status_label.clone();
-    install_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone => move |_| {
+    let autostart_btn_clone = autostart_btn.clone();
+    install_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone, @strong autostart_btn_clone => move |_| {
         let state = Arc::clone(&state_clone);
         let status_label = status_label_clone.clone();
+        let autostart_btn = autostart_btn_clone.clone();
         let exe_path = std::env::current_exe().unwrap_or_default();
         let exe_path_str = exe_path.to_string_lossy().to_string();
         
@@ -79,6 +89,7 @@ fn setup_service_buttons(
                         log::info!("Service installed successfully");
                         let _ = s.service_manager.reload_daemon();
                         update_service_status(&state, &status_label);
+                        update_autostart_status(&state, &autostart_btn);
                     }
                     Err(e) => {
                         log::error!("Install error: {}", e);
@@ -157,9 +168,11 @@ fn setup_service_buttons(
 
     let state_clone = Arc::clone(state);
     let status_label_clone = status_label.clone();
-    uninstall_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone => move |_| {
+    let autostart_btn_clone = autostart_btn.clone();
+    uninstall_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone, @strong autostart_btn_clone => move |_| {
         let state = Arc::clone(&state_clone);
         let status_label = status_label_clone.clone();
+        let autostart_btn = autostart_btn_clone.clone();
         
         glib::MainContext::ref_thread_default().spawn_local(async move {
             if let Ok(s) = state.try_lock() {
@@ -168,6 +181,7 @@ fn setup_service_buttons(
                         log::info!("Service uninstalled successfully");
                         let _ = s.service_manager.reload_daemon();
                         update_service_status(&state, &status_label);
+                        update_autostart_status(&state, &autostart_btn);
                     }
                     Err(e) => {
                         log::error!("Uninstall error: {}", e);
@@ -180,12 +194,42 @@ fn setup_service_buttons(
 
     let state_clone = Arc::clone(state);
     let status_label_clone = status_label.clone();
-    refresh_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone => move |_| {
+    let autostart_btn_clone = autostart_btn.clone();
+    refresh_btn.connect_clicked(clone!(@strong state_clone, @strong status_label_clone, @strong autostart_btn_clone => move |_| {
         update_service_status(&state_clone, &status_label_clone);
+        update_autostart_status(&state_clone, &autostart_btn_clone);
+    }));
+
+    let state_clone = Arc::clone(state);
+    let autostart_btn_clone = autostart_btn.clone();
+    autostart_btn.connect_toggled(clone!(@strong state_clone, @strong autostart_btn_clone => move |_| {
+        let state = Arc::clone(&state_clone);
+        let autostart_btn = autostart_btn_clone.clone();
+        let is_active = autostart_btn.is_active();
+        
+        glib::MainContext::ref_thread_default().spawn_local(async move {
+            if let Ok(s) = state.try_lock() {
+                let result = if is_active {
+                    s.service_manager.enable_service()
+                } else {
+                    s.service_manager.disable_service()
+                };
+                
+                match result {
+                    Ok(_) => {
+                        log::info!("Autostart {} successfully", if is_active { "enabled" } else { "disabled" });
+                    }
+                    Err(e) => {
+                        log::error!("Autostart error: {}", e);
+                        update_autostart_status(&state, &autostart_btn);
+                    }
+                }
+            }
+        });
     }));
 }
 
-fn create_status_frame(container: &Box, state: &Arc<StdMutex<AppState>>, status_label: &Label) {
+fn create_status_frame(container: &Box, state: &Arc<StdMutex<AppState>>, status_label: &Label, autostart_btn: &CheckButton) {
     let status_frame = Frame::new(Some("服务信息"));
     let status_box = Box::new(Orientation::Vertical, 5);
     status_box.set_margin_top(10);
@@ -199,7 +243,7 @@ fn create_status_frame(container: &Box, state: &Arc<StdMutex<AppState>>, status_
          • 安装服务: 将程序注册为systemd系统服务\n\
          • 启动服务: 启动已安装的系统服务\n\
          • 停止服务: 停止正在运行的系统服务\n\
-         • 卸载服务: 移除已安装的系统服务\n\n\
+         • 开机自启: 设置服务是否随系统启动自动运行\n\n\
          <i>注意: 服务操作通过PolicyKit进行权限认证</i>"
     );
     status_box.pack_start(&info_label, false, false, 0);
@@ -208,6 +252,7 @@ fn create_status_frame(container: &Box, state: &Arc<StdMutex<AppState>>, status_
     container.pack_start(&status_frame, false, false, 0);
 
     update_service_status(state, status_label);
+    update_autostart_status(state, autostart_btn);
 }
 
 fn update_service_status(state: &Arc<StdMutex<AppState>>, status_label: &Label) {
@@ -226,5 +271,15 @@ fn update_service_status(state: &Arc<StdMutex<AppState>>, status_label: &Label) 
         };
         
         status_label.set_markup(&status_text);
+    }
+}
+
+fn update_autostart_status(state: &Arc<StdMutex<AppState>>, autostart_btn: &CheckButton) {
+    if let Ok(s) = state.try_lock() {
+        let sm = &s.service_manager;
+        let is_enabled = sm.service_exists() && sm.is_service_enabled();
+        
+        autostart_btn.set_active(is_enabled);
+        autostart_btn.set_sensitive(sm.service_exists());
     }
 }

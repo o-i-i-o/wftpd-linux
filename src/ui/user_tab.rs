@@ -2,10 +2,11 @@ use gtk::prelude::*;
 use gtk::{
     Box, Orientation, Label, Button, Entry, Frame, ScrolledWindow, TreeView, ListStore,
     CellRendererText, TreeViewColumn, CellRendererToggle, CheckButton, Dialog,
-    DialogFlags, ResponseType, SpinButton, Adjustment,
+    DialogFlags, ResponseType, SpinButton, Adjustment, FileChooserDialog, FileChooserAction,
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::os::unix::fs::PermissionsExt;
 use wftpg::AppState;
 use wftpg::dbus_client;
 
@@ -232,6 +233,38 @@ fn show_user_dialog(
     home_entry.set_width_chars(20);
     home_entry.set_placeholder_text(Some("留空则使用默认目录"));
     row3.pack_start(&home_entry, true, true, 0);
+    
+    let browse_btn = Button::with_label("浏览...");
+    let home_entry_clone = home_entry.clone();
+    browse_btn.connect_clicked(clone!(@strong home_entry_clone => move |_| {
+        let dialog = FileChooserDialog::new(
+            Some("选择用户主目录"),
+            None::<&gtk::Window>,
+            FileChooserAction::SelectFolder,
+        );
+        dialog.add_button("取消", ResponseType::Cancel);
+        dialog.add_button("选择", ResponseType::Accept);
+        
+        let entry = home_entry_clone.clone();
+        dialog.connect_response(clone!(@strong entry, @strong dialog => move |dlg, resp| {
+            if resp == ResponseType::Accept {
+                if let Some(path) = dlg.filename() {
+                    entry.set_text(&path.to_string_lossy());
+                }
+            }
+            dlg.close();
+        }));
+        
+        dialog.run();
+    }));
+    row3.pack_start(&browse_btn, false, false, 0);
+    
+    let suggest_btn = Button::with_label("推荐目录");
+    let home_entry_for_suggest = home_entry.clone();
+    suggest_btn.connect_clicked(clone!(@strong home_entry_for_suggest => move |_| {
+        show_suggested_directories_dialog(&home_entry_for_suggest);
+    }));
+    row3.pack_start(&suggest_btn, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
 
     let perm_frame = Frame::new(Some("权限设置"));
@@ -392,8 +425,15 @@ fn show_user_dialog(
                                 let _ = users.update_permissions(&username, perms);
                             }
                             if !is_edit {
-                                let _ = std::fs::create_dir_all(&home_dir);
+                                if let Err(e) = std::fs::create_dir_all(&home_dir) {
+                                    log::warn!("Failed to create home directory: {}", e);
+                                }
                             }
+                            
+                            if let Err(e) = setup_shared_directory_permissions(&home_dir) {
+                                log::warn!("Failed to setup directory permissions: {}", e);
+                            }
+                            
                             serde_json::to_string(&*users).unwrap_or_default()
                         } else { return; }
                     } else { return; }
@@ -522,4 +562,243 @@ fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {
         .digits(0)
         .width_chars(8)
         .build()
+}
+
+fn show_suggested_directories_dialog(home_entry: &Entry) {
+    let dialog = Dialog::with_buttons(
+        Some("选择推荐目录"),
+        None::<&gtk::Window>,
+        DialogFlags::MODAL,
+        &[
+            ("取消", ResponseType::Cancel),
+            ("确定", ResponseType::Ok),
+        ],
+    );
+    dialog.set_default_size(500, 400);
+    
+    let content = dialog.content_area();
+    let box_ = Box::new(Orientation::Vertical, 10);
+    box_.set_margin_top(10);
+    box_.set_margin_bottom(10);
+    box_.set_margin_start(10);
+    box_.set_margin_end(10);
+    
+    let label = Label::new(Some("以下是当前用户有权限访问的目录，选择一个作为用户主目录："));
+    box_.pack_start(&label, false, false, 0);
+    
+    let scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_height(300)
+        .build();
+    
+    let store = ListStore::new(&[
+        gtk::glib::Type::STRING,
+        gtk::glib::Type::STRING,
+        gtk::glib::Type::STRING,
+    ]);
+    
+    let suggested_dirs = get_suggested_directories();
+    for (path, desc, perms) in suggested_dirs {
+        let iter = store.append();
+        store.set_value(&iter, 0, &path.to_value());
+        store.set_value(&iter, 1, &desc.to_value());
+        store.set_value(&iter, 2, &perms.to_value());
+    }
+    
+    let tree = TreeView::with_model(&store);
+    
+    let col_path = TreeViewColumn::new();
+    col_path.set_title("路径");
+    col_path.set_resizable(true);
+    col_path.set_min_width(200);
+    let renderer_path = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_path, &renderer_path, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_path, &renderer_path, "text", 0);
+    tree.append_column(&col_path);
+    
+    let col_desc = TreeViewColumn::new();
+    col_desc.set_title("描述");
+    col_desc.set_resizable(true);
+    let renderer_desc = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_desc, &renderer_desc, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_desc, &renderer_desc, "text", 1);
+    tree.append_column(&col_desc);
+    
+    let col_perms = TreeViewColumn::new();
+    col_perms.set_title("权限");
+    col_perms.set_resizable(true);
+    let renderer_perms = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_perms, &renderer_perms, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_perms, &renderer_perms, "text", 2);
+    tree.append_column(&col_perms);
+    
+    scrolled.add(&tree);
+    box_.pack_start(&scrolled, true, true, 0);
+    
+    let tip_label = Label::new(Some("提示: 选择目录后点击确定，或使用\"浏览...\"选择其他目录"));
+    tip_label.set_markup("<span foreground='gray' size='small'>提示: 选择目录后点击确定，或使用\"浏览...\"选择其他目录</span>");
+    box_.pack_start(&tip_label, false, false, 0);
+    
+    content.add(&box_);
+    content.show_all();
+    
+    let home_entry_clone = home_entry.clone();
+    let tree_clone = tree.clone();
+    
+    dialog.connect_response(clone!(@strong home_entry_clone, @strong tree_clone => move |dlg, resp| {
+        if resp == ResponseType::Ok {
+            let selection = tree_clone.selection();
+            if let Some((model, iter)) = selection.selected() {
+                let path: String = model.value(&iter, 0).get().unwrap_or_default();
+                home_entry_clone.set_text(&path);
+            }
+        }
+        dlg.close();
+    }));
+    
+    dialog.run();
+}
+
+fn get_suggested_directories() -> Vec<(String, String, String)> {
+    let mut dirs = Vec::new();
+    
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = std::path::Path::new(&home);
+        
+        if check_dir_permission(&home) {
+            dirs.push((home.clone(), "用户主目录".to_string(), "读写".to_string()));
+        }
+        
+        let desktop = home_path.join("Desktop");
+        if desktop.exists() && check_dir_permission(&desktop.to_string_lossy()) {
+            dirs.push((desktop.to_string_lossy().to_string(), "桌面".to_string(), "读写".to_string()));
+        }
+        
+        let documents = home_path.join("Documents");
+        if documents.exists() && check_dir_permission(&documents.to_string_lossy()) {
+            dirs.push((documents.to_string_lossy().to_string(), "文档".to_string(), "读写".to_string()));
+        }
+        
+        let downloads = home_path.join("Downloads");
+        if downloads.exists() && check_dir_permission(&downloads.to_string_lossy()) {
+            dirs.push((downloads.to_string_lossy().to_string(), "下载".to_string(), "读写".to_string()));
+        }
+        
+        let share_dir = home_path.join("Desktop/文件共享");
+        if share_dir.exists() && check_dir_permission(&share_dir.to_string_lossy()) {
+            dirs.push((share_dir.to_string_lossy().to_string(), "默认共享目录".to_string(), "读写".to_string()));
+        } else if check_dir_permission(&home) {
+            dirs.push((share_dir.to_string_lossy().to_string(), "默认共享目录(待创建)".to_string(), "读写".to_string()));
+        }
+    }
+    
+    let var_share = std::path::Path::new("/var/lib/wftpg/share");
+    if var_share.exists() && check_dir_permission(&var_share.to_string_lossy()) {
+        dirs.push((var_share.to_string_lossy().to_string(), "系统共享目录".to_string(), "读写".to_string()));
+    }
+    
+    if dirs.is_empty() {
+        dirs.push(("/tmp".to_string(), "临时目录".to_string(), "读写".to_string()));
+    }
+    
+    dirs
+}
+
+fn check_dir_permission(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            return parent.exists() && check_dir_permission(&parent.to_string_lossy());
+        }
+        return false;
+    }
+    
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    
+    if !metadata.is_dir() {
+        return false;
+    }
+    
+    use std::os::unix::fs::MetadataExt;
+    let mode = metadata.permissions().mode();
+    let file_uid = metadata.uid();
+    let file_gid = metadata.gid();
+    
+    let world_readable = (mode & 0o004) != 0;
+    let world_executable = (mode & 0o001) != 0;
+    
+    if world_readable && world_executable {
+        return true;
+    }
+    
+    let current_uid = unsafe { libc::getuid() };
+    if file_uid == current_uid {
+        return (mode & 0o400) != 0 && (mode & 0o100) != 0;
+    }
+    
+    let groups: Vec<u32> = unsafe {
+        let mut groups = [0u32; 64];
+        let ngroups = 64;
+        libc::getgroups(ngroups, groups.as_mut_ptr());
+        groups[..ngroups as usize].to_vec()
+    };
+    
+    if groups.contains(&file_gid) {
+        return (mode & 0o040) != 0 && (mode & 0o010) != 0;
+    }
+    
+    world_readable && world_executable
+}
+
+fn setup_shared_directory_permissions(path: &str) -> std::io::Result<()> {
+    let path = std::path::Path::new(path);
+    
+    if !path.exists() {
+        return Ok(());
+    }
+    
+    unsafe {
+        let wftpg_group = libc::getgrnam(std::ffi::CString::new("wftpg").unwrap().as_ptr());
+        if wftpg_group.is_null() {
+            log::warn!("wftpg group not found, skipping permission setup");
+            return Ok(());
+        }
+        
+        let wftpg_gid = (*wftpg_group).gr_gid;
+        let c_path = std::ffi::CString::new(path.to_string_lossy().into_owned()).unwrap();
+        
+        let chown_result = libc::chown(c_path.as_ptr(), -1i32 as libc::uid_t, wftpg_gid);
+        if chown_result != 0 {
+            log::warn!("Failed to chown directory to wftpg group");
+        }
+        
+        let chmod_result = libc::chmod(c_path.as_ptr(), 0o2770);
+        if chmod_result != 0 {
+            log::warn!("Failed to set directory permissions to 2770");
+        }
+        
+        if chown_result == 0 && chmod_result == 0 {
+            log::info!("Set directory {} permissions to 2770 with group wftpg", path.display());
+        }
+    }
+    
+    let setfacl_result = std::process::Command::new("setfacl")
+        .args(["-d", "-m", "u::rw-,g::rw-,o::---", &path.to_string_lossy()])
+        .status();
+    
+    match setfacl_result {
+        Ok(status) if status.success() => {
+            log::info!("Set default ACL for directory {} (files: rw-, no execute)", path.display());
+        }
+        _ => {
+            log::info!("setfacl not available, using umask for file permissions");
+        }
+    }
+    
+    Ok(())
 }

@@ -84,14 +84,10 @@ impl Logger {
 
     fn get_available_log_path(log_dir: &Path) -> (PathBuf, u64) {
         let date_str = Utc::now().format("%Y-%m-%d");
-        let mut seq = 0;
+        let mut seq = 1;
         
         loop {
-            let filename = if seq == 0 {
-                format!("wftpg-{}.log", date_str)
-            } else {
-                format!("wftpg-{}-{}.log", date_str, seq)
-            };
+            let filename = format!("wftpg-{}-{:04}.log", date_str, seq);
             let log_path = log_dir.join(&filename);
             
             if !log_path.exists() {
@@ -100,7 +96,9 @@ impl Logger {
             
             if let Ok(metadata) = fs::metadata(&log_path) {
                 let size = metadata.len();
-                return (log_path, size);
+                if size < 2 * 1024 * 1024 {
+                    return (log_path, size);
+                }
             }
             
             seq += 1;
@@ -125,14 +123,10 @@ impl Logger {
 
     fn get_new_log_path(&self) -> PathBuf {
         let date_str = Utc::now().format("%Y-%m-%d");
-        let mut seq = 0;
+        let mut seq = 1;
         
         loop {
-            let filename = if seq == 0 {
-                format!("wftpg-{}.log", date_str)
-            } else {
-                format!("wftpg-{}-{}.log", date_str, seq)
-            };
+            let filename = format!("wftpg-{}-{:04}.log", date_str, seq);
             let log_path = self.log_dir.join(&filename);
             
             if !log_path.exists() {

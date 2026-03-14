@@ -153,6 +153,14 @@ fn handle_ftp_connection(
     let remote_addr = stream.peer_addr()?;
     let remote_ip = remote_addr.ip().to_string();
 
+    logger.lock().unwrap().client_action(
+        "FTP",
+        &format!("Client connected from {}", remote_ip),
+        &remote_ip,
+        None,
+        "CONNECT",
+    );
+
     {
         let cfg = config.lock().unwrap();
         if !cfg.is_ip_allowed(&remote_ip) {
@@ -384,16 +392,7 @@ fn handle_ftp_connection(
                 }
 
                 if let Some(dir) = arg {
-                    let new_path = if dir.starts_with('/') {
-                        Path::new(dir).to_path_buf()
-                    } else {
-                        Path::new(&cwd).join(dir)
-                    };
-
-                    let new_path = match new_path.canonicalize() {
-                        Ok(p) => p,
-                        Err(_) => new_path,
-                    };
+                    let new_path = safe_resolve_path(&cwd, &home_dir, dir);
 
                     if new_path.exists() && new_path.is_dir() && new_path.starts_with(&home_dir) {
                         cwd = new_path.to_string_lossy().to_string();
@@ -405,15 +404,12 @@ fn handle_ftp_connection(
             }
 
             "CDUP" | "XCUP" => {
-                if let Some(parent) = Path::new(&cwd).parent() {
-                    if parent.starts_with(&home_dir) {
-                        cwd = parent.to_string_lossy().to_string();
-                        stream.write_all(b"250 Directory changed\r\n")?;
-                    } else {
-                        stream.write_all(b"550 Cannot change to parent directory: Permission denied\r\n")?;
-                    }
+                let new_path = safe_resolve_path(&cwd, &home_dir, "..");
+                if new_path.starts_with(&home_dir) && new_path.exists() {
+                    cwd = new_path.to_string_lossy().to_string();
+                    stream.write_all(b"250 Directory changed\r\n")?;
                 } else {
-                    stream.write_all(b"550 Already at root directory\r\n")?;
+                    stream.write_all(b"550 Cannot change to parent directory: Permission denied\r\n")?;
                 }
             }
 
@@ -445,16 +441,12 @@ fn handle_ftp_connection(
                 }
 
                 let target_path = if let Some(path_arg) = arg {
-                    if path_arg.starts_with('/') {
-                        Path::new(path_arg).to_path_buf()
-                    } else {
-                        Path::new(&cwd).join(path_arg)
-                    }
+                    safe_resolve_path(&cwd, &home_dir, path_arg)
                 } else {
                     Path::new(&cwd).to_path_buf()
                 };
 
-                if target_path.exists() {
+                if target_path.exists() && target_path.starts_with(&home_dir) {
                     if let Ok(metadata) = target_path.metadata() {
                         let facts = build_mlst_facts(&metadata);
                         let name = target_path.file_name()
@@ -639,62 +631,44 @@ fn handle_ftp_connection(
                     continue;
                 }
 
+                {
+                    let users = user_manager.lock().unwrap();
+                    let user = current_user.as_ref().and_then(|u| users.get_user(u));
+                    if let Some(user) = user {
+                        if !user.permissions.can_list {
+                            stream.write_all(b"550 Permission denied\r\n")?;
+                            continue;
+                        }
+                    }
+                }
+
                 stream.write_all(b"150 Here comes the directory listing\r\n")?;
 
-                if let Some(port) = data_port {
-                    let data_result = if passive_mode {
-                        let listener_arc = {
-                            let listeners = passive_listeners.lock().unwrap();
-                            listeners.get(&port).cloned()
-                        };
-
-                        if let Some(listener_arc) = listener_arc {
-                            let mut listener_guard = listener_arc.lock().unwrap();
-                            if let Some(listener) = listener_guard.take() {
-                                listener.set_nonblocking(false)?;
-                                listener.accept().map(|(s, _)| s)
-                            } else {
-                                Err(std::io::Error::new(
-                                    std::io::ErrorKind::NotFound,
-                                    "No passive listener",
-                                ))
-                            }
-                        } else {
-                            Err(std::io::Error::new(
-                                std::io::ErrorKind::NotFound,
-                                "No passive listener",
-                            ))
-                        }
-                    } else if let Some(ref addr) = data_addr {
-                        TcpStream::connect(addr)
-                    } else {
-                        TcpStream::connect(format!("{}:{}", &remote_ip, port))
-                    };
-
-                    if let Ok(mut data_stream) = data_result {
-                        let path = Path::new(&cwd);
-                        if let Ok(entries) = std::fs::read_dir(path) {
-                            for entry in entries.flatten() {
-                                if let Ok(metadata) = entry.metadata() {
-                                    let name = entry.file_name().to_string_lossy().to_string();
-                                    let perms = if metadata.is_dir() {
-                                        "drwxr-xr-x"
-                                    } else {
-                                        "-rw-r--r--"
-                                    };
-                                    let size = metadata.len();
-                                    let mtime = get_file_mtime(&metadata);
-                                    let line = format!(
-                                        "{} 1 user user {:>10} {} {}\r\n",
-                                        perms, size, mtime, name
-                                    );
-                                    let _ = data_stream.write_all(line.as_bytes());
-                                }
+                if let Ok(mut data_stream) = get_data_connection(passive_mode, data_port, &data_addr, &remote_ip, passive_listeners) {
+                    let path = Path::new(&cwd);
+                    if let Ok(entries) = std::fs::read_dir(path) {
+                        for entry in entries.flatten() {
+                            if let Ok(metadata) = entry.metadata() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                let perms = if metadata.is_dir() {
+                                    "drwxr-xr-x"
+                                } else {
+                                    "-rw-r--r--"
+                                };
+                                let size = metadata.len();
+                                let mtime = get_file_mtime(&metadata);
+                                let line = format!(
+                                    "{} 1 user user {:>10} {} {}\r\n",
+                                    perms, size, mtime, name
+                                );
+                                let _ = data_stream.write_all(line.as_bytes());
                             }
                         }
                     }
+                }
 
-                    if passive_mode {
+                if passive_mode {
+                    if let Some(port) = data_port {
                         let mut listeners = passive_listeners.lock().unwrap();
                         listeners.remove(&port);
                     }
@@ -709,53 +683,35 @@ fn handle_ftp_connection(
                     continue;
                 }
 
+                {
+                    let users = user_manager.lock().unwrap();
+                    let user = current_user.as_ref().and_then(|u| users.get_user(u));
+                    if let Some(user) = user {
+                        if !user.permissions.can_list {
+                            stream.write_all(b"550 Permission denied\r\n")?;
+                            continue;
+                        }
+                    }
+                }
+
                 stream.write_all(b"150 Here comes the directory listing\r\n")?;
 
-                if let Some(port) = data_port {
-                    let data_result = if passive_mode {
-                        let listener_arc = {
-                            let listeners = passive_listeners.lock().unwrap();
-                            listeners.get(&port).cloned()
-                        };
-
-                        if let Some(listener_arc) = listener_arc {
-                            let mut listener_guard = listener_arc.lock().unwrap();
-                            if let Some(listener) = listener_guard.take() {
-                                listener.set_nonblocking(false)?;
-                                listener.accept().map(|(s, _)| s)
-                            } else {
-                                Err(std::io::Error::new(
-                                    std::io::ErrorKind::NotFound,
-                                    "No passive listener",
-                                ))
-                            }
-                        } else {
-                            Err(std::io::Error::new(
-                                std::io::ErrorKind::NotFound,
-                                "No passive listener",
-                            ))
-                        }
-                    } else if let Some(ref addr) = data_addr {
-                        TcpStream::connect(addr)
-                    } else {
-                        TcpStream::connect(format!("{}:{}", &remote_ip, port))
-                    };
-
-                    if let Ok(mut data_stream) = data_result {
-                        let path = Path::new(&cwd);
-                        if let Ok(entries) = std::fs::read_dir(path) {
-                            for entry in entries.flatten() {
-                                if let Ok(metadata) = entry.metadata() {
-                                    let name = entry.file_name().to_string_lossy().to_string();
-                                    let facts = build_mlst_facts(&metadata);
-                                    let line = format!("{}; {}\r\n", facts, name);
-                                    let _ = data_stream.write_all(line.as_bytes());
-                                }
+                if let Ok(mut data_stream) = get_data_connection(passive_mode, data_port, &data_addr, &remote_ip, passive_listeners) {
+                    let path = Path::new(&cwd);
+                    if let Ok(entries) = std::fs::read_dir(path) {
+                        for entry in entries.flatten() {
+                            if let Ok(metadata) = entry.metadata() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                let facts = build_mlst_facts(&metadata);
+                                let line = format!("{}; {}\r\n", facts, name);
+                                let _ = data_stream.write_all(line.as_bytes());
                             }
                         }
                     }
+                }
 
-                    if passive_mode {
+                if passive_mode {
+                    if let Some(port) = data_port {
                         let mut listeners = passive_listeners.lock().unwrap();
                         listeners.remove(&port);
                     }
@@ -771,9 +727,9 @@ fn handle_ftp_connection(
                 }
 
                 if let Some(filename) = arg {
-                    let file_path = Path::new(&cwd).join(filename);
+                    let file_path = safe_resolve_path(&cwd, &home_dir, filename);
 
-                    if !file_path.exists() || !file_path.is_file() {
+                    if !file_path.exists() || !file_path.is_file() || !file_path.starts_with(&home_dir) {
                         stream.write_all(b"550 File not found\r\n")?;
                         continue;
                     }
@@ -802,63 +758,34 @@ fn handle_ftp_connection(
                             .as_bytes(),
                     )?;
 
-                    if let Some(port) = data_port {
-                        let data_result = if passive_mode {
-                            let listener_arc = {
-                                let listeners = passive_listeners.lock().unwrap();
-                                listeners.get(&port).cloned()
-                            };
-
-                            if let Some(listener_arc) = listener_arc {
-                                let mut listener_guard = listener_arc.lock().unwrap();
-                                if let Some(listener) = listener_guard.take() {
-                                    listener.set_nonblocking(false)?;
-                                    listener.accept().map(|(s, _)| s)
-                                } else {
-                                    Err(std::io::Error::new(
-                                        std::io::ErrorKind::NotFound,
-                                        "No passive listener",
-                                    ))
-                                }
-                            } else {
-                                Err(std::io::Error::new(
-                                    std::io::ErrorKind::NotFound,
-                                    "No passive listener",
-                                ))
-                            }
-                        } else if let Some(ref addr) = data_addr {
-                            TcpStream::connect(addr)
-                        } else {
-                            TcpStream::connect(format!("{}:{}", &remote_ip, port))
-                        };
-
+                    if let Ok(mut data_stream) = get_data_connection(passive_mode, data_port, &data_addr, &remote_ip, passive_listeners) {
                         let abort = Arc::clone(&abort_flag);
-                        if let Ok(mut data_stream) = data_result {
-                            if let Ok(mut file) = std::fs::File::open(&file_path) {
-                                use std::io::Seek;
-                                if rest_offset > 0 {
-                                    let _ = file.seek(std::io::SeekFrom::Start(rest_offset));
-                                }
+                        if let Ok(mut file) = std::fs::File::open(&file_path) {
+                            use std::io::Seek;
+                            if rest_offset > 0 {
+                                let _ = file.seek(std::io::SeekFrom::Start(rest_offset));
+                            }
 
-                                let mut buf = [0u8; 8192];
-                                loop {
-                                    if abort.load(Ordering::Relaxed) {
-                                        break;
-                                    }
-                                    match file.read(&mut buf) {
-                                        Ok(0) => break,
-                                        Ok(n) => {
-                                            if data_stream.write_all(&buf[..n]).is_err() {
-                                                break;
-                                            }
+                            let mut buf = [0u8; 8192];
+                            loop {
+                                if abort.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                match file.read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        if data_stream.write_all(&buf[..n]).is_err() {
+                                            break;
                                         }
-                                        Err(_) => break,
                                     }
+                                    Err(_) => break,
                                 }
                             }
                         }
+                    }
 
-                        if passive_mode {
+                    if passive_mode {
+                        if let Some(port) = data_port {
                             let mut listeners = passive_listeners.lock().unwrap();
                             listeners.remove(&port);
                         }
@@ -909,77 +836,52 @@ fn handle_ftp_connection(
                         }
                     }
 
-                    let file_path = Path::new(&cwd).join(filename);
+                    let file_path = safe_resolve_path(&cwd, &home_dir, filename);
+                    if !file_path.starts_with(&home_dir) {
+                        stream.write_all(b"550 Permission denied\r\n")?;
+                        continue;
+                    }
                     let file_existed = file_path.exists();
                     stream.write_all(b"150 Opening BINARY mode data connection\r\n")?;
 
-                    if let Some(port) = data_port {
-                        let data_result = if passive_mode {
-                            let listener_arc = {
-                                let listeners = passive_listeners.lock().unwrap();
-                                listeners.get(&port).cloned()
-                            };
-
-                            if let Some(listener_arc) = listener_arc {
-                                let mut listener_guard = listener_arc.lock().unwrap();
-                                if let Some(listener) = listener_guard.take() {
-                                    listener.set_nonblocking(false)?;
-                                    listener.accept().map(|(s, _)| s)
-                                } else {
-                                    Err(std::io::Error::new(
-                                        std::io::ErrorKind::NotFound,
-                                        "No passive listener",
-                                    ))
-                                }
-                            } else {
-                                Err(std::io::Error::new(
-                                    std::io::ErrorKind::NotFound,
-                                    "No passive listener",
-                                ))
-                            }
-                        } else if let Some(ref addr) = data_addr {
-                            TcpStream::connect(addr)
+                    if let Ok(mut data_stream) = get_data_connection(passive_mode, data_port, &data_addr, &remote_ip, passive_listeners) {
+                        let abort = Arc::clone(&abort_flag);
+                        let file_result = if rest_offset > 0 {
+                            std::fs::OpenOptions::new()
+                                .write(true)
+                                .create(true)
+                                .truncate(false)
+                                .open(&file_path)
                         } else {
-                            TcpStream::connect(format!("{}:{}", &remote_ip, port))
+                            std::fs::File::create(&file_path)
                         };
 
-                        let abort = Arc::clone(&abort_flag);
-                        if let Ok(mut data_stream) = data_result {
-                            let file_result = if rest_offset > 0 {
-                                std::fs::OpenOptions::new()
-                                    .write(true)
-                                    .create(true)
-                                    .truncate(false)
-                                    .open(&file_path)
-                            } else {
-                                std::fs::File::create(&file_path)
-                            };
+                        if let Ok(mut file) = file_result {
+                            use std::io::Seek;
+                            if rest_offset > 0 {
+                                let _ = file.seek(std::io::SeekFrom::Start(rest_offset));
+                            }
 
-                            if let Ok(mut file) = file_result {
-                                use std::io::Seek;
-                                if rest_offset > 0 {
-                                    let _ = file.seek(std::io::SeekFrom::Start(rest_offset));
+                            let mut buf = [0u8; 8192];
+                            loop {
+                                if abort.load(Ordering::Relaxed) {
+                                    break;
                                 }
-
-                                let mut buf = [0u8; 8192];
-                                loop {
-                                    if abort.load(Ordering::Relaxed) {
-                                        break;
-                                    }
-                                    match data_stream.read(&mut buf) {
-                                        Ok(0) => break,
-                                        Ok(n) => {
-                                            if file.write_all(&buf[..n]).is_err() {
-                                                break;
-                                            }
+                                match data_stream.read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        if file.write_all(&buf[..n]).is_err() {
+                                            break;
                                         }
-                                        Err(_) => break,
                                     }
+                                    Err(_) => break,
                                 }
                             }
                         }
+                    }
 
-                        if passive_mode {
+                    if passive_mode {
+                        if let Some(port) = data_port {
                             let mut listeners = passive_listeners.lock().unwrap();
                             listeners.remove(&port);
                         }
@@ -1037,65 +939,40 @@ fn handle_ftp_connection(
                         }
                     }
 
-                    let file_path = Path::new(&cwd).join(filename);
+                    let file_path = safe_resolve_path(&cwd, &home_dir, filename);
+                    if !file_path.starts_with(&home_dir) {
+                        stream.write_all(b"550 Permission denied\r\n")?;
+                        continue;
+                    }
                     stream.write_all(b"150 Opening BINARY mode data connection for append\r\n")?;
 
-                    if let Some(port) = data_port {
-                        let data_result = if passive_mode {
-                            let listener_arc = {
-                                let listeners = passive_listeners.lock().unwrap();
-                                listeners.get(&port).cloned()
-                            };
-
-                            if let Some(listener_arc) = listener_arc {
-                                let mut listener_guard = listener_arc.lock().unwrap();
-                                if let Some(listener) = listener_guard.take() {
-                                    listener.set_nonblocking(false)?;
-                                    listener.accept().map(|(s, _)| s)
-                                } else {
-                                    Err(std::io::Error::new(
-                                        std::io::ErrorKind::NotFound,
-                                        "No passive listener",
-                                    ))
-                                }
-                            } else {
-                                Err(std::io::Error::new(
-                                    std::io::ErrorKind::NotFound,
-                                    "No passive listener",
-                                ))
-                            }
-                        } else if let Some(ref addr) = data_addr {
-                            TcpStream::connect(addr)
-                        } else {
-                            TcpStream::connect(format!("{}:{}", &remote_ip, port))
-                        };
-
+                    if let Ok(mut data_stream) = get_data_connection(passive_mode, data_port, &data_addr, &remote_ip, passive_listeners) {
                         let abort = Arc::clone(&abort_flag);
-                        if let Ok(mut data_stream) = data_result {
-                            if let Ok(mut file) = std::fs::OpenOptions::new()
-                                .append(true)
-                                .create(true)
-                                .open(&file_path)
-                            {
-                                let mut buf = [0u8; 8192];
-                                loop {
-                                    if abort.load(Ordering::Relaxed) {
-                                        break;
-                                    }
-                                    match data_stream.read(&mut buf) {
-                                        Ok(0) => break,
-                                        Ok(n) => {
-                                            if file.write_all(&buf[..n]).is_err() {
-                                                break;
-                                            }
+                        if let Ok(mut file) = std::fs::OpenOptions::new()
+                            .append(true)
+                            .create(true)
+                            .open(&file_path)
+                        {
+                            let mut buf = [0u8; 8192];
+                            loop {
+                                if abort.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                match data_stream.read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        if file.write_all(&buf[..n]).is_err() {
+                                            break;
                                         }
-                                        Err(_) => break,
                                     }
+                                    Err(_) => break,
                                 }
                             }
                         }
+                    }
 
-                        if passive_mode {
+                    if passive_mode {
+                        if let Some(port) = data_port {
                             let mut listeners = passive_listeners.lock().unwrap();
                             listeners.remove(&port);
                         }
@@ -1144,7 +1021,11 @@ fn handle_ftp_connection(
                 }
 
                 if let Some(filename) = arg {
-                    let file_path = Path::new(&cwd).join(filename);
+                    let file_path = safe_resolve_path(&cwd, &home_dir, filename);
+                    if !file_path.starts_with(&home_dir) {
+                        stream.write_all(b"550 Permission denied\r\n")?;
+                        continue;
+                    }
                     if std::fs::remove_file(&file_path).is_ok() {
                         stream.write_all(b"250 File deleted\r\n")?;
                         file_logger.lock().unwrap().log_delete(
@@ -1185,7 +1066,11 @@ fn handle_ftp_connection(
                 }
 
                 if let Some(dirname) = arg {
-                    let dir_path = Path::new(&cwd).join(dirname);
+                    let dir_path = safe_resolve_path(&cwd, &home_dir, dirname);
+                    if !dir_path.starts_with(&home_dir) {
+                        stream.write_all(b"550 Permission denied\r\n")?;
+                        continue;
+                    }
                     if std::fs::create_dir_all(&dir_path).is_ok() {
                         stream.write_all(format!("257 \"{}\" created\r\n", dir_path.display()).as_bytes())?;
                         file_logger.lock().unwrap().log_mkdir(
@@ -1226,7 +1111,11 @@ fn handle_ftp_connection(
                 }
 
                 if let Some(dirname) = arg {
-                    let dir_path = Path::new(&cwd).join(dirname);
+                    let dir_path = safe_resolve_path(&cwd, &home_dir, dirname);
+                    if !dir_path.starts_with(&home_dir) {
+                        stream.write_all(b"550 Permission denied\r\n")?;
+                        continue;
+                    }
                     if std::fs::remove_dir_all(&dir_path).is_ok() {
                         stream.write_all(b"250 Directory removed\r\n")?;
                         file_logger.lock().unwrap().log_rmdir(
@@ -1267,8 +1156,8 @@ fn handle_ftp_connection(
                 }
 
                 if let Some(from_name) = arg {
-                    let from_path = Path::new(&cwd).join(from_name);
-                    if from_path.exists() {
+                    let from_path = safe_resolve_path(&cwd, &home_dir, from_name);
+                    if from_path.exists() && from_path.starts_with(&home_dir) {
                         rename_from = Some(from_path.to_string_lossy().to_string());
                         stream.write_all(b"350 File exists, ready for destination name\r\n")?;
                     } else {
@@ -1280,7 +1169,12 @@ fn handle_ftp_connection(
             "RNTO" => {
                 if let Some(ref from_path) = rename_from {
                     if let Some(to_name) = arg {
-                        let to_path = Path::new(&cwd).join(to_name);
+                        let to_path = safe_resolve_path(&cwd, &home_dir, to_name);
+                        if !to_path.starts_with(&home_dir) {
+                            stream.write_all(b"550 Permission denied\r\n")?;
+                            rename_from = None;
+                            continue;
+                        }
                         if std::fs::rename(from_path, &to_path).is_ok() {
                             stream.write_all(b"250 Rename successful\r\n")?;
                             file_logger.lock().unwrap().log_rename(
@@ -1309,23 +1203,31 @@ fn handle_ftp_connection(
 
             "SIZE" => {
                 if let Some(filename) = arg {
-                    let file_path = Path::new(&cwd).join(filename);
-                    if let Ok(metadata) = std::fs::metadata(&file_path) {
-                        stream.write_all(format!("213 {}\r\n", metadata.len()).as_bytes())?;
+                    let file_path = safe_resolve_path(&cwd, &home_dir, filename);
+                    if file_path.starts_with(&home_dir) {
+                        if let Ok(metadata) = std::fs::metadata(&file_path) {
+                            stream.write_all(format!("213 {}\r\n", metadata.len()).as_bytes())?;
+                        } else {
+                            stream.write_all(b"550 File not found\r\n")?;
+                        }
                     } else {
-                        stream.write_all(b"550 File not found\r\n")?;
+                        stream.write_all(b"550 Permission denied\r\n")?;
                     }
                 }
             }
 
             "MDTM" => {
                 if let Some(filename) = arg {
-                    let file_path = Path::new(&cwd).join(filename);
-                    if let Ok(metadata) = std::fs::metadata(&file_path) {
-                        let mtime = get_file_mtime_raw(&metadata);
-                        stream.write_all(format!("213 {}\r\n", mtime).as_bytes())?;
+                    let file_path = safe_resolve_path(&cwd, &home_dir, filename);
+                    if file_path.starts_with(&home_dir) {
+                        if let Ok(metadata) = std::fs::metadata(&file_path) {
+                            let mtime = get_file_mtime_raw(&metadata);
+                            stream.write_all(format!("213 {}\r\n", mtime).as_bytes())?;
+                        } else {
+                            stream.write_all(b"550 File not found\r\n")?;
+                        }
                     } else {
-                        stream.write_all(b"550 File not found\r\n")?;
+                        stream.write_all(b"550 Permission denied\r\n")?;
                     }
                 }
             }
@@ -1382,6 +1284,45 @@ fn find_available_passive_port(
     )
 }
 
+fn get_data_connection(
+    passive_mode: bool,
+    data_port: Option<u16>,
+    data_addr: &Option<String>,
+    remote_ip: &str,
+    passive_listeners: &PassiveListenerMap,
+) -> Result<TcpStream> {
+    let port = match data_port {
+        Some(p) => p,
+        None => anyhow::bail!("No data port specified"),
+    };
+
+    if passive_mode {
+        let listener_arc = {
+            let listeners = passive_listeners.lock().unwrap();
+            listeners.get(&port).cloned()
+        };
+
+        if let Some(listener_arc) = listener_arc {
+            let mut listener_guard = listener_arc.lock().unwrap();
+            if let Some(listener) = listener_guard.take() {
+                listener.set_nonblocking(false)?;
+                listener.accept().map(|(s, _)| s)
+                    .map_err(|e| anyhow::anyhow!("Failed to accept passive connection: {}", e))
+            } else {
+                anyhow::bail!("No passive listener")
+            }
+        } else {
+            anyhow::bail!("No passive listener")
+        }
+    } else if let Some(ref addr) = data_addr {
+        TcpStream::connect(addr)
+            .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", addr, e))
+    } else {
+        TcpStream::connect(format!("{}:{}", remote_ip, port))
+            .map_err(|e| anyhow::anyhow!("Failed to connect to {}:{}: {}", remote_ip, port, e))
+    }
+}
+
 fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
 
@@ -1430,4 +1371,44 @@ fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
     }
 
     facts.join("; ")
+}
+
+fn safe_resolve_path(cwd: &str, home_dir: &str, path: &str) -> std::path::PathBuf {
+    let home = std::path::PathBuf::from(home_dir);
+    let clean_path = path.trim();
+    
+    if clean_path.is_empty() || clean_path == "." || clean_path == "./" {
+        return std::path::PathBuf::from(cwd);
+    }
+    
+    let resolved = if clean_path.starts_with('/') {
+        std::path::PathBuf::from(clean_path)
+    } else {
+        std::path::Path::new(cwd).join(clean_path)
+    };
+    
+    if resolved.exists() {
+        match resolved.canonicalize() {
+            Ok(canon) if canon.starts_with(&home) => canon,
+            _ => home,
+        }
+    } else {
+        let mut safe_path = home.clone();
+        for component in resolved.components() {
+            match component {
+                std::path::Component::Normal(name) => {
+                    safe_path.push(name);
+                }
+                std::path::Component::ParentDir => {
+                    safe_path.pop();
+                }
+                _ => {}
+            }
+        }
+        if safe_path.starts_with(&home) {
+            safe_path
+        } else {
+            home
+        }
+    }
 }

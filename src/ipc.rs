@@ -67,14 +67,28 @@ fn get_peer_cred(stream: &UnixStream) -> Result<(u32, u32)> {
     }
 }
 
-fn is_authorized(uid: u32, _gid: u32) -> bool {
-    let current_uid = unsafe { libc::getuid() };
-    
-    if uid == current_uid || uid == 0 {
+fn is_authorized(uid: u32, gid: u32) -> bool {
+    if uid == 0 {
         return true;
     }
     
-    true
+    let current_uid = unsafe { libc::getuid() };
+    if uid == current_uid {
+        return true;
+    }
+    
+    unsafe {
+        let wftpg_group_name = std::ffi::CString::new("wftpg").unwrap();
+        let wftpg_group = libc::getgrnam(wftpg_group_name.as_ptr());
+        if !wftpg_group.is_null() {
+            let wftpg_gid = (*wftpg_group).gr_gid;
+            if gid == wftpg_gid {
+                return true;
+            }
+        }
+    }
+    
+    false
 }
 
 fn read_message<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
@@ -114,7 +128,32 @@ impl IpcServer {
         
         let listener = UnixListener::bind(socket_path)?;
         
-        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))?;
+        let gid_result = unsafe {
+            let wftpg_group_name = std::ffi::CString::new("wftpg").unwrap();
+            let wftpg_group = libc::getgrnam(wftpg_group_name.as_ptr());
+            if !wftpg_group.is_null() {
+                let gid = (*wftpg_group).gr_gid;
+                let c_path = std::ffi::CString::new(SOCKET_PATH).unwrap();
+                let result = libc::chown(c_path.as_ptr(), -1i32 as libc::uid_t, gid);
+                if result == 0 {
+                    log::info!("Set socket group to wftpg (gid={})", gid);
+                    Ok(())
+                } else {
+                    log::warn!("Failed to chown socket: errno={}", std::io::Error::last_os_error());
+                    Err(())
+                }
+            } else {
+                log::warn!("wftpg group not found");
+                Err(())
+            }
+        };
+        
+        if gid_result.is_err() {
+            log::warn!("Falling back to world-readable socket permissions");
+            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))?;
+        } else {
+            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o660))?;
+        }
         
         Ok(IpcServer { listener })
     }

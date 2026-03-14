@@ -77,7 +77,21 @@ impl SftpServer {
         let running_clone = Arc::clone(&self.running);
 
         let bind_addr = format!("{}:{}", bind_ip, sftp_port);
-        let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+        
+        let listener = {
+            use socket2::{Domain, Protocol, Socket, Type, SockAddr};
+            let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+            socket.set_reuse_address(true)?;
+            socket.set_nonblocking(true)?;
+            let addr: std::net::SocketAddr = bind_addr.parse()
+                .map_err(|e| anyhow::anyhow!("Invalid bind address: {}", e))?;
+            socket.bind(&SockAddr::from(addr))?;
+            socket.listen(128)?;
+            tokio::net::TcpListener::from_std(socket.into())
+                .map_err(|e| anyhow::anyhow!("Failed to create tokio listener: {}", e))?
+        };
+
+        self.logger.lock().unwrap().info("SFTP", &format!("SFTP server started on {}", bind_addr));
 
         tokio::spawn(async move {
             loop {
@@ -93,6 +107,14 @@ impl SftpServer {
                                 let logger = Arc::clone(&logger_clone);
                                 let file_logger = Arc::clone(&file_logger_clone);
                                 let client_ip = peer_addr.ip().to_string();
+
+                                logger_clone.lock().unwrap().client_action(
+                                    "SFTP",
+                                    &format!("Client connected from {}", client_ip),
+                                    &client_ip,
+                                    None,
+                                    "CONNECT",
+                                );
 
                                 tokio::spawn(async move {
                                     let handler = SftpHandler {
@@ -124,7 +146,6 @@ impl SftpServer {
             *running = false;
         });
 
-        self.logger.lock().unwrap().info("SFTP", &format!("SFTP server started on {}", bind_addr));
         Ok(())
     }
 
@@ -633,8 +654,14 @@ impl SftpState {
         let data_len = self.parse_u32(data, offset_pos + 8) as usize;
         let write_data = &data[offset_pos + 12..offset_pos + 12 + data_len];
 
-        if !self.check_permission(|p| p.can_write) {
-            return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+        if offset > 0 {
+            if !self.check_permission(|p| p.can_append) {
+                return Ok(self.build_status_packet(id, 3, "Permission denied (append)", ""));
+            }
+        } else {
+            if !self.check_permission(|p| p.can_write) {
+                return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
+            }
         }
 
         let handle = self.handles.get_mut(&handle_str);
@@ -870,25 +897,42 @@ impl SftpState {
     }
 
     fn resolve_path(&self, path: &str) -> PathBuf {
+        let home = PathBuf::from(&self.home_dir);
         let clean_path = path.trim();
         
-        if clean_path == "." || clean_path == "./" {
-            return PathBuf::from(&self.home_dir);
+        if clean_path.is_empty() || clean_path == "." || clean_path == "./" {
+            return home;
         }
         
-        if clean_path == ".." || clean_path.starts_with("../") {
-            return PathBuf::from(&self.home_dir);
-        }
+        let resolved = if clean_path.starts_with('/') {
+            PathBuf::from(clean_path)
+        } else {
+            home.join(clean_path)
+        };
         
-        if clean_path.starts_with('/') {
-            let p = PathBuf::from(clean_path);
-            if p.starts_with(&self.home_dir) {
-                p
-            } else {
-                PathBuf::from(&self.home_dir)
+        if resolved.exists() {
+            match resolved.canonicalize() {
+                Ok(canon) if canon.starts_with(&home) => canon,
+                _ => home,
             }
         } else {
-            PathBuf::from(&self.home_dir).join(clean_path)
+            let mut safe_path = home.clone();
+            for component in resolved.components() {
+                match component {
+                    std::path::Component::Normal(name) => {
+                        safe_path.push(name);
+                    }
+                    std::path::Component::ParentDir => {
+                        safe_path.pop();
+                    }
+                    _ => {}
+                }
+            }
+            if safe_path.starts_with(&home) {
+                safe_path
+            } else {
+                home
+            }
         }
     }
 
@@ -1248,11 +1292,19 @@ impl SftpState {
             return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
         }
 
-        match tokio::fs::read(&full_path).await {
-            Ok(content) => {
+        match tokio::fs::File::open(&full_path).await {
+            Ok(mut file) => {
                 use md5::{Md5, Digest};
+                use tokio::io::AsyncReadExt;
                 let mut hasher = Md5::new();
-                hasher.update(&content);
+                let mut buffer = [0u8; 8192];
+                loop {
+                    match file.read(&mut buffer).await {
+                        Ok(0) => break,
+                        Ok(n) => hasher.update(&buffer[..n]),
+                        Err(_) => return Ok(self.build_status_packet(id, 4, "Read error", "")),
+                    }
+                }
                 let hash = hasher.finalize();
                 let hash_hex = hex::encode(hash);
 
@@ -1274,11 +1326,19 @@ impl SftpState {
             return Ok(self.build_status_packet(id, 3, "Permission denied", ""));
         }
 
-        match tokio::fs::read(&full_path).await {
-            Ok(content) => {
+        match tokio::fs::File::open(&full_path).await {
+            Ok(mut file) => {
                 use sha2::{Sha256, Digest};
+                use tokio::io::AsyncReadExt;
                 let mut hasher = Sha256::new();
-                hasher.update(&content);
+                let mut buffer = [0u8; 8192];
+                loop {
+                    match file.read(&mut buffer).await {
+                        Ok(0) => break,
+                        Ok(n) => hasher.update(&buffer[..n]),
+                        Err(_) => return Ok(self.build_status_packet(id, 4, "Read error", "")),
+                    }
+                }
                 let hash = hasher.finalize();
                 let hash_hex = hex::encode(hash);
 

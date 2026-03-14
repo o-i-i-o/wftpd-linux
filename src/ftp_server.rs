@@ -234,6 +234,11 @@ fn handle_ftp_connection(
                 if let Some(ref username) = current_user {
                     let password = arg.unwrap_or("");
                     let mut users = user_manager.lock().unwrap();
+                    
+                    if users.get_user(username).is_none() {
+                        let _ = users.reload(&std::path::PathBuf::from("/etc/wftpg/users.json"));
+                    }
+                    
                     match users.authenticate(username, password) {
                         Ok(true) => {
                             authenticated = true;

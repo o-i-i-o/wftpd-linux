@@ -133,6 +133,20 @@ impl AppState {
         self.stop_ftp();
         self.stop_sftp();
     }
+    
+    pub fn reload_config(&self) -> anyhow::Result<()> {
+        let config = crate::config::Config::load(&self.config_path)?;
+        let mut current_config = self.config.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        *current_config = config;
+        Ok(())
+    }
+    
+    pub fn reload_users(&self) -> anyhow::Result<()> {
+        let users = crate::users::UserManager::load(&self.users_path)?;
+        let mut current_users = self.user_manager.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        *current_users = users;
+        Ok(())
+    }
 }
 
 impl Default for AppState {

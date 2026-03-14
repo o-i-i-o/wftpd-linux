@@ -3,6 +3,7 @@ use russh::*;
 use russh::keys::*;
 use russh::keys::ssh_key::rand_core::OsRng;
 use russh::server::Msg;
+use russh::MethodKind;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,8 +55,12 @@ impl SftpServer {
 
         let host_key = Self::load_or_generate_host_key(&host_key_path).await?;
 
+        let mut methods = MethodSet::empty();
+        methods.push(MethodKind::Password);
+        methods.push(MethodKind::PublicKey);
         let config = russh::server::Config {
             keys: vec![host_key],
+            methods,
             ..Default::default()
         };
         let config = Arc::new(config);
@@ -127,6 +132,7 @@ impl SftpServer {
                                         sftp_channel: None,
                                         sftp_state: None,
                                         client_ip: client_ip.clone(),
+                                        users_path: std::path::PathBuf::from("/etc/wftpg/users.json"),
                                     };
 
                                     if let Err(e) = russh::server::run_stream(config, socket, handler).await {
@@ -202,6 +208,7 @@ struct SftpHandler {
     sftp_channel: Option<ChannelId>,
     sftp_state: Option<Arc<Mutex<SftpState>>>,
     client_ip: String,
+    users_path: std::path::PathBuf,
 }
 
 struct SftpState {
@@ -241,6 +248,10 @@ impl russh::server::Handler for SftpHandler {
         password: &str,
     ) -> Result<server::Auth, Self::Error> {
         let mut users = self.user_manager.lock().unwrap();
+        
+        if users.get_user(user).is_none() {
+            let _ = users.reload(&self.users_path);
+        }
         
         match users.authenticate(user, password) {
             Ok(true) => {
@@ -466,6 +477,8 @@ impl SftpState {
         }
 
         let msg_type = data[0];
+        eprintln!("DEBUG: handle_sftp_packet - msg_type: {}, data_len: {}, data: {:02x?}", 
+                  msg_type, data.len(), &data[..data.len().min(50)]);
 
         match msg_type {
             1 => self.handle_init(data).await,
@@ -477,16 +490,16 @@ impl SftpState {
             8 => self.handle_fstat(data).await,
             9 => self.handle_mkdir(data).await,
             10 => self.handle_rmdir(data).await,
-            11 => self.handle_realpath(data).await,
-            12 => self.handle_stat(data).await,
+            11 => self.handle_opendir(data).await,
+            12 => self.handle_readdir(data).await,
             13 => self.handle_remove(data).await,
             14 => self.handle_mkdir(data).await,
             15 => self.handle_rmdir(data).await,
-            16 => self.handle_rename(data).await,
+            16 => self.handle_realpath(data).await,
             17 => self.handle_readlink(data).await,
             18 => self.handle_symlink(data).await,
-            20 => self.handle_opendir(data).await,
-            21 => self.handle_readdir(data).await,
+            19 => self.handle_rename(data).await,
+            20 => self.handle_stat(data).await,
             22 => self.handle_remove(data).await,
             40 => self.handle_lock(data).await,
             41 => self.handle_unlock(data).await,
@@ -876,6 +889,8 @@ impl SftpState {
 
         let full_path = self.resolve_path(&path);
         
+        eprintln!("DEBUG: handle_realpath - input: {:?}, resolved: {:?}", path, full_path);
+        
         let resolved = if full_path.exists() {
             full_path.canonicalize().unwrap_or(full_path)
         } else {
@@ -883,40 +898,61 @@ impl SftpState {
         };
         
         let path_str = resolved.to_string_lossy().to_string();
+        eprintln!("DEBUG: handle_realpath - final path: {:?}", path_str);
 
         let mut payload = vec![104];
         payload.extend_from_slice(&id.to_be_bytes());
         payload.extend_from_slice(&1u32.to_be_bytes());
         payload.extend_from_slice(&(path_str.len() as u32).to_be_bytes());
         payload.extend_from_slice(path_str.as_bytes());
-        payload.extend_from_slice(&(path_str.len() as u32).to_be_bytes());
-        payload.extend_from_slice(path_str.as_bytes());
-        payload.extend_from_slice(&self.build_attrs(false, 0));
+        let longname = format!("drwxr-xr-x  1 user user  0 Jan 01 00:00 {}", path_str);
+        payload.extend_from_slice(&(longname.len() as u32).to_be_bytes());
+        payload.extend_from_slice(longname.as_bytes());
+        payload.extend_from_slice(&self.build_attrs(true, 0));
 
         Ok(self.build_packet(&payload))
     }
 
     fn resolve_path(&self, path: &str) -> PathBuf {
+        eprintln!("DEBUG: resolve_path - home_dir: {:?}", self.home_dir);
         let home = PathBuf::from(&self.home_dir);
+        let home_canon = match home.canonicalize() {
+            Ok(c) => {
+                eprintln!("DEBUG: home canonicalized: {:?}", c);
+                c
+            }
+            Err(e) => {
+                eprintln!("DEBUG: home canonicalize failed: {:?}, exists: {}", e, home.exists());
+                if home.exists() {
+                    home.clone()
+                } else {
+                    eprintln!("Warning: Home directory does not exist: {:?}", home);
+                    return home;
+                }
+            }
+        };
         let clean_path = path.trim();
         
         if clean_path.is_empty() || clean_path == "." || clean_path == "./" {
-            return home;
+            eprintln!("DEBUG: returning home_canon for empty path");
+            return home_canon;
         }
         
         let resolved = if clean_path.starts_with('/') {
             PathBuf::from(clean_path)
         } else {
-            home.join(clean_path)
+            home_canon.join(clean_path)
         };
+        
+        eprintln!("DEBUG: resolved path: {:?}", resolved);
         
         if resolved.exists() {
             match resolved.canonicalize() {
-                Ok(canon) if canon.starts_with(&home) => canon,
-                _ => home,
+                Ok(canon) if canon.starts_with(&home_canon) => canon,
+                _ => home_canon,
             }
         } else {
-            let mut safe_path = home.clone();
+            let mut safe_path = home_canon.clone();
             for component in resolved.components() {
                 match component {
                     std::path::Component::Normal(name) => {
@@ -928,10 +964,10 @@ impl SftpState {
                     _ => {}
                 }
             }
-            if safe_path.starts_with(&home) {
+            if safe_path.starts_with(&home_canon) {
                 safe_path
             } else {
-                home
+                home_canon
             }
         }
     }
@@ -1008,11 +1044,13 @@ impl SftpState {
         let mut attrs = Vec::new();
         let flags: u32 = 0x00000001 | 0x00000002 | 0x00000004;
         attrs.extend_from_slice(&flags.to_be_bytes());
+        attrs.extend_from_slice(&size.to_be_bytes());
+        let uid: u32 = 1000;
+        let gid: u32 = 1000;
+        attrs.extend_from_slice(&uid.to_be_bytes());
+        attrs.extend_from_slice(&gid.to_be_bytes());
         let permissions = if is_dir { 0o755u32 } else { 0o644u32 };
         attrs.extend_from_slice(&permissions.to_be_bytes());
-        attrs.extend_from_slice(&0u64.to_be_bytes());
-        attrs.extend_from_slice(&0u64.to_be_bytes());
-        attrs.extend_from_slice(&size.to_be_bytes());
         attrs
     }
 

@@ -105,7 +105,38 @@ fn handle_command(state: &AppState, cmd: Command) -> Response {
         "status" => handle_status(state),
         "start" => handle_start_action(state, &cmd),
         "stop" => handle_stop_action(state, &cmd),
+        "reload" => handle_reload(state),
         _ => Response::error("未知命令"),
+    }
+}
+
+fn handle_reload(state: &AppState) -> Response {
+    let config_msg = match state.reload_config() {
+        Ok(_) => "配置已重新加载".to_string(),
+        Err(e) => format!("配置重新加载失败: {}", e),
+    };
+    
+    let users_msg = match state.reload_users() {
+        Ok(_) => "用户配置已重新加载".to_string(),
+        Err(e) => format!("用户配置重新加载失败: {}", e),
+    };
+    
+    let message = format!("{}; {}", config_msg, users_msg);
+    
+    if config_msg.contains("失败") || users_msg.contains("失败") {
+        Response {
+            success: false,
+            message,
+            ftp_running: state.is_ftp_running(),
+            sftp_running: state.is_sftp_running(),
+        }
+    } else {
+        Response {
+            success: true,
+            message,
+            ftp_running: state.is_ftp_running(),
+            sftp_running: state.is_sftp_running(),
+        }
     }
 }
 

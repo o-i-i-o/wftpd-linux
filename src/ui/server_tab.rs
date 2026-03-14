@@ -442,6 +442,7 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
     (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, default_home_entry, max_speed_spin, encoding_combo)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup_ftp_save_button(
     state: &Arc<StdMutex<AppState>>,
     save_btn: &Button,
@@ -609,6 +610,7 @@ fn load_sftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, SpinButton
     (sftp_enabled_cb, sftp_port_spin, max_auth_spin, auth_timeout_spin, host_key_entry, default_home_entry, log_level_combo)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup_sftp_save_button(
     state: &Arc<StdMutex<AppState>>,
     save_btn: &Button,

@@ -61,6 +61,7 @@ fn create_control_frame(container: &Box, state: &Arc<StdMutex<AppState>>) -> (La
     (status_label, autostart_btn)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup_service_buttons(
     state: &Arc<StdMutex<AppState>>,
     install_btn: &Button,

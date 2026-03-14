@@ -80,11 +80,52 @@ fn is_authorized(uid: u32, gid: u32) -> bool {
     unsafe {
         let wftpg_group_name = std::ffi::CString::new("wftpg").unwrap();
         let wftpg_group = libc::getgrnam(wftpg_group_name.as_ptr());
-        if !wftpg_group.is_null() {
-            let wftpg_gid = (*wftpg_group).gr_gid;
-            if gid == wftpg_gid {
-                return true;
+        if wftpg_group.is_null() {
+            log::warn!("wftpg group not found");
+            return false;
+        }
+        
+        let wftpg_gid = (*wftpg_group).gr_gid;
+        
+        if gid == wftpg_gid {
+            return true;
+        }
+        
+        let pwd = libc::getpwuid(uid);
+        if pwd.is_null() {
+            log::warn!("User {} not found", uid);
+            return false;
+        }
+        
+        let user_name = (*pwd).pw_name;
+        let mut groups: Vec<libc::gid_t> = vec![0; 64];
+        let mut ngroups = groups.len() as libc::c_int;
+        
+        let result = libc::getgrouplist(
+            user_name,
+            (*pwd).pw_gid,
+            groups.as_mut_ptr(),
+            &mut ngroups
+        );
+        
+        if result < 0 {
+            groups.resize(ngroups as usize, 0);
+            let result = libc::getgrouplist(
+                user_name,
+                (*pwd).pw_gid,
+                groups.as_mut_ptr(),
+                &mut ngroups
+            );
+            if result < 0 {
+                log::warn!("Failed to get groups for user {}", uid);
+                return false;
             }
+        }
+        
+        groups.truncate(ngroups as usize);
+        
+        if groups.contains(&wftpg_gid) {
+            return true;
         }
     }
     

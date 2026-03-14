@@ -234,6 +234,29 @@ impl UserManager {
         Ok(false)
     }
 
+    pub fn reload(&mut self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+
+        if content.trim().is_empty() {
+            return Ok(());
+        }
+
+        let manager: UserManager = match serde_json::from_str(&content) {
+            Ok(m) => m,
+            Err(_) => return Ok(()),
+        };
+
+        self.users = manager.users;
+        Ok(())
+    }
+
     pub fn get_user(&self, username: &str) -> Option<&User> {
         self.users.get(username)
     }

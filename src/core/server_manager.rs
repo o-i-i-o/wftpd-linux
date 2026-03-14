@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 
-use crate::config::Config;
-use crate::users::UserManager;
-use crate::logger::Logger;
-use crate::file_logger::FileLogger;
-use crate::ftp_server::FtpServer;
-use crate::sftp_server::SftpServer;
+use crate::core::config::Config;
+use crate::core::users::UserManager;
+use crate::core::logger::Logger;
+use crate::core::file_logger::FileLogger;
+use crate::server::ftp::FtpServer;
+use crate::server::sftp::SftpServer;
 
 pub struct ServerManager {
     ftp_server: Arc<Mutex<Option<FtpServer>>>,

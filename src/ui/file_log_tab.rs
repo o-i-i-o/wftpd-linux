@@ -5,7 +5,7 @@ use gtk::{
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
-use wftpg::AppState;
+use crate::AppState;
 use std::fs;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
@@ -257,7 +257,7 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
         match fs::read_to_string(source) {
             Ok(content) => {
                 for line in content.lines().rev().take(500) {
-                    if let Ok(entry) = serde_json::from_str::<wftpg::file_logger::FileLogEntry>(line) {
+                    if let Ok(entry) = serde_json::from_str::<crate::core::file_logger::FileLogEntry>(line) {
                         let iter = store.append();
                         store.set_value(&iter, 0, &entry.timestamp.format("%Y-%m-%d %H:%M:%S").to_string().to_value());
                         store.set_value(&iter, 1, &entry.username.to_value());

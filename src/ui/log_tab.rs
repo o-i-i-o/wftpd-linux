@@ -6,7 +6,7 @@ use gtk::{
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
-use wftpg::AppState;
+use crate::AppState;
 use std::fs;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
@@ -135,7 +135,7 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
                         config.logging.max_log_files = max_files;
                         config.logging.log_to_file = log_to_file;
                         config.logging.log_to_gui = log_to_gui;
-                        let _ = config.save(&s.config_path);
+                        let _ = config.save(&crate::core::config::Config::get_config_path());
                         log::info!("Logging configuration saved");
                     }
                 }
@@ -312,7 +312,7 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
         match fs::read_to_string(source) {
             Ok(content) => {
                 for line in content.lines().rev().take(500) {
-                    if let Ok(entry) = serde_json::from_str::<wftpg::logger::LogEntry>(line) {
+                    if let Ok(entry) = serde_json::from_str::<crate::core::logger::LogEntry>(line) {
                         let iter = store.append();
                         store.set_value(&iter, 0, &entry.timestamp.format("%Y-%m-%d %H:%M:%S").to_string().to_value());
                         store.set_value(&iter, 1, &entry.level.to_string().to_value());

@@ -167,8 +167,12 @@ impl Config {
         let content = toml::to_string_pretty(self)
             .context("Failed to serialize config")?;
         
-        fs::write(path, content)
-            .context("Failed to write config file")?;
+        let temp_path = path.with_extension("tmp");
+        fs::write(&temp_path, content)
+            .context("Failed to write temp config file")?;
+        
+        fs::rename(&temp_path, path)
+            .context("Failed to rename temp config file")?;
         
         Ok(())
     }

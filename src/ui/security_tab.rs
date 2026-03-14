@@ -5,8 +5,7 @@ use gtk::{
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
-use wftpg::AppState;
-use wftpg::dbus_client;
+use crate::AppState;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -74,9 +73,9 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
                 } else { return; }
             };
             
-            match dbus_client::write_config_via_dbus(&config_str) {
+            match crate::communication::dbus::write_config(&config_str) {
                 Ok(()) => {
-                    let _ = dbus_client::write_audit_log(
+                    let _ = crate::communication::dbus::write_audit_log(
                         "gui-security",
                         "SECURITY_CONFIG",
                         "login_settings",
@@ -292,7 +291,7 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                 } else { return; }
             };
             
-            match dbus_client::write_config_via_dbus(&config_str) {
+            match crate::communication::dbus::write_config(&config_str) {
                 Ok(()) => {
                     refresh_whitelist(&store, &state_clone);
                     ip_entry.set_text("");
@@ -324,7 +323,7 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                 } else { return; }
             };
             
-            match dbus_client::write_config_via_dbus(&config_str) {
+            match crate::communication::dbus::write_config(&config_str) {
                 Ok(()) => {
                     refresh_whitelist(&store, &state_clone);
                     log::info!("IP {} removed from whitelist", ip_to_remove);
@@ -350,7 +349,7 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
             } else { return; }
         };
         
-        match dbus_client::write_config_via_dbus(&config_str) {
+        match crate::communication::dbus::write_config(&config_str) {
             Ok(()) => {
                 refresh_whitelist(&store, &state_clone);
                 log::info!("Whitelist cleared");
@@ -375,7 +374,7 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
             } else { return; }
         };
         
-        match dbus_client::write_config_via_dbus(&config_str) {
+        match crate::communication::dbus::write_config(&config_str) {
             Ok(()) => {
                 refresh_whitelist(&store, &state_clone);
                 log::info!("Allow all IPs set");
@@ -414,7 +413,7 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
                 } else { return; }
             };
             
-            match dbus_client::write_config_via_dbus(&config_str) {
+            match crate::communication::dbus::write_config(&config_str) {
                 Ok(()) => {
                     refresh_blacklist(&store, &state_clone);
                     ip_entry.set_text("");
@@ -446,7 +445,7 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
                 } else { return; }
             };
             
-            match dbus_client::write_config_via_dbus(&config_str) {
+            match crate::communication::dbus::write_config(&config_str) {
                 Ok(()) => {
                     refresh_blacklist(&store, &state_clone);
                     log::info!("IP {} removed from blacklist", ip_to_remove);
@@ -472,7 +471,7 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
             } else { return; }
         };
         
-        match dbus_client::write_config_via_dbus(&config_str) {
+        match crate::communication::dbus::write_config(&config_str) {
             Ok(()) => {
                 refresh_blacklist(&store, &state_clone);
                 log::info!("Blacklist cleared");

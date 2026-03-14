@@ -2,7 +2,7 @@ use gtk::prelude::*;
 use gtk::{Box, Orientation, Label, Button, Frame, glib, CheckButton};
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
-use wftpg::AppState;
+use crate::AppState;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);

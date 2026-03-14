@@ -113,7 +113,10 @@ impl UserManager {
 
         let content = serde_json::to_string_pretty(self).context("Failed to serialize users")?;
 
-        fs::write(path, content).context("Failed to write users file")?;
+        let temp_path = path.with_extension("tmp");
+        fs::write(&temp_path, content).context("Failed to write temp users file")?;
+        
+        fs::rename(&temp_path, path).context("Failed to rename temp users file")?;
 
         Ok(())
     }
@@ -228,6 +231,12 @@ impl UserManager {
 
         if Self::verify_password(password, &user.password_hash) {
             user.last_login = Some(Utc::now());
+            
+            let users_path = std::path::PathBuf::from("/etc/wftpg/users.json");
+            if let Err(e) = self.save(&users_path) {
+                eprintln!("Warning: Failed to persist last_login: {}", e);
+            }
+            
             return Ok(true);
         }
 

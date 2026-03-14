@@ -7,8 +7,7 @@ use gtk::{
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::os::unix::fs::PermissionsExt;
-use wftpg::AppState;
-use wftpg::dbus_client;
+use crate::AppState;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -154,10 +153,10 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
                 } else { return; }
             };
             
-            match dbus_client::write_users_via_dbus(&users_json) {
+            match crate::communication::dbus::write_users(&users_json) {
                 Ok(()) => {
                     let action = if new_enabled { "enabled" } else { "disabled" };
-                    let _ = dbus_client::write_audit_log(
+                    let _ = crate::communication::dbus::write_audit_log(
                         "gui-user",
                         "USER_TOGGLE",
                         &uname,
@@ -374,7 +373,7 @@ fn show_user_dialog(
                 return;
             }
 
-            let perms = wftpg::users::Permissions {
+            let perms = crate::core::users::Permissions {
                 can_read: read_cb_clone.is_active(),
                 can_write: write_cb_clone.is_active(),
                 can_delete: delete_cb_clone.is_active(),
@@ -440,10 +439,10 @@ fn show_user_dialog(
                 } else { return; }
             };
             
-            match dbus_client::write_users_via_dbus(&users_json) {
+            match crate::communication::dbus::write_users(&users_json) {
                 Ok(()) => {
                     let action_type = if is_edit { "USER_MODIFY" } else { "USER_CREATE" };
-                    let _ = dbus_client::write_audit_log(
+                    let _ = crate::communication::dbus::write_audit_log(
                         "gui-user",
                         action_type,
                         &username,
@@ -506,9 +505,9 @@ fn show_confirm_dialog(
                 } else { return; }
             };
             
-            match dbus_client::write_users_via_dbus(&users_json) {
+            match crate::communication::dbus::write_users(&users_json) {
                 Ok(()) => {
-                    let _ = dbus_client::write_audit_log(
+                    let _ = crate::communication::dbus::write_audit_log(
                         "gui-user",
                         "USER_DELETE",
                         &username,
@@ -744,8 +743,12 @@ fn check_dir_permission(path: &str) -> bool {
     let groups: Vec<u32> = unsafe {
         let mut groups = [0u32; 64];
         let ngroups = 64;
-        libc::getgroups(ngroups, groups.as_mut_ptr());
-        groups[..ngroups as usize].to_vec()
+        let result = libc::getgroups(ngroups, groups.as_mut_ptr());
+        if result < 0 {
+            log::warn!("Failed to get groups, falling back to world permissions");
+            return world_readable && world_executable;
+        }
+        groups[..result as usize].to_vec()
     };
     
     if groups.contains(&file_gid) {
@@ -762,28 +765,37 @@ fn setup_shared_directory_permissions(path: &str) -> std::io::Result<()> {
         return Ok(());
     }
     
-    unsafe {
-        let wftpg_group = libc::getgrnam(std::ffi::CString::new("wftpg").unwrap().as_ptr());
-        if wftpg_group.is_null() {
-            log::warn!("wftpg group not found, skipping permission setup");
-            return Ok(());
+    let wftpg_group_exists = std::process::Command::new("getent")
+        .args(["group", "wftpg"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    
+    if !wftpg_group_exists {
+        log::warn!("wftpg group not found, skipping permission setup");
+        return Ok(());
+    }
+    
+    let chown_result = std::process::Command::new("chgrp")
+        .args(["wftpg", &path.to_string_lossy()])
+        .status();
+    
+    match chown_result {
+        Ok(status) if status.success() => {
+            log::info!("Changed group ownership to wftpg for {}", path.display());
         }
-        
-        let wftpg_gid = (*wftpg_group).gr_gid;
-        let c_path = std::ffi::CString::new(path.to_string_lossy().into_owned()).unwrap();
-        
-        let chown_result = libc::chown(c_path.as_ptr(), -1i32 as libc::uid_t, wftpg_gid);
-        if chown_result != 0 {
-            log::warn!("Failed to chown directory to wftpg group");
+        _ => {
+            log::warn!("Failed to chgrp directory to wftpg group");
         }
-        
-        let chmod_result = libc::chmod(c_path.as_ptr(), 0o2770);
-        if chmod_result != 0 {
-            log::warn!("Failed to set directory permissions to 2770");
+    }
+    
+    let chmod_result = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o2770));
+    match chmod_result {
+        Ok(()) => {
+            log::info!("Set directory {} permissions to 2770", path.display());
         }
-        
-        if chown_result == 0 && chmod_result == 0 {
-            log::info!("Set directory {} permissions to 2770 with group wftpg", path.display());
+        Err(e) => {
+            log::warn!("Failed to set directory permissions: {}", e);
         }
     }
     

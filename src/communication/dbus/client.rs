@@ -15,7 +15,7 @@ trait Config {
     fn WriteAuditLog(&self, user: &str, action: &str, target: &str, details: &str) -> zbus::Result<()>;
 }
 
-pub fn read_config_via_dbus() -> Result<String, String> {
+pub fn read_config() -> Result<String, String> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| format!("创建运行时失败: {}", e))?;
     rt.block_on(async {
@@ -28,20 +28,21 @@ pub fn read_config_via_dbus() -> Result<String, String> {
     })
 }
 
-pub fn write_config_via_dbus(content: &str) -> Result<(), String> {
+pub fn write_config(content: &str) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| format!("创建运行时失败: {}", e))?;
+    let content = content.to_string();
     rt.block_on(async {
         let connection = Connection::system().await
             .map_err(|e| format!("连接D-Bus失败: {}", e))?;
         let proxy = ConfigProxy::new(&connection).await
             .map_err(|e| format!("创建代理失败: {}", e))?;
-        proxy.WriteConfig(content).await
+        proxy.WriteConfig(&content).await
             .map_err(|e| format!("写入配置失败: {}", e))
     })
 }
 
-pub fn read_users_via_dbus() -> Result<String, String> {
+pub fn read_users() -> Result<String, String> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| format!("创建运行时失败: {}", e))?;
     rt.block_on(async {
@@ -54,15 +55,16 @@ pub fn read_users_via_dbus() -> Result<String, String> {
     })
 }
 
-pub fn write_users_via_dbus(content: &str) -> Result<(), String> {
+pub fn write_users(content: &str) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| format!("创建运行时失败: {}", e))?;
+    let content = content.to_string();
     rt.block_on(async {
         let connection = Connection::system().await
             .map_err(|e| format!("连接D-Bus失败: {}", e))?;
         let proxy = ConfigProxy::new(&connection).await
             .map_err(|e| format!("创建代理失败: {}", e))?;
-        proxy.WriteUsers(content).await
+        proxy.WriteUsers(&content).await
             .map_err(|e| format!("写入用户配置失败: {}", e))
     })
 }

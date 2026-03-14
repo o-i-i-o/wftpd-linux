@@ -33,6 +33,7 @@ fs2 = "0.4"
 libc = "0.2"
 ctrlc = "3"
 socket2 = "0.5"
+nix = { version = "0.29", features = ["user"] }
 
 [profile.release]
 opt-level = 3
@@ -46,12 +47,12 @@ opt-level = 3
 
 [[bin]]
 name = "wftp-gui"
-path = "src/gui_main.rs"
+path = "src/bin/wftp-gui.rs"
 
 [[bin]]
 name = "wftpd"
-path = "src/service_main.rs"
+path = "src/bin/wftpd.rs"
 
 [[bin]]
 name = "wftpg-dbus"
-path = "src/dbus_daemon.rs"
+path = "src/bin/wftpg-dbus.rs"

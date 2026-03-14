@@ -5,9 +5,8 @@ use gtk::{
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
-use wftpg::AppState;
-use wftpg::ipc::IpcClient;
-use wftpg::dbus_client;
+use crate::AppState;
+use crate::communication::ipc::IpcClient;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -501,7 +500,7 @@ fn setup_ftp_save_button(
             } else { return; }
         };
         
-        match dbus_client::write_config_via_dbus(&config_str) {
+        match crate::communication::dbus::write_config(&config_str) {
             Ok(()) => {
                 if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut log) = s.logger.try_lock() {
@@ -657,7 +656,7 @@ fn setup_sftp_save_button(
             } else { return; }
         };
         
-        match dbus_client::write_config_via_dbus(&config_str) {
+        match crate::communication::dbus::write_config(&config_str) {
             Ok(()) => {
                 if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut log) = s.logger.try_lock() {

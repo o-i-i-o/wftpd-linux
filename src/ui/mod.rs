@@ -8,7 +8,7 @@ pub mod file_log_tab;
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, Notebook, Label};
 use std::sync::{Arc, Mutex as StdMutex};
-use wftpg::AppState;
+use crate::AppState;
 
 pub fn build_ui(app: &Application) {
     let state = match AppState::new() {

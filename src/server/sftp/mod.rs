@@ -117,6 +117,7 @@ impl SftpServer {
                                 let logger = Arc::clone(&logger_clone);
                                 let file_logger = Arc::clone(&file_logger_clone);
                                 let client_ip = peer_addr.ip().to_string();
+                                let logger_for_error = Arc::clone(&logger_clone);
 
                                 logger_clone.lock().unwrap().client_action(
                                     "SFTP",
@@ -136,20 +137,29 @@ impl SftpServer {
                                     );
 
                                     if let Err(e) = russh::server::run_stream(config, socket, handler).await {
-                                        eprintln!("SSH connection error from {}: {}", peer_addr, e);
+                                        logger_for_error.lock().unwrap().error(
+                                            "SFTP",
+                                            &format!("SSH connection error from {}: {}", peer_addr, e),
+                                        );
                                     }
                                 });
                             }
                             Err(e) => {
-                                eprintln!("Failed to accept connection: {}", e);
+                                logger_clone.lock().unwrap().error(
+                                    "SFTP",
+                                    &format!("Failed to accept connection: {}", e),
+                                );
                             }
                         }
                     }
                 }
             }
 
-            let mut running = running_clone.lock().unwrap();
-            *running = false;
+            {
+                let mut running = running_clone.lock().unwrap();
+                *running = false;
+            }
+            logger_clone.lock().unwrap().info("SFTP", "SFTP server stopped");
         });
 
         Ok(())

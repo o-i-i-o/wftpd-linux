@@ -29,32 +29,51 @@ impl FtpSession {
 
         self.stream.write_all(b"150 Here comes the directory listing\r\n")?;
 
-        if let Ok(mut data_stream) = get_data_connection(
+        let cwd = self.cwd.clone();
+        let data_result = get_data_connection(
             self.passive_mode,
             self.data_port,
             &self.data_addr,
             &self.remote_ip,
             &self.passive_listeners,
-        ) {
-            let path = Path::new(&self.cwd);
-            if let Ok(entries) = std::fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    if let Ok(metadata) = entry.metadata() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let perms = if metadata.is_dir() {
-                            "drwxr-xr-x"
-                        } else {
-                            "-rw-r--r--"
-                        };
-                        let size = metadata.len();
-                        let mtime = get_file_mtime(&metadata);
-                        let line = format!(
-                            "{} 1 user user {:>10} {} {}\r\n",
-                            perms, size, mtime, name
+        );
+        
+        match data_result {
+            Ok(mut data_stream) => {
+                let path = Path::new(&cwd);
+                match std::fs::read_dir(path) {
+                    Ok(entries) => {
+                        for entry in entries.flatten() {
+                            if let Ok(metadata) = entry.metadata() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                let perms = if metadata.is_dir() {
+                                    "drwxr-xr-x"
+                                } else {
+                                    "-rw-r--r--"
+                                };
+                                let size = metadata.len();
+                                let mtime = get_file_mtime(&metadata);
+                                let line = format!(
+                                    "{} 1 user user {:>10} {} {}\r\n",
+                                    perms, size, mtime, name
+                                );
+                                let _ = data_stream.write_all(line.as_bytes());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.logger.lock().unwrap().warning(
+                            "FTP",
+                            &format!("Failed to read directory {}: {}", cwd, e),
                         );
-                        let _ = data_stream.write_all(line.as_bytes());
                     }
                 }
+            }
+            Err(e) => {
+                self.logger.lock().unwrap().warning(
+                    "FTP",
+                    &format!("Failed to get data connection: {}", e),
+                );
             }
         }
 
@@ -95,7 +114,7 @@ impl FtpSession {
                     if let Ok(metadata) = entry.metadata() {
                         let name = entry.file_name().to_string_lossy().to_string();
                         let facts = build_mlst_facts(&metadata);
-                        let line = format!("{}; {}\r\n", facts, name);
+                        let line = format!("{} {}\r\n", facts, name);
                         let _ = data_stream.write_all(line.as_bytes());
                     }
                 }

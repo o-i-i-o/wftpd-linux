@@ -21,13 +21,13 @@ impl FtpSession {
             return Ok(());
         }
 
-        let (port_min, port_max) = {
+        let (port_min, port_max, bind_ip) = {
             let cfg = self.config.lock().unwrap();
-            cfg.ftp.passive_ports
+            let ports = cfg.ftp.passive_ports;
+            (ports.0, ports.1, cfg.server.bind_ip.clone())
         };
 
         let passive_port = find_available_passive_port(&self.passive_listeners, port_min, port_max)?;
-        let bind_ip = self.config.lock().unwrap().server.bind_ip.clone();
         let passive_listener = create_passive_listener(&bind_ip, passive_port)?;
 
         {
@@ -37,7 +37,13 @@ impl FtpSession {
 
         self.data_port = Some(passive_port);
 
-        let ip_octets = self.remote_ip.replace('.', ",");
+        let server_ip = if bind_ip == "0.0.0.0" {
+            self.local_ip.clone().unwrap_or_else(|| self.remote_ip.clone())
+        } else {
+            bind_ip.clone()
+        };
+        
+        let ip_octets = server_ip.replace('.', ",");
         self.stream.write_all(
             format!(
                 "227 Entering Passive Mode ({},{},{})\r\n",
@@ -50,7 +56,7 @@ impl FtpSession {
 
         self.logger.lock().unwrap().client_action(
             "FTP",
-            &format!("PASV mode: port {}", passive_port),
+            &format!("PASV mode: port {}, server IP: {}", passive_port, server_ip),
             &self.remote_ip,
             self.current_user.as_deref(),
             "PASV",

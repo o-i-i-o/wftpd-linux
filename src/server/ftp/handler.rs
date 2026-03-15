@@ -22,6 +22,7 @@ pub struct FtpSession {
     pub passive_listeners: PassiveListenerMap,
     pub rate_limiter: Arc<RateLimiter>,
     pub remote_ip: String,
+    pub local_ip: Option<String>,
     pub current_user: Option<String>,
     pub authenticated: bool,
     pub cwd: String,
@@ -46,6 +47,10 @@ impl FtpSession {
     ) -> Result<Self> {
         let remote_addr = stream.peer_addr()?;
         let remote_ip = remote_addr.ip().to_string();
+        
+        let local_ip = stream.local_addr()
+            .ok()
+            .map(|addr| addr.ip().to_string());
 
         let (cwd, home_dir) = {
             let cfg = config.lock().unwrap();
@@ -61,6 +66,7 @@ impl FtpSession {
             passive_listeners,
             rate_limiter,
             remote_ip,
+            local_ip,
             current_user: None,
             authenticated: false,
             cwd,

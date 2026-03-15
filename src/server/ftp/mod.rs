@@ -37,11 +37,7 @@ impl FtpServer {
         logger: Arc<Mutex<Logger>>,
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> Self {
-        let rate_limiter = Arc::new(RateLimiter::new(
-            10,
-            60,
-            100,
-        ));
+        let rate_limiter = Arc::new(RateLimiter::new(10, 60, 100));
         
         FtpServer {
             config,
@@ -75,6 +71,8 @@ impl FtpServer {
             *listener_guard = Some(listener.try_clone()?);
         }
 
+        self.logger.lock().unwrap().info("FTP", &format!("FTP server started on {}", bind_addr));
+
         let config = Arc::clone(&self.config);
         let user_manager = Arc::clone(&self.user_manager);
         let logger = Arc::clone(&self.logger);
@@ -92,10 +90,11 @@ impl FtpServer {
                 }
 
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok((stream, peer_addr)) => {
                         let config = Arc::clone(&config);
                         let user_manager = Arc::clone(&user_manager);
-                        let logger = Arc::clone(&logger);
+                        let logger_for_session = Arc::clone(&logger);
+                        let logger_for_error = Arc::clone(&logger);
                         let file_logger = Arc::clone(&file_logger);
                         let passive_listeners = Arc::clone(&passive_listeners);
                         let rate_limiter = Arc::clone(&rate_limiter);
@@ -105,18 +104,24 @@ impl FtpServer {
                                 stream,
                                 config,
                                 user_manager,
-                                logger,
+                                logger_for_session,
                                 file_logger,
                                 passive_listeners,
                                 rate_limiter,
                             ) {
                                 Ok(mut session) => {
                                     if let Err(e) = session.run() {
-                                        eprintln!("FTP session error: {}", e);
+                                        logger_for_error.lock().unwrap().error(
+                                            "FTP",
+                                            &format!("Session error from {}: {}", peer_addr, e),
+                                        );
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("Failed to create FTP session: {}", e);
+                                    logger_for_error.lock().unwrap().error(
+                                        "FTP",
+                                        &format!("Failed to create session from {}: {}", peer_addr, e),
+                                    );
                                 }
                             }
                         });
@@ -130,7 +135,7 @@ impl FtpServer {
                         if !is_running {
                             break;
                         }
-                        eprintln!("Failed to accept connection: {}", e);
+                        logger.lock().unwrap().error("FTP", &format!("Failed to accept connection: {}", e));
                     }
                 }
             }
@@ -139,6 +144,8 @@ impl FtpServer {
                 let mut listener_guard = server_listener.lock().unwrap();
                 *listener_guard = None;
             }
+            
+            logger.lock().unwrap().info("FTP", "FTP server stopped");
         });
 
         Ok(())

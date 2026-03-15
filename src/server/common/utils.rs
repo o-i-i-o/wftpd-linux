@@ -156,18 +156,18 @@ pub fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
     let mut facts: Vec<String> = Vec::new();
 
     if metadata.is_dir() {
-        facts.push("type=dir".to_string());
+        facts.push("type=dir;".to_string());
     } else {
-        facts.push("type=file".to_string());
+        facts.push("type=file;".to_string());
     }
 
-    facts.push(format!("size={}", metadata.len()));
+    facts.push(format!("size={};", metadata.len()));
 
     if let Ok(time) = metadata.modified() {
         if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
-            facts.push(format!("modify={}", duration.as_secs()));
+            facts.push(format!("modify={};", duration.as_secs()));
         }
     }
 
-    facts.join("; ")
+    facts.join("")
 }

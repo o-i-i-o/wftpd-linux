@@ -37,6 +37,8 @@ pub struct FtpConfig {
     pub max_speed_kbps: u64,
     #[serde(default = "default_encoding")]
     pub encoding: String,
+    #[serde(default = "default_data_timeout")]
+    pub data_timeout: u64,
 }
 
 fn default_bind_ip() -> String {
@@ -45,6 +47,10 @@ fn default_bind_ip() -> String {
 
 fn default_encoding() -> String {
     "UTF-8".to_string()
+}
+
+fn default_data_timeout() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +114,7 @@ impl Default for Config {
                 anonymous_home: None,
                 max_speed_kbps: 0,
                 encoding: "UTF-8".to_string(),
+                data_timeout: 300,
             },
             sftp: SftpConfig {
                 enabled: true,

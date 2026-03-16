@@ -33,6 +33,7 @@ pub struct FtpSession {
     pub rest_offset: u64,
     pub rename_from: Option<String>,
     pub abort_flag: Arc<AtomicBool>,
+    pub utf8_enabled: bool,
 }
 
 impl FtpSession {
@@ -77,6 +78,7 @@ impl FtpSession {
             rest_offset: 0,
             rename_from: None,
             abort_flag: Arc::new(AtomicBool::new(false)),
+            utf8_enabled: true,
         })
     }
 
@@ -161,7 +163,7 @@ impl FtpSession {
             "MODE" => self.cmd_mode(arg)?,
             "STRU" => self.cmd_stru(arg)?,
             "ALLO" => self.stream.write_all(b"200 ALLO command successful\r\n")?,
-            "OPTS" => self.stream.write_all(b"200 Options set\r\n")?,
+            "OPTS" => self.cmd_opts(arg)?,
             "PWD" | "XPWD" => self.stream.write_all(format!("257 \"{}\"\r\n", self.cwd).as_bytes())?,
             "CWD" => self.cmd_cwd(arg)?,
             "CDUP" | "XCUP" => self.cmd_cdup()?,

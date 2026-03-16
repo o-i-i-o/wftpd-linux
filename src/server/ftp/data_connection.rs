@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub type PassiveListenerMap = Arc<Mutex<HashMap<u16, Arc<Mutex<Option<TcpListener>>>>>>;
 
@@ -31,13 +32,14 @@ pub fn get_data_connection(
     data_addr: &Option<String>,
     remote_ip: &str,
     passive_listeners: &PassiveListenerMap,
+    data_timeout_secs: u64,
 ) -> Result<TcpStream> {
     let port = match data_port {
         Some(p) => p,
         None => anyhow::bail!("No data port specified"),
     };
 
-    if passive_mode {
+    let stream = if passive_mode {
         let listener_arc = {
             let listeners = passive_listeners.lock().unwrap();
             listeners.get(&port).cloned()
@@ -61,7 +63,15 @@ pub fn get_data_connection(
     } else {
         TcpStream::connect(format!("{}:{}", remote_ip, port))
             .map_err(|e| anyhow::anyhow!("Failed to connect to {}:{}: {}", remote_ip, port, e))
+    }?;
+
+    if data_timeout_secs > 0 {
+        let timeout = Some(Duration::from_secs(data_timeout_secs));
+        stream.set_read_timeout(timeout)?;
+        stream.set_write_timeout(timeout)?;
     }
+
+    Ok(stream)
 }
 
 pub fn create_passive_listener(

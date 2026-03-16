@@ -143,4 +143,38 @@ impl FtpSession {
         self.stream.write_all(b"226 Abort successful\r\n")?;
         Ok(())
     }
+
+    pub fn cmd_opts(&mut self, arg: Option<&str>) -> Result<()> {
+        if let Some(opts_arg) = arg {
+            let parts: Vec<&str> = opts_arg.split_whitespace().collect();
+            if parts.is_empty() {
+                self.stream.write_all(b"501 Syntax error: OPTS requires parameters\r\n")?;
+                return Ok(());
+            }
+
+            match parts[0].to_uppercase().as_str() {
+                "UTF8" => {
+                    if parts.len() > 1 && parts[1].to_uppercase() == "ON" {
+                        self.utf8_enabled = true;
+                        self.stream.write_all(b"200 UTF8 enabled\r\n")?;
+                    } else if parts.len() > 1 && parts[1].to_uppercase() == "OFF" {
+                        self.utf8_enabled = false;
+                        self.stream.write_all(b"200 UTF8 disabled\r\n")?;
+                    } else {
+                        self.utf8_enabled = true;
+                        self.stream.write_all(b"200 UTF8 enabled\r\n")?;
+                    }
+                }
+                "MLST" => {
+                    self.stream.write_all(b"200 MLST OPTS Type*;Size*;Modify*;\r\n")?;
+                }
+                _ => {
+                    self.stream.write_all(b"501 Unknown OPTS parameter\r\n")?;
+                }
+            }
+        } else {
+            self.stream.write_all(b"501 Syntax error: OPTS requires parameters\r\n")?;
+        }
+        Ok(())
+    }
 }

@@ -127,6 +127,10 @@ impl SftpState {
         let id = parse_u32(data, 1);
         let path = parse_string(data, 5)?;
 
+        if !self.check_permission(|p| p.can_list) {
+            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+        }
+
         let full_path = self.resolve_path(&path);
 
         if !full_path.exists() {
@@ -450,6 +454,10 @@ impl SftpState {
         let id = parse_u32(data, 1);
         let path = parse_string(data, 5)?;
 
+        if !self.check_permission(|p| p.can_read) {
+            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+        }
+
         let full_path = self.resolve_path(&path);
 
         match tokio::fs::metadata(&full_path).await {
@@ -471,6 +479,10 @@ impl SftpState {
         let id = parse_u32(data, 1);
         let handle_str = parse_string(data, 5)?;
 
+        if !self.check_permission(|p| p.can_read) {
+            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+        }
+
         let handle = self.handles.get(&handle_str);
         match handle {
             Some(SftpFileHandle::File { path, .. }) => {
@@ -491,6 +503,10 @@ impl SftpState {
     async fn handle_realpath(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let id = parse_u32(data, 1);
         let path = parse_string(data, 5)?;
+
+        if !self.check_permission(|p| p.can_read) {
+            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+        }
 
         let full_path = self.resolve_path(&path);
 

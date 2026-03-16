@@ -128,34 +128,48 @@ impl FtpSession {
     }
 
     pub fn cmd_size(&mut self, arg: Option<&str>) -> Result<()> {
+        if !self.authenticated {
+            self.stream.write_all(b"530 Not logged in\r\n")?;
+            return Ok(());
+        }
+
         if let Some(filename) = arg {
             let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
-            if file_path.starts_with(&self.home_dir) {
-                if let Ok(metadata) = std::fs::metadata(&file_path) {
-                    self.stream.write_all(format!("213 {}\r\n", metadata.len()).as_bytes())?;
-                } else {
-                    self.stream.write_all(b"550 File not found\r\n")?;
-                }
-            } else {
+            if !file_path.starts_with(&self.home_dir) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
+                return Ok(());
             }
+            if let Ok(metadata) = std::fs::metadata(&file_path) {
+                self.stream.write_all(format!("213 {}\r\n", metadata.len()).as_bytes())?;
+            } else {
+                self.stream.write_all(b"550 File not found\r\n")?;
+            }
+        } else {
+            self.stream.write_all(b"501 Syntax error: SIZE requires parameter\r\n")?;
         }
         Ok(())
     }
 
     pub fn cmd_mdtm(&mut self, arg: Option<&str>) -> Result<()> {
+        if !self.authenticated {
+            self.stream.write_all(b"530 Not logged in\r\n")?;
+            return Ok(());
+        }
+
         if let Some(filename) = arg {
             let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
-            if file_path.starts_with(&self.home_dir) {
-                if let Ok(metadata) = std::fs::metadata(&file_path) {
-                    let mtime = get_file_mtime_raw(&metadata);
-                    self.stream.write_all(format!("213 {}\r\n", mtime).as_bytes())?;
-                } else {
-                    self.stream.write_all(b"550 File not found\r\n")?;
-                }
-            } else {
+            if !file_path.starts_with(&self.home_dir) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
+                return Ok(());
             }
+            if let Ok(metadata) = std::fs::metadata(&file_path) {
+                let mtime = get_file_mtime_raw(&metadata);
+                self.stream.write_all(format!("213 {}\r\n", mtime).as_bytes())?;
+            } else {
+                self.stream.write_all(b"550 File not found\r\n")?;
+            }
+        } else {
+            self.stream.write_all(b"501 Syntax error: MDTM requires parameter\r\n")?;
         }
         Ok(())
     }

@@ -10,6 +10,10 @@ use super::super::utils::{build_mlst_facts, get_file_mtime, safe_resolve_path};
 use crate::core::file_logger::FileLogInfo;
 
 impl FtpSession {
+    fn get_data_timeout(&self) -> u64 {
+        self.config.lock().unwrap().ftp.data_timeout
+    }
+
     pub fn cmd_list(&mut self, _arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
             self.stream.write_all(b"530 Not logged in\r\n")?;
@@ -30,12 +34,14 @@ impl FtpSession {
         self.stream.write_all(b"150 Here comes the directory listing\r\n")?;
 
         let cwd = self.cwd.clone();
+        let data_timeout = self.get_data_timeout();
         let data_result = get_data_connection(
             self.passive_mode,
             self.data_port,
             &self.data_addr,
             &self.remote_ip,
             &self.passive_listeners,
+            data_timeout,
         );
         
         match data_result {
@@ -68,17 +74,19 @@ impl FtpSession {
                         );
                     }
                 }
+                self.cleanup_data_connection();
+                self.stream.write_all(b"226 Transfer complete\r\n")?;
             }
             Err(e) => {
                 self.logger.lock().unwrap().warning(
                     "FTP",
                     &format!("Failed to get data connection: {}", e),
                 );
+                self.cleanup_data_connection();
+                self.stream.write_all(b"425 Cannot open data connection\r\n")?;
             }
         }
 
-        self.cleanup_data_connection();
-        self.stream.write_all(b"226 Transfer complete\r\n")?;
         Ok(())
     }
 
@@ -101,28 +109,41 @@ impl FtpSession {
 
         self.stream.write_all(b"150 Here comes the directory listing\r\n")?;
 
-        if let Ok(mut data_stream) = get_data_connection(
+        let data_timeout = self.get_data_timeout();
+        let data_result = get_data_connection(
             self.passive_mode,
             self.data_port,
             &self.data_addr,
             &self.remote_ip,
             &self.passive_listeners,
-        ) {
-            let path = Path::new(&self.cwd);
-            if let Ok(entries) = std::fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    if let Ok(metadata) = entry.metadata() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let facts = build_mlst_facts(&metadata);
-                        let line = format!("{} {}\r\n", facts, name);
-                        let _ = data_stream.write_all(line.as_bytes());
+            data_timeout,
+        );
+
+        match data_result {
+            Ok(mut data_stream) => {
+                let path = Path::new(&self.cwd);
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        if let Ok(metadata) = entry.metadata() {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            let facts = build_mlst_facts(&metadata);
+                            let line = format!("{} {}\r\n", facts, name);
+                            let _ = data_stream.write_all(line.as_bytes());
+                        }
                     }
                 }
+                self.cleanup_data_connection();
+                self.stream.write_all(b"226 Transfer complete\r\n")?;
+            }
+            Err(e) => {
+                self.logger.lock().unwrap().warning(
+                    "FTP",
+                    &format!("Failed to get data connection: {}", e),
+                );
+                self.cleanup_data_connection();
+                self.stream.write_all(b"425 Cannot open data connection\r\n")?;
             }
         }
-
-        self.cleanup_data_connection();
-        self.stream.write_all(b"226 Transfer complete\r\n")?;
         Ok(())
     }
 
@@ -164,40 +185,54 @@ impl FtpSession {
                     .as_bytes(),
             )?;
 
-            if let Ok(mut data_stream) = get_data_connection(
+            let data_timeout = self.get_data_timeout();
+            let data_result = get_data_connection(
                 self.passive_mode,
                 self.data_port,
                 &self.data_addr,
                 &self.remote_ip,
                 &self.passive_listeners,
-            ) {
-                let abort = Arc::clone(&self.abort_flag);
-                if let Ok(mut file) = std::fs::File::open(&file_path) {
-                    use std::io::Seek;
-                    if self.rest_offset > 0 {
-                        let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset));
-                    }
+                data_timeout,
+            );
 
-                    let mut buf = [0u8; 8192];
-                    loop {
-                        if abort.load(Ordering::Relaxed) {
-                            break;
+            match data_result {
+                Ok(mut data_stream) => {
+                    let abort = Arc::clone(&self.abort_flag);
+                    if let Ok(mut file) = std::fs::File::open(&file_path) {
+                        use std::io::Seek;
+                        if self.rest_offset > 0 {
+                            let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset));
                         }
-                        match file.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if data_stream.write_all(&buf[..n]).is_err() {
-                                    break;
-                                }
+
+                        let mut buf = [0u8; 8192];
+                        loop {
+                            if abort.load(Ordering::Relaxed) {
+                                break;
                             }
-                            Err(_) => break,
+                            match file.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if data_stream.write_all(&buf[..n]).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
                         }
                     }
+                    self.cleanup_data_connection();
+                    self.stream.write_all(b"226 Transfer complete\r\n")?;
+                }
+                Err(e) => {
+                    self.logger.lock().unwrap().warning(
+                        "FTP",
+                        &format!("Failed to get data connection: {}", e),
+                    );
+                    self.cleanup_data_connection();
+                    self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                    return Ok(());
                 }
             }
-
-            self.cleanup_data_connection();
-            self.stream.write_all(b"226 Transfer complete\r\n")?;
 
             let file_size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(remaining);
             self.file_logger.lock().unwrap().log_download(
@@ -251,50 +286,64 @@ impl FtpSession {
             let file_existed = file_path.exists();
             self.stream.write_all(b"150 Opening BINARY mode data connection\r\n")?;
 
-            if let Ok(mut data_stream) = get_data_connection(
+            let data_timeout = self.get_data_timeout();
+            let data_result = get_data_connection(
                 self.passive_mode,
                 self.data_port,
                 &self.data_addr,
                 &self.remote_ip,
                 &self.passive_listeners,
-            ) {
-                let abort = Arc::clone(&self.abort_flag);
-                let file_result = if self.rest_offset > 0 {
-                    std::fs::OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(false)
-                        .open(&file_path)
-                } else {
-                    std::fs::File::create(&file_path)
-                };
+                data_timeout,
+            );
 
-                if let Ok(mut file) = file_result {
-                    use std::io::Seek;
-                    if self.rest_offset > 0 {
-                        let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset));
-                    }
+            match data_result {
+                Ok(mut data_stream) => {
+                    let abort = Arc::clone(&self.abort_flag);
+                    let file_result = if self.rest_offset > 0 {
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(false)
+                            .open(&file_path)
+                    } else {
+                        std::fs::File::create(&file_path)
+                    };
 
-                    let mut buf = [0u8; 8192];
-                    loop {
-                        if abort.load(Ordering::Relaxed) {
-                            break;
+                    if let Ok(mut file) = file_result {
+                        use std::io::Seek;
+                        if self.rest_offset > 0 {
+                            let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset));
                         }
-                        match data_stream.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if file.write_all(&buf[..n]).is_err() {
-                                    break;
-                                }
+
+                        let mut buf = [0u8; 8192];
+                        loop {
+                            if abort.load(Ordering::Relaxed) {
+                                break;
                             }
-                            Err(_) => break,
+                            match data_stream.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if file.write_all(&buf[..n]).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
                         }
                     }
+                    self.cleanup_data_connection();
+                    self.stream.write_all(b"226 Transfer complete\r\n")?;
+                }
+                Err(e) => {
+                    self.logger.lock().unwrap().warning(
+                        "FTP",
+                        &format!("Failed to get data connection: {}", e),
+                    );
+                    self.cleanup_data_connection();
+                    self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                    return Ok(());
                 }
             }
-
-            self.cleanup_data_connection();
-            self.stream.write_all(b"226 Transfer complete\r\n")?;
 
             let uploaded_size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
             if file_existed {
@@ -354,39 +403,53 @@ impl FtpSession {
             }
             self.stream.write_all(b"150 Opening BINARY mode data connection for append\r\n")?;
 
-            if let Ok(mut data_stream) = get_data_connection(
+            let data_timeout = self.get_data_timeout();
+            let data_result = get_data_connection(
                 self.passive_mode,
                 self.data_port,
                 &self.data_addr,
                 &self.remote_ip,
                 &self.passive_listeners,
-            ) {
-                let abort = Arc::clone(&self.abort_flag);
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(&file_path)
-                {
-                    let mut buf = [0u8; 8192];
-                    loop {
-                        if abort.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        match data_stream.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if file.write_all(&buf[..n]).is_err() {
-                                    break;
-                                }
+                data_timeout,
+            );
+
+            match data_result {
+                Ok(mut data_stream) => {
+                    let abort = Arc::clone(&self.abort_flag);
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&file_path)
+                    {
+                        let mut buf = [0u8; 8192];
+                        loop {
+                            if abort.load(Ordering::Relaxed) {
+                                break;
                             }
-                            Err(_) => break,
+                            match data_stream.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if file.write_all(&buf[..n]).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
                         }
                     }
+                    self.cleanup_data_connection();
+                    self.stream.write_all(b"226 Transfer complete\r\n")?;
+                }
+                Err(e) => {
+                    self.logger.lock().unwrap().warning(
+                        "FTP",
+                        &format!("Failed to get data connection: {}", e),
+                    );
+                    self.cleanup_data_connection();
+                    self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                    return Ok(());
                 }
             }
-
-            self.cleanup_data_connection();
-            self.stream.write_all(b"226 Transfer complete\r\n")?;
 
             let appended_size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
             self.file_logger.lock().unwrap().log(FileLogInfo {

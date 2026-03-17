@@ -16,15 +16,14 @@ pub fn is_safe_username(username: &str) -> bool {
 
 pub fn safe_resolve_path(home_dir: &str, path: &str) -> PathBuf {
     let home = PathBuf::from(home_dir);
+    
+    if !home.exists() {
+        return home;
+    }
+    
     let home_canon = match home.canonicalize() {
         Ok(c) => c,
-        Err(_) => {
-            if home.exists() {
-                home.clone()
-            } else {
-                return home;
-            }
-        }
+        Err(_) => home.clone(),
     };
     
     let clean_path = path.trim();

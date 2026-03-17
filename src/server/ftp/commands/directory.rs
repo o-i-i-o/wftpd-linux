@@ -14,8 +14,9 @@ impl FtpSession {
 
         if let Some(dir) = arg {
             let new_path = safe_resolve_path(&self.cwd, &self.home_dir, dir);
+            let home_path = Path::new(&self.home_dir);
 
-            if new_path.exists() && new_path.is_dir() && new_path.starts_with(&self.home_dir) {
+            if new_path.exists() && new_path.is_dir() && new_path.starts_with(home_path) {
                 self.cwd = new_path.to_string_lossy().to_string();
                 self.stream.write_all(format!("250 \"{}\" is current directory\r\n", self.cwd).as_bytes())?;
             } else {
@@ -27,7 +28,8 @@ impl FtpSession {
 
     pub fn cmd_cdup(&mut self) -> Result<()> {
         let new_path = safe_resolve_path(&self.cwd, &self.home_dir, "..");
-        if new_path.starts_with(&self.home_dir) && new_path.exists() {
+        let home_path = Path::new(&self.home_dir);
+        if new_path.starts_with(home_path) && new_path.exists() {
             self.cwd = new_path.to_string_lossy().to_string();
             self.stream.write_all(b"250 Directory changed\r\n")?;
         } else {
@@ -48,7 +50,8 @@ impl FtpSession {
             Path::new(&self.cwd).to_path_buf()
         };
 
-        if target_path.exists() && target_path.starts_with(&self.home_dir) {
+        let home_path = Path::new(&self.home_dir);
+        if target_path.exists() && target_path.starts_with(home_path) {
             if let Ok(metadata) = target_path.metadata() {
                 let facts = build_mlst_facts(&metadata);
                 let name = target_path.file_name()
@@ -86,7 +89,8 @@ impl FtpSession {
 
         if let Some(dirname) = arg {
             let dir_path = safe_resolve_path(&self.cwd, &self.home_dir, dirname);
-            if !dir_path.starts_with(&self.home_dir) {
+            let home_path = Path::new(&self.home_dir);
+            if !dir_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
                 return Ok(());
             }
@@ -132,7 +136,8 @@ impl FtpSession {
 
         if let Some(dirname) = arg {
             let dir_path = safe_resolve_path(&self.cwd, &self.home_dir, dirname);
-            if !dir_path.starts_with(&self.home_dir) {
+            let home_path = Path::new(&self.home_dir);
+            if !dir_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
                 return Ok(());
             }

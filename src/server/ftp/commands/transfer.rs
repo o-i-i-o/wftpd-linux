@@ -165,7 +165,7 @@ impl FtpSession {
                 ),
             );
 
-            if !file_path.exists() || !file_path.is_file() || !file_path.starts_with(&self.home_dir) {
+            if !file_path.exists() || !file_path.is_file() || !file_path.starts_with(Path::new(&self.home_dir)) {
                 self.logger.lock().unwrap().warning(
                     "FTP",
                     &format!(

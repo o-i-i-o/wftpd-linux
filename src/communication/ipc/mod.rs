@@ -92,7 +92,7 @@ impl IpcClient {
     }
     
     fn run_systemctl(args: &[&str]) -> Result<(bool, String)> {
-        let output = StdCommand::new("sudo")
+        let output = StdCommand::new("pkexec")
             .arg("systemctl")
             .args(args)
             .output();

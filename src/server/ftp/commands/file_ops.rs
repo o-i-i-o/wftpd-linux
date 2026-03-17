@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::io::Write;
+use std::path::Path;
 
 use super::super::handler::FtpSession;
 use super::super::utils::{get_file_mtime_raw, safe_resolve_path};
@@ -25,7 +26,8 @@ impl FtpSession {
 
         if let Some(filename) = arg {
             let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
-            if !file_path.starts_with(&self.home_dir) {
+            let home_path = Path::new(&self.home_dir);
+            if !file_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
                 return Ok(());
             }
@@ -75,7 +77,8 @@ impl FtpSession {
 
         if let Some(from_name) = arg {
             let from_path = safe_resolve_path(&self.cwd, &self.home_dir, from_name);
-            if from_path.exists() && from_path.starts_with(&self.home_dir) {
+            let home_path = Path::new(&self.home_dir);
+            if from_path.exists() && from_path.starts_with(home_path) {
                 self.rename_from = Some(from_path.to_string_lossy().to_string());
                 self.stream.write_all(b"350 File exists, ready for destination name\r\n")?;
             } else {
@@ -95,7 +98,8 @@ impl FtpSession {
         if let Some(ref from_path) = self.rename_from {
             if let Some(to_name) = arg {
                 let to_path = safe_resolve_path(&self.cwd, &self.home_dir, to_name);
-                if !to_path.starts_with(&self.home_dir) {
+                let home_path = Path::new(&self.home_dir);
+                if !to_path.starts_with(home_path) {
                     self.stream.write_all(b"550 Permission denied\r\n")?;
                     self.rename_from = None;
                     return Ok(());
@@ -135,7 +139,8 @@ impl FtpSession {
 
         if let Some(filename) = arg {
             let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
-            if !file_path.starts_with(&self.home_dir) {
+            let home_path = Path::new(&self.home_dir);
+            if !file_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
                 return Ok(());
             }
@@ -158,7 +163,8 @@ impl FtpSession {
 
         if let Some(filename) = arg {
             let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
-            if !file_path.starts_with(&self.home_dir) {
+            let home_path = Path::new(&self.home_dir);
+            if !file_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
                 return Ok(());
             }

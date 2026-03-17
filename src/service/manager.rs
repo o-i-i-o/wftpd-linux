@@ -142,7 +142,7 @@ WantedBy=multi-user.target
     }
 
     pub fn start_service(&self) -> Result<()> {
-        let status = std::process::Command::new("sudo")
+        let status = std::process::Command::new("pkexec")
             .args(["systemctl", "start", &self.service_name])
             .status()?;
         
@@ -153,7 +153,7 @@ WantedBy=multi-user.target
     }
 
     pub fn stop_service(&self) -> Result<()> {
-        let status = std::process::Command::new("sudo")
+        let status = std::process::Command::new("pkexec")
             .args(["systemctl", "stop", &self.service_name])
             .status()?;
         
@@ -164,7 +164,7 @@ WantedBy=multi-user.target
     }
 
     pub fn restart_service(&self) -> Result<()> {
-        let status = std::process::Command::new("sudo")
+        let status = std::process::Command::new("pkexec")
             .args(["systemctl", "restart", &self.service_name])
             .status()?;
         
@@ -175,8 +175,8 @@ WantedBy=multi-user.target
     }
 
     pub fn is_service_running(&self) -> bool {
-        std::process::Command::new("sudo")
-            .args(["systemctl", "is-active", "--quiet", &self.service_name])
+        std::process::Command::new("systemctl")
+            .args(["is-active", "--quiet", &self.service_name])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
@@ -187,7 +187,7 @@ WantedBy=multi-user.target
     }
 
     pub fn reload_daemon(&self) -> Result<()> {
-        let status = std::process::Command::new("sudo")
+        let status = std::process::Command::new("pkexec")
             .args(["systemctl", "daemon-reload"])
             .status()?;
         
@@ -198,7 +198,7 @@ WantedBy=multi-user.target
     }
 
     pub fn enable_service(&self) -> Result<()> {
-        let status = std::process::Command::new("sudo")
+        let status = std::process::Command::new("pkexec")
             .args(["systemctl", "enable", &self.service_name])
             .status()?;
         
@@ -209,7 +209,7 @@ WantedBy=multi-user.target
     }
 
     pub fn disable_service(&self) -> Result<()> {
-        let status = std::process::Command::new("sudo")
+        let status = std::process::Command::new("pkexec")
             .args(["systemctl", "disable", &self.service_name])
             .status()?;
         
@@ -220,8 +220,8 @@ WantedBy=multi-user.target
     }
 
     pub fn is_service_enabled(&self) -> bool {
-        std::process::Command::new("sudo")
-            .args(["systemctl", "is-enabled", "--quiet", &self.service_name])
+        std::process::Command::new("systemctl")
+            .args(["is-enabled", "--quiet", &self.service_name])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)

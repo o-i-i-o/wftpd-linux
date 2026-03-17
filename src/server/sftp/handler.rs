@@ -87,10 +87,28 @@ impl russh::server::Handler for SftpHandler {
                 
                 if let Some(u) = users.get_user(user) {
                     let home = std::path::PathBuf::from(&u.home_dir);
-                    let home_canon = if home.exists() {
-                        home.canonicalize().unwrap_or_else(|_| home.clone())
-                    } else {
-                        home.clone()
+                    if !home.exists() {
+                        self.logger.lock().unwrap().client_action(
+                            "SFTP",
+                            &format!("Login failed: home directory '{}' does not exist", u.home_dir),
+                            &self.client_ip,
+                            Some(user),
+                            "LOGIN_FAIL",
+                        );
+                        return Ok(server::Auth::Reject { 
+                            proceed_with_methods: None,
+                            partial_success: false,
+                        });
+                    }
+                    let home_canon = match home.canonicalize() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            self.logger.lock().unwrap().warning(
+                                "SFTP",
+                                &format!("Failed to canonicalize home directory '{}': {}", home.display(), e),
+                            );
+                            home.clone()
+                        }
                     };
                     self.home_dir = Some(home_canon.to_string_lossy().to_string());
                 }
@@ -187,10 +205,28 @@ impl russh::server::Handler for SftpHandler {
                     let users = self.user_manager.lock().unwrap();
                     if let Some(u) = users.get_user(user) {
                         let home = std::path::PathBuf::from(&u.home_dir);
-                        let home_canon = if home.exists() {
-                            home.canonicalize().unwrap_or_else(|_| home.clone())
-                        } else {
-                            home.clone()
+                        if !home.exists() {
+                            self.logger.lock().unwrap().client_action(
+                                "SFTP",
+                                &format!("Login failed: home directory '{}' does not exist", u.home_dir),
+                                &self.client_ip,
+                                Some(user),
+                                "LOGIN_FAIL",
+                            );
+                            return Ok(server::Auth::Reject { 
+                                proceed_with_methods: None,
+                                partial_success: false,
+                            });
+                        }
+                        let home_canon = match home.canonicalize() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                self.logger.lock().unwrap().warning(
+                                    "SFTP",
+                                    &format!("Failed to canonicalize home directory '{}': {}", home.display(), e),
+                                );
+                                home.clone()
+                            }
                         };
                         self.home_dir = Some(home_canon.to_string_lossy().to_string());
                     }
@@ -302,20 +338,14 @@ impl russh::server::Handler for SftpHandler {
     ) -> Result<(), Self::Error> {
         if self.sftp_channel == Some(channel) {
             if let Some(state) = &self.sftp_state {
-                let state_clone = Arc::clone(state);
-                let handle = session.handle();
-                let data_vec = data.to_vec();
+                let response = {
+                    let mut sftp_state = state.lock().await;
+                    sftp_state.process_sftp_data(data).await
+                };
                 
-                tokio::spawn(async move {
-                    let response = {
-                        let mut state = state_clone.lock().await;
-                        state.process_sftp_data(&data_vec).await
-                    };
-                    
-                    if let Ok(resp) = response {
-                        let _ = handle.data(channel, CryptoVec::from_slice(&resp)).await;
-                    }
-                });
+                if let Ok(resp) = response {
+                    let _ = session.data(channel, CryptoVec::from_slice(&resp));
+                }
             }
         }
         Ok(())

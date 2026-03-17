@@ -2,6 +2,11 @@ use anyhow::Result;
 
 use super::state::SftpState;
 use super::packet::*;
+use super::packet::SSH_FX_OK;
+use super::packet::SSH_FX_NO_SUCH_FILE;
+use super::packet::SSH_FX_PERMISSION_DENIED;
+use super::packet::SSH_FX_FAILURE;
+use super::packet::SSH_FX_OP_UNSUPPORTED;
 use crate::core::file_logger::FileLogInfo;
 
 impl SftpState {
@@ -17,7 +22,7 @@ impl SftpState {
             "copy-file" => self.handle_copy_file(id, data).await,
             "hardlink@openssh.com" => self.handle_hardlink(id, data).await,
             _ => {
-                Ok(build_status_packet(id, 8, &format!("Unsupported extension: {}", ext_name), ""))
+                Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, &format!("Unsupported extension: {}", ext_name), ""))
             }
         }
     }
@@ -74,13 +79,13 @@ impl SftpState {
                     payload.extend_from_slice(&namemax.to_be_bytes());
                     Ok(build_packet(&payload))
                 }
-                Err(_) => Ok(build_status_packet(id, 2, "No such file", "")),
+                Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
             }
         }
 
         #[cfg(not(unix))]
         {
-            Ok(build_status_packet(id, 8, "statvfs not supported on this platform", ""))
+            Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "statvfs not supported on this platform", ""))
         }
     }
 
@@ -89,7 +94,7 @@ impl SftpState {
         let full_path = self.resolve_path(&path);
 
         if !self.check_permission(|p| p.can_read) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         match tokio::fs::File::open(&full_path).await {
@@ -102,7 +107,7 @@ impl SftpState {
                     match file.read(&mut buffer).await {
                         Ok(0) => break,
                         Ok(n) => hasher.update(&buffer[..n]),
-                        Err(_) => return Ok(build_status_packet(id, 4, "Read error", "")),
+                        Err(_) => return Ok(build_status_packet(id, SSH_FX_FAILURE, "Read error", "")),
                     }
                 }
                 let hash = hasher.finalize();
@@ -114,7 +119,7 @@ impl SftpState {
                 payload.extend_from_slice(hash_hex.as_bytes());
                 Ok(build_packet(&payload))
             }
-            Err(_) => Ok(build_status_packet(id, 2, "No such file", "")),
+            Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
         }
     }
 
@@ -123,7 +128,7 @@ impl SftpState {
         let full_path = self.resolve_path(&path);
 
         if !self.check_permission(|p| p.can_read) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         match tokio::fs::File::open(&full_path).await {
@@ -136,7 +141,7 @@ impl SftpState {
                     match file.read(&mut buffer).await {
                         Ok(0) => break,
                         Ok(n) => hasher.update(&buffer[..n]),
-                        Err(_) => return Ok(build_status_packet(id, 4, "Read error", "")),
+                        Err(_) => return Ok(build_status_packet(id, SSH_FX_FAILURE, "Read error", "")),
                     }
                 }
                 let hash = hasher.finalize();
@@ -148,7 +153,7 @@ impl SftpState {
                 payload.extend_from_slice(hash_hex.as_bytes());
                 Ok(build_packet(&payload))
             }
-            Err(_) => Ok(build_status_packet(id, 2, "No such file", "")),
+            Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
         }
     }
 
@@ -158,7 +163,7 @@ impl SftpState {
         let dst_path = parse_string(data, dst_pos)?;
 
         if !self.check_permission(|p| p.can_read && p.can_write) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let src_full = self.resolve_path(&src_path);
@@ -183,9 +188,9 @@ impl SftpState {
                     self.username.as_deref(),
                     "COPY",
                 );
-                Ok(build_status_packet(id, 0, "OK", ""))
+                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
-            Err(_) => Ok(build_status_packet(id, 4, "Failed to copy file", "")),
+            Err(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to copy file", "")),
         }
     }
 
@@ -195,7 +200,7 @@ impl SftpState {
         let dst_path = parse_string(data, dst_pos)?;
 
         if !self.check_permission(|p| p.can_write) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let src_full = self.resolve_path(&src_path);
@@ -222,15 +227,15 @@ impl SftpState {
                         self.username.as_deref(),
                         "HARDLINK",
                     );
-                    Ok(build_status_packet(id, 0, "OK", ""))
+                    Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
                 }
-                Err(_) => Ok(build_status_packet(id, 4, "Failed to create hardlink", "")),
+                Err(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to create hardlink", "")),
             }
         }
 
         #[cfg(not(unix))]
         {
-            Ok(build_status_packet(id, 8, "Hardlinks not supported on this platform", ""))
+            Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "Hardlinks not supported on this platform", ""))
         }
     }
 }

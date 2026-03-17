@@ -79,12 +79,22 @@ impl FtpSession {
     pub fn cmd_type(&mut self, arg: Option<&str>) -> Result<()> {
         if let Some(type_code) = arg {
             match type_code.to_uppercase().as_str() {
-                "I" | "L 8" => self.stream.write_all(b"200 Type set to I (Binary)\r\n")?,
-                "A" | "A N" => self.stream.write_all(b"200 Type set to A (ASCII)\r\n")?,
-                "E" => self.stream.write_all(b"200 Type set to E (EBCDIC)\r\n")?,
+                "I" | "L 8" => {
+                    self.binary_transfer = true;
+                    self.stream.write_all(b"200 Type set to I (Binary)\r\n")?;
+                }
+                "A" | "A N" => {
+                    self.binary_transfer = false;
+                    self.stream.write_all(b"200 Type set to A (ASCII)\r\n")?;
+                }
+                "E" => {
+                    self.binary_transfer = true;
+                    self.stream.write_all(b"200 Type set to E (EBCDIC)\r\n")?;
+                }
                 _ => self.stream.write_all(b"501 Unknown type\r\n")?,
             }
         } else {
+            self.binary_transfer = true;
             self.stream.write_all(b"200 Type set to I (Binary)\r\n")?;
         }
         Ok(())
@@ -129,7 +139,10 @@ impl FtpSession {
             self.stream.write_all(format!("211-Connected to: {}\r\n", self.remote_ip).as_bytes())?;
             self.stream.write_all(format!("211-Logged in as: {}\r\n", username).as_bytes())?;
             self.stream.write_all(format!("211-Current directory: {}\r\n", self.cwd).as_bytes())?;
-            self.stream.write_all(format!("211-Transfer mode: {}\r\n", if self.passive_mode { "Passive" } else { "Active" }).as_bytes())?;
+            self.stream.write_all(format!("211-Transfer mode: {}\r\n", 
+                if self.binary_transfer { "Binary" } else { "ASCII" }).as_bytes())?;
+            self.stream.write_all(format!("211-Data connection: {}\r\n", 
+                if self.passive_mode { "Passive" } else { "Active" }).as_bytes())?;
             self.stream.write_all(b"211 End\r\n")?;
         } else {
             self.stream.write_all(b"211 FTP server status - Not logged in\r\n")?;

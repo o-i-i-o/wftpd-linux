@@ -6,10 +6,41 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
 use super::packet::*;
+use super::packet::SSH_FX_OK;
+use super::packet::SSH_FX_EOF;
+use super::packet::SSH_FX_NO_SUCH_FILE;
+use super::packet::SSH_FX_PERMISSION_DENIED;
+use super::packet::SSH_FX_FAILURE;
+use super::packet::SSH_FX_OP_UNSUPPORTED;
 use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
 use crate::server::common::utils::safe_resolve_path;
+
+const SSH_FXP_INIT: u8 = 1;
+#[allow(dead_code)]
+const SSH_FXP_VERSION: u8 = 2;
+const SSH_FXP_OPEN: u8 = 3;
+const SSH_FXP_CLOSE: u8 = 4;
+const SSH_FXP_READ: u8 = 5;
+const SSH_FXP_WRITE: u8 = 6;
+const SSH_FXP_LSTAT: u8 = 7;
+const SSH_FXP_FSTAT: u8 = 8;
+const SSH_FXP_SETSTAT: u8 = 9;
+const SSH_FXP_FSETSTAT: u8 = 10;
+const SSH_FXP_OPENDIR: u8 = 11;
+const SSH_FXP_READDIR: u8 = 12;
+const SSH_FXP_REMOVE: u8 = 13;
+const SSH_FXP_MKDIR: u8 = 14;
+const SSH_FXP_RMDIR: u8 = 15;
+const SSH_FXP_REALPATH: u8 = 16;
+const SSH_FXP_STAT: u8 = 17;
+const SSH_FXP_READLINK: u8 = 18;
+const SSH_FXP_SYMLINK: u8 = 19;
+const SSH_FXP_RENAME: u8 = 20;
+const SSH_FXP_LOCK: u8 = 40;
+const SSH_FXP_UNLOCK: u8 = 41;
+const SSH_FXP_EXTENDED: u8 = 200;
 
 pub enum SftpFileHandle {
     File {
@@ -39,7 +70,81 @@ pub struct SftpState {
     pub client_ip: String,
 }
 
+impl Drop for SftpState {
+    fn drop(&mut self) {
+        let locked_handles: Vec<(PathBuf, tokio::fs::File)> = self.handles.drain()
+            .filter_map(|(_, handle)| {
+                if let SftpFileHandle::File { path, file, locked, .. } = handle {
+                    if locked {
+                        Some((path, file))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        self.locked_files.clear();
+        
+        if locked_handles.is_empty() {
+            return;
+        }
+        
+        let logger = Arc::clone(&self.logger);
+        
+        match std::thread::Builder::new()
+            .name("sftp-cleanup".to_string())
+            .spawn(move || {
+                Self::cleanup_locked_files(locked_handles, logger);
+            }) 
+        {
+            Ok(handle) => {
+                if let Err(e) = handle.join() {
+                    if let Ok(mut log) = self.logger.lock() {
+                        log.warning("SFTP", &format!("Cleanup thread panicked: {:?}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                if let Ok(mut log) = self.logger.lock() {
+                    log.warning("SFTP", &format!("Failed to spawn cleanup thread: {}", e));
+                }
+            }
+        }
+    }
+}
+
 impl SftpState {
+    fn cleanup_locked_files(locked_handles: Vec<(PathBuf, tokio::fs::File)>, logger: Arc<StdMutex<Logger>>) {
+        for (path, file) in locked_handles {
+            let unlocked = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.block_on(async {
+                        let std_file = file.into_std().await;
+                        fs2::FileExt::unlock(&std_file).is_ok()
+                    })
+                }
+                Err(_) => {
+                    match tokio::runtime::Runtime::new() {
+                        Ok(rt) => rt.block_on(async {
+                            let std_file = file.into_std().await;
+                            fs2::FileExt::unlock(&std_file).is_ok()
+                        }),
+                        Err(_) => false,
+                    }
+                }
+            };
+            
+            if unlocked {
+                if let Ok(mut log) = logger.lock() {
+                    log.info("SFTP", &format!("Auto-unlocked file on drop: {:?}", path));
+                }
+            }
+        }
+    }
+
     pub async fn process_sftp_data(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         self.buffer.extend_from_slice(data);
         
@@ -52,12 +157,35 @@ impl SftpState {
             
             if packet_len == 0 {
                 self.buffer.clear();
-                return Ok(build_status_packet(0, 4, "Invalid packet length", ""));
+                return Ok(build_status_packet(0, SSH_FX_FAILURE, "Invalid packet length", ""));
             }
             
             if packet_len > MAX_PACKET_SIZE {
-                self.buffer.clear();
-                return Ok(build_status_packet(0, 4, "Packet too large", ""));
+                if self.buffer.len() >= 4 + packet_len {
+                    let packet_data = &self.buffer[4..4 + packet_len];
+                    let response = if !packet_data.is_empty() {
+                        let id = if packet_data.len() >= 5 {
+                            parse_u32(packet_data, 1)
+                        } else {
+                            0
+                        };
+                        self.logger.lock().unwrap().warning(
+                            "SFTP",
+                            &format!("Dropping oversized packet: {} bytes (id: {})", packet_len, id),
+                        );
+                        build_status_packet(id, SSH_FX_FAILURE, "Packet too large", "")
+                    } else {
+                        Vec::new()
+                    };
+                    self.buffer.drain(..4 + packet_len);
+                    if !response.is_empty() {
+                        return Ok(response);
+                    }
+                    continue;
+                } else {
+                    self.buffer.clear();
+                    return Ok(build_status_packet(0, SSH_FX_FAILURE, "Packet too large", ""));
+                }
             }
             
             if self.buffer.len() < 4 + packet_len {
@@ -110,40 +238,39 @@ impl SftpState {
 
     async fn handle_sftp_packet(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         if data.is_empty() {
-            return Ok(build_status_packet(0, 4, "Bad packet: empty data", ""));
+            return Ok(build_status_packet(0, SSH_FX_FAILURE, "Bad packet: empty data", ""));
         }
 
         if data.len() < 5 {
-            return Ok(build_status_packet(0, 4, "Bad packet: too short", ""));
+            return Ok(build_status_packet(0, SSH_FX_FAILURE, "Bad packet: too short", ""));
         }
 
         let msg_type = data[0];
 
         match msg_type {
-            1 => self.handle_init(data).await,
-            3 => self.handle_open(data).await,
-            4 => self.handle_close(data).await,
-            5 => self.handle_read(data).await,
-            6 => self.handle_write(data).await,
-            7 => self.handle_lstat(data).await,
-            8 => self.handle_fstat(data).await,
-            9 => self.handle_mkdir(data).await,
-            10 => self.handle_rmdir(data).await,
-            11 => self.handle_opendir(data).await,
-            12 => self.handle_readdir(data).await,
-            13 => self.handle_remove(data).await,
-            14 => self.handle_mkdir(data).await,
-            15 => self.handle_rmdir(data).await,
-            16 => self.handle_realpath(data).await,
-            17 => self.handle_readlink(data).await,
-            18 => self.handle_symlink(data).await,
-            19 => self.handle_rename(data).await,
-            20 => self.handle_stat(data).await,
-            22 => self.handle_remove(data).await,
-            40 => self.handle_lock(data).await,
-            41 => self.handle_unlock(data).await,
-            200 => self.handle_extended(data).await,
-            _ => Ok(build_status_packet(0, 8, "Unsupported operation", "")),
+            SSH_FXP_INIT => self.handle_init(data).await,
+            SSH_FXP_OPEN => self.handle_open(data).await,
+            SSH_FXP_CLOSE => self.handle_close(data).await,
+            SSH_FXP_READ => self.handle_read(data).await,
+            SSH_FXP_WRITE => self.handle_write(data).await,
+            SSH_FXP_LSTAT => self.handle_lstat(data).await,
+            SSH_FXP_FSTAT => self.handle_fstat(data).await,
+            SSH_FXP_SETSTAT => self.handle_setstat(data).await,
+            SSH_FXP_FSETSTAT => self.handle_fsetstat(data).await,
+            SSH_FXP_OPENDIR => self.handle_opendir(data).await,
+            SSH_FXP_READDIR => self.handle_readdir(data).await,
+            SSH_FXP_REMOVE => self.handle_remove(data).await,
+            SSH_FXP_MKDIR => self.handle_mkdir(data).await,
+            SSH_FXP_RMDIR => self.handle_rmdir(data).await,
+            SSH_FXP_REALPATH => self.handle_realpath(data).await,
+            SSH_FXP_STAT => self.handle_stat(data).await,
+            SSH_FXP_READLINK => self.handle_readlink(data).await,
+            SSH_FXP_SYMLINK => self.handle_symlink(data).await,
+            SSH_FXP_RENAME => self.handle_rename(data).await,
+            SSH_FXP_LOCK => self.handle_lock(data).await,
+            SSH_FXP_UNLOCK => self.handle_unlock(data).await,
+            SSH_FXP_EXTENDED => self.handle_extended(data).await,
+            _ => Ok(build_status_packet(0, SSH_FX_OP_UNSUPPORTED, "Unsupported operation", "")),
         }
     }
 
@@ -166,17 +293,26 @@ impl SftpState {
         let path = parse_string(data, 5)?;
 
         if !self.check_permission(|p| p.can_list) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let full_path = self.resolve_path(&path);
+        self.log_path_info("OPENDIR", &full_path);
 
         if !full_path.exists() {
-            return Ok(build_status_packet(id, 2, "No such directory", ""));
+            self.logger.lock().unwrap().warning(
+                "SFTP",
+                &format!("OPENDIR: Directory not found: {}", full_path.display()),
+            );
+            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such directory", ""));
         }
 
         if !full_path.is_dir() {
-            return Ok(build_status_packet(id, 4, "Not a directory", ""));
+            self.logger.lock().unwrap().warning(
+                "SFTP",
+                &format!("OPENDIR: Path is not a directory: {}", full_path.display()),
+            );
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Not a directory", ""));
         }
 
         let handle = self.generate_handle();
@@ -194,7 +330,7 @@ impl SftpState {
         let handle = parse_string(data, 5)?;
 
         self.handles.remove(&handle);
-        Ok(build_status_packet(id, 0, "OK", ""))
+        Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
     }
 
     async fn handle_readdir(&mut self, data: &[u8]) -> Result<Vec<u8>> {
@@ -220,7 +356,7 @@ impl SftpState {
                     }
 
                     if *index >= entries.len() {
-                        return Ok(build_status_packet(id, 1, "End of directory", ""));
+                        return Ok(build_status_packet(id, SSH_FX_EOF, "End of directory", ""));
                     }
 
                     let count = (entries.len() - *index).min(100);
@@ -254,7 +390,7 @@ impl SftpState {
 
                 Ok(build_packet(&payload))
             }
-            None => Ok(build_status_packet(id, 4, "Invalid handle", "")),
+            None => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
         }
     }
 
@@ -265,7 +401,7 @@ impl SftpState {
         let len = parse_u32(data, 5 + 4 + handle_str.len() + 8) as usize;
 
         if !self.check_permission(|p| p.can_read) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let handle = self.handles.get_mut(&handle_str);
@@ -298,7 +434,7 @@ impl SftpState {
 
                 Ok(build_data_packet(id, &buffer))
             }
-            _ => Ok(build_status_packet(id, 4, "Invalid handle", "")),
+            _ => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
         }
     }
 
@@ -312,11 +448,11 @@ impl SftpState {
 
         if offset > 0 {
             if !self.check_permission(|p| p.can_append) {
-                return Ok(build_status_packet(id, 3, "Permission denied (append)", ""));
+                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied (append)", ""));
             }
         } else {
             if !self.check_permission(|p| p.can_write) {
-                return Ok(build_status_packet(id, 3, "Permission denied", ""));
+                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
             }
         }
 
@@ -354,9 +490,9 @@ impl SftpState {
                     );
                 }
 
-                Ok(build_status_packet(id, 0, "OK", ""))
+                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
-            _ => Ok(build_status_packet(id, 4, "Invalid handle", "")),
+            _ => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
         }
     }
 
@@ -365,7 +501,7 @@ impl SftpState {
         let path = parse_string(data, 5)?;
 
         if !self.check_permission(|p| p.can_delete) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let full_path = self.resolve_path(&path);
@@ -385,11 +521,11 @@ impl SftpState {
                     self.username.as_deref(),
                     "DELETE",
                 );
-                Ok(build_status_packet(id, 0, "OK", ""))
+                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
                 let error_msg = format!("Failed to remove file: {}", e);
-                Ok(build_status_packet(id, 4, &error_msg, ""))
+                Ok(build_status_packet(id, SSH_FX_FAILURE, &error_msg, ""))
             }
         }
     }
@@ -399,7 +535,7 @@ impl SftpState {
         let path = parse_string(data, 5)?;
 
         if !self.check_permission(|p| p.can_mkdir) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let full_path = self.resolve_path(&path);
@@ -430,7 +566,7 @@ impl SftpState {
                     self.username.as_deref(),
                     "MKDIR",
                 );
-                Ok(build_status_packet(id, 0, "OK", ""))
+                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
                 let error_msg = format!("Failed to create directory: {} (path: {})", e, full_path.display());
@@ -438,7 +574,7 @@ impl SftpState {
                     "SFTP",
                     &error_msg,
                 );
-                Ok(build_status_packet(id, 4, &error_msg, ""))
+                Ok(build_status_packet(id, SSH_FX_FAILURE, &error_msg, ""))
             }
         }
     }
@@ -448,7 +584,7 @@ impl SftpState {
         let path = parse_string(data, 5)?;
 
         if !self.check_permission(|p| p.can_rmdir) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let full_path = self.resolve_path(&path);
@@ -467,9 +603,9 @@ impl SftpState {
                 self.username.as_deref(),
                 "RMDIR",
             );
-            Ok(build_status_packet(id, 0, "OK", ""))
+            Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
         } else {
-            Ok(build_status_packet(id, 4, "Failed to remove directory", ""))
+            Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to remove directory", ""))
         }
     }
 
@@ -480,7 +616,7 @@ impl SftpState {
         let new_path = parse_string(data, new_path_pos)?;
 
         if !self.check_permission(|p| p.can_rename) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let old_full = self.resolve_path(&old_path);
@@ -501,9 +637,9 @@ impl SftpState {
                 self.username.as_deref(),
                 "RENAME",
             );
-            Ok(build_status_packet(id, 0, "OK", ""))
+            Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
         } else {
-            Ok(build_status_packet(id, 4, "Failed to rename", ""))
+            Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to rename", ""))
         }
     }
 
@@ -512,10 +648,11 @@ impl SftpState {
         let path = parse_string(data, 5)?;
 
         if !self.check_permission(|p| p.can_read) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let full_path = self.resolve_path(&path);
+        self.log_path_info("STAT", &full_path);
 
         match tokio::fs::metadata(&full_path).await {
             Ok(metadata) => {
@@ -524,7 +661,13 @@ impl SftpState {
                 payload.extend_from_slice(&build_attrs(metadata.is_dir(), metadata.len()));
                 Ok(build_packet(&payload))
             }
-            Err(_) => Ok(build_status_packet(id, 2, "No such file", "")),
+            Err(e) => {
+                self.logger.lock().unwrap().warning(
+                    "SFTP",
+                    &format!("STAT: Failed to get metadata for {}: {}", full_path.display(), e),
+                );
+                Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""))
+            }
         }
     }
 
@@ -532,12 +675,100 @@ impl SftpState {
         self.handle_stat(data).await
     }
 
+    async fn handle_setstat(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = parse_u32(data, 1);
+        let path = parse_string(data, 5)?;
+
+        if !self.check_permission(|p| p.can_write) {
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
+        }
+
+        let full_path = self.resolve_path(&path);
+
+        let attrs_offset = 5 + 4 + path.len();
+        if data.len() < attrs_offset + 4 {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid SETSTAT packet", ""));
+        }
+
+        let flags = parse_u32(data, attrs_offset);
+
+        if flags & 0x00000004 != 0 {
+            let permissions = parse_u32(data, attrs_offset + 4 + 8 + 8);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(e) = tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(permissions)).await {
+                    self.logger.lock().unwrap().warning(
+                        "SFTP",
+                        &format!("Failed to set permissions: {}", e),
+                    );
+                }
+            }
+        }
+
+        self.logger.lock().unwrap().client_action(
+            "SFTP",
+            &format!("Setstat: {}", path),
+            &self.client_ip,
+            self.username.as_deref(),
+            "SETSTAT",
+        );
+
+        Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
+    }
+
+    async fn handle_fsetstat(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let id = parse_u32(data, 1);
+        let handle_str = parse_string(data, 5)?;
+
+        if !self.check_permission(|p| p.can_write) {
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
+        }
+
+        let handle = self.handles.get(&handle_str);
+        match handle {
+            Some(SftpFileHandle::File { path, .. }) => {
+                let attrs_offset = 5 + 4 + handle_str.len();
+                if data.len() < attrs_offset + 4 {
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid FSETSTAT packet", ""));
+                }
+
+                let flags = parse_u32(data, attrs_offset);
+
+                if flags & 0x00000004 != 0 {
+                    let permissions = parse_u32(data, attrs_offset + 4 + 8 + 8);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Err(e) = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(permissions)).await {
+                            self.logger.lock().unwrap().warning(
+                                "SFTP",
+                                &format!("Failed to set permissions: {}", e),
+                            );
+                        }
+                    }
+                }
+
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    &format!("Fsetstat: {:?}", path),
+                    &self.client_ip,
+                    self.username.as_deref(),
+                    "FSETSTAT",
+                );
+
+                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
+            }
+            _ => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
+        }
+    }
+
     async fn handle_fstat(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let id = parse_u32(data, 1);
         let handle_str = parse_string(data, 5)?;
 
         if !self.check_permission(|p| p.can_read) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let handle = self.handles.get(&handle_str);
@@ -550,10 +781,10 @@ impl SftpState {
                         payload.extend_from_slice(&build_attrs(metadata.is_dir(), metadata.len()));
                         Ok(build_packet(&payload))
                     }
-                    Err(_) => Ok(build_status_packet(id, 2, "No such file", "")),
+                    Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
                 }
             }
-            _ => Ok(build_status_packet(id, 4, "Invalid handle", "")),
+            _ => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
         }
     }
 
@@ -562,7 +793,7 @@ impl SftpState {
         let path = parse_string(data, 5)?;
 
         if !self.check_permission(|p| p.can_read) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let full_path = self.resolve_path(&path);
@@ -602,7 +833,54 @@ impl SftpState {
     }
 
     pub fn resolve_path(&self, path: &str) -> PathBuf {
-        safe_resolve_path(&self.home_dir, path)
+        let resolved = safe_resolve_path(&self.home_dir, path);
+        
+        self.logger.lock().unwrap().debug(
+            "SFTP",
+            &format!(
+                "Path resolution: input='{}', home='{}', resolved='{}'",
+                path, self.home_dir, resolved.display()
+            ),
+        );
+        
+        resolved
+    }
+    
+    #[allow(dead_code)]
+    fn check_path_accessible(&self, path: &PathBuf) -> (bool, Option<String>) {
+        match std::fs::metadata(path) {
+            Ok(_) => (true, None),
+            Err(e) => {
+                let error_msg = format!("Path accessibility check failed: {} - {}", path.display(), e);
+                self.logger.lock().unwrap().warning("SFTP", &error_msg);
+                (false, Some(error_msg))
+            }
+        }
+    }
+    
+    fn log_path_info(&self, operation: &str, path: &std::path::Path) {
+        let exists = path.exists();
+        let is_dir = path.is_dir();
+        let is_file = path.is_file();
+        
+        let canonical = if exists {
+            path.canonicalize().ok()
+        } else {
+            None
+        };
+        
+        self.logger.lock().unwrap().debug(
+            "SFTP",
+            &format!(
+                "[{}] Path info: path='{}', exists={}, is_dir={}, is_file={}, canonical='{}'",
+                operation,
+                path.display(),
+                exists,
+                is_dir,
+                is_file,
+                canonical.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "N/A".to_string())
+            ),
+        );
     }
 
     fn generate_handle(&mut self) -> String {
@@ -641,11 +919,21 @@ impl SftpState {
             (!need_write || p.can_write) &&
             (!need_append || p.can_append)
         }) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let full_path = self.resolve_path(&path);
+        self.log_path_info("OPEN", &full_path);
+        
         let file_existed = full_path.exists();
+        
+        if need_read && !need_write && !file_existed {
+            self.logger.lock().unwrap().warning(
+                "SFTP",
+                &format!("OPEN: File not found for reading: {}", full_path.display()),
+            );
+            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, &format!("File not found: {}", full_path.display()), ""));
+        }
 
         let file_result = if pflags & 0x00000002 != 0 {
             if pflags & 0x00000010 != 0 {
@@ -702,7 +990,7 @@ impl SftpState {
                     "SFTP",
                     &error_msg,
                 );
-                Ok(build_status_packet(id, 4, &error_msg, ""))
+                Ok(build_status_packet(id, SSH_FX_FAILURE, &error_msg, ""))
             }
         }
     }
@@ -726,7 +1014,7 @@ impl SftpState {
                 payload.extend_from_slice(&build_attrs(false, 0));
                 Ok(build_packet(&payload))
             }
-            Err(_) => Ok(build_status_packet(id, 2, "No such file", "")),
+            Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
         }
     }
 
@@ -737,7 +1025,7 @@ impl SftpState {
         let link_path = parse_string(data, link_pos)?;
 
         if !self.check_permission(|p| p.can_write) {
-            return Ok(build_status_packet(id, 3, "Permission denied", ""));
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let full_link = self.resolve_path(&link_path);
@@ -757,7 +1045,7 @@ impl SftpState {
                             self.username.as_deref(),
                             "SYMLINK_DENIED",
                         );
-                        return Ok(build_status_packet(id, 3, "Permission denied: target outside home directory", ""));
+                        return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
                     }
                 }
             } else {
@@ -776,7 +1064,7 @@ impl SftpState {
                 if safe_target.starts_with(&home_canon) {
                     safe_target
                 } else {
-                    return Ok(build_status_packet(id, 3, "Permission denied: target outside home directory", ""));
+                    return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
                 }
             }
         } else {
@@ -801,9 +1089,9 @@ impl SftpState {
                 self.username.as_deref(),
                 "SYMLINK",
             );
-            Ok(build_status_packet(id, 0, "OK", ""))
+            Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
         } else {
-            Ok(build_status_packet(id, 4, "Failed to create symlink", ""))
+            Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to create symlink", ""))
         }
     }
 
@@ -812,14 +1100,14 @@ impl SftpState {
         let handle_str = parse_string(data, 5)?;
 
         if self.sftp_version < 5 {
-            return Ok(build_status_packet(id, 8, "Lock requires SFTP v5+", ""));
+            return Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "Lock requires SFTP v5+", ""));
         }
 
         let handle = self.handles.get_mut(&handle_str);
         match handle {
             Some(SftpFileHandle::File { path, file, locked, .. }) => {
                 if *locked {
-                    return Ok(build_status_packet(id, 0, "Already locked", ""));
+                    return Ok(build_status_packet(id, SSH_FX_OK, "Already locked", ""));
                 }
 
                 let std_file = file.try_clone().await?.into_std().await;
@@ -834,12 +1122,12 @@ impl SftpState {
                             self.username.as_deref(),
                             "LOCK",
                         );
-                        Ok(build_status_packet(id, 0, "OK", ""))
+                        Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
                     }
-                    Err(_) => Ok(build_status_packet(id, 4, "Failed to lock file", "")),
+                    Err(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to lock file", "")),
                 }
             }
-            _ => Ok(build_status_packet(id, 4, "Invalid handle", "")),
+            _ => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
         }
     }
 
@@ -851,7 +1139,7 @@ impl SftpState {
         match handle {
             Some(SftpFileHandle::File { path, file, locked, .. }) => {
                 if !*locked {
-                    return Ok(build_status_packet(id, 0, "Not locked", ""));
+                    return Ok(build_status_packet(id, SSH_FX_OK, "Not locked", ""));
                 }
 
                 let std_file = file.try_clone().await?.into_std().await;
@@ -866,12 +1154,12 @@ impl SftpState {
                             self.username.as_deref(),
                             "UNLOCK",
                         );
-                        Ok(build_status_packet(id, 0, "OK", ""))
+                        Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
                     }
-                    Err(_) => Ok(build_status_packet(id, 4, "Failed to unlock file", "")),
+                    Err(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to unlock file", "")),
                 }
             }
-            _ => Ok(build_status_packet(id, 4, "Invalid handle", "")),
+            _ => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
         }
     }
 }

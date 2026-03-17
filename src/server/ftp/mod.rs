@@ -158,12 +158,24 @@ impl FtpServer {
         }
         
         {
-            let mut listener_guard = self.listener.lock().unwrap();
-            *listener_guard = None;
+            let listener_guard = self.listener.lock().unwrap();
+            if let Some(ref listener) = *listener_guard {
+                let addr = listener.local_addr().ok();
+                drop(listener_guard);
+                
+                if let Some(addr) = addr {
+                    use std::net::TcpStream;
+                    TcpStream::connect(addr).ok();
+                }
+            } else {
+                drop(listener_guard);
+            }
         }
 
         let mut listeners = self.passive_listeners.lock().unwrap();
-        listeners.clear();
+        for (_, listener) in listeners.drain() {
+            drop(listener);
+        }
     }
 
     pub fn is_running(&self) -> bool {

@@ -155,8 +155,26 @@ impl FtpSession {
 
         if let Some(filename) = arg {
             let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
+            
+            self.logger.lock().unwrap().debug(
+                "FTP",
+                &format!(
+                    "RETR: input='{}', cwd='{}', home='{}', resolved='{}'",
+                    filename, self.cwd, self.home_dir, file_path.display()
+                ),
+            );
 
             if !file_path.exists() || !file_path.is_file() || !file_path.starts_with(&self.home_dir) {
+                self.logger.lock().unwrap().warning(
+                    "FTP",
+                    &format!(
+                        "RETR: File not found or access denied: {} (exists={}, is_file={}, in_home={})",
+                        file_path.display(),
+                        file_path.exists(),
+                        file_path.is_file(),
+                        file_path.starts_with(&self.home_dir)
+                    ),
+                );
                 self.stream.write_all(b"550 File not found\r\n")?;
                 return Ok(());
             }
@@ -279,7 +297,20 @@ impl FtpSession {
             }
 
             let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
+            
+            self.logger.lock().unwrap().debug(
+                "FTP",
+                &format!(
+                    "STOR: input='{}', cwd='{}', home='{}', resolved='{}'",
+                    filename, self.cwd, self.home_dir, file_path.display()
+                ),
+            );
+            
             if !file_path.starts_with(&self.home_dir) {
+                self.logger.lock().unwrap().warning(
+                    "FTP",
+                    &format!("STOR: Path outside home directory: {}", file_path.display()),
+                );
                 self.stream.write_all(b"550 Permission denied\r\n")?;
                 return Ok(());
             }

@@ -1,5 +1,14 @@
 use zbus::Connection;
 
+fn with_runtime<F, T>(f: F) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, String>>,
+{
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("创建 tokio 运行时失败: {}", e))?;
+    rt.block_on(f)
+}
+
 #[zbus::proxy(
     interface = "com.wftpg.Config",
     default_service = "com.wftpg",
@@ -16,9 +25,7 @@ trait Config {
 }
 
 pub fn read_config() -> Result<String, String> {
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("创建运行时失败: {}", e))?;
-    rt.block_on(async {
+    with_runtime(async {
         let connection = Connection::system().await
             .map_err(|e| format!("连接D-Bus失败: {}", e))?;
         let proxy = ConfigProxy::new(&connection).await
@@ -29,10 +36,8 @@ pub fn read_config() -> Result<String, String> {
 }
 
 pub fn write_config(content: &str) -> Result<(), String> {
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("创建运行时失败: {}", e))?;
     let content = content.to_string();
-    rt.block_on(async {
+    with_runtime(async move {
         let connection = Connection::system().await
             .map_err(|e| format!("连接D-Bus失败: {}", e))?;
         let proxy = ConfigProxy::new(&connection).await
@@ -43,9 +48,7 @@ pub fn write_config(content: &str) -> Result<(), String> {
 }
 
 pub fn read_users() -> Result<String, String> {
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("创建运行时失败: {}", e))?;
-    rt.block_on(async {
+    with_runtime(async {
         let connection = Connection::system().await
             .map_err(|e| format!("连接D-Bus失败: {}", e))?;
         let proxy = ConfigProxy::new(&connection).await
@@ -56,10 +59,8 @@ pub fn read_users() -> Result<String, String> {
 }
 
 pub fn write_users(content: &str) -> Result<(), String> {
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("创建运行时失败: {}", e))?;
     let content = content.to_string();
-    rt.block_on(async {
+    with_runtime(async move {
         let connection = Connection::system().await
             .map_err(|e| format!("连接D-Bus失败: {}", e))?;
         let proxy = ConfigProxy::new(&connection).await
@@ -70,13 +71,11 @@ pub fn write_users(content: &str) -> Result<(), String> {
 }
 
 pub fn write_audit_log(user: &str, action: &str, target: &str, details: &str) -> Result<(), String> {
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("创建运行时失败: {}", e))?;
     let user = user.to_string();
     let action = action.to_string();
     let target = target.to_string();
     let details = details.to_string();
-    rt.block_on(async {
+    with_runtime(async move {
         let connection = Connection::system().await
             .map_err(|e| format!("连接D-Bus失败: {}", e))?;
         let proxy = ConfigProxy::new(&connection).await

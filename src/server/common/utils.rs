@@ -42,9 +42,18 @@ pub fn safe_resolve_path(home_dir: &str, path: &str) -> PathBuf {
     if resolved.exists() {
         match resolved.canonicalize() {
             Ok(canon) if canon.starts_with(&home_canon) => canon,
+            Ok(_) => home_canon,
             _ => home_canon,
         }
     } else {
+        if clean_path.starts_with('/') {
+            if resolved.starts_with(&home_canon) {
+                return resolved;
+            } else {
+                return home_canon;
+            }
+        }
+        
         let mut safe_path = home_canon.clone();
         for component in resolved.components() {
             match component {
@@ -100,10 +109,28 @@ pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Path
     if resolved.exists() {
         match resolved.canonicalize() {
             Ok(canon) if canon.starts_with(&home_canon) => canon,
+            Ok(_) => home_canon,
             _ => home_canon,
         }
     } else {
-        let mut safe_path = PathBuf::from(cwd);
+        if clean_path.starts_with('/') {
+            if resolved.starts_with(&home_canon) {
+                return resolved;
+            } else {
+                return home_canon;
+            }
+        }
+        
+        let cwd_path = PathBuf::from(cwd);
+        let mut safe_path = if cwd_path.exists() {
+            match cwd_path.canonicalize() {
+                Ok(canon) if canon.starts_with(&home_canon) => canon,
+                _ => home_canon.clone(),
+            }
+        } else {
+            home_canon.clone()
+        };
+        
         for component in resolved.components() {
             match component {
                 std::path::Component::Normal(name) => {
@@ -128,17 +155,13 @@ pub fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
     if let Ok(time) = metadata.modified() {
         if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
             let secs = duration.as_secs();
-            let days = secs / 86400;
-            let years = 1970 + days / 365;
-            let remaining_days = days % 365;
-            let months = remaining_days / 30 + 1;
-            let day = remaining_days % 30 + 1;
-            let hour = (secs % 86400) / 3600;
-            let minute = (secs % 3600) / 60;
-            return format!("{:04}-{:02}-{:02} {:02}:{:02}", years, months, day, hour, minute);
+            let datetime = chrono::DateTime::from_timestamp(secs as i64, 0);
+            if let Some(dt) = datetime {
+                return dt.format("%Y-%m-%d %H:%M").to_string();
+            }
         }
     }
-    "Jan 01 00:00".to_string()
+    "1970-01-01 00:00".to_string()
 }
 
 pub fn get_file_mtime_raw(metadata: &std::fs::Metadata) -> String {

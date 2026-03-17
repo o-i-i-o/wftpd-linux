@@ -34,6 +34,7 @@ pub struct FtpSession {
     pub rename_from: Option<String>,
     pub abort_flag: Arc<AtomicBool>,
     pub utf8_enabled: bool,
+    pub binary_transfer: bool,
 }
 
 impl FtpSession {
@@ -79,14 +80,15 @@ impl FtpSession {
             rename_from: None,
             abort_flag: Arc::new(AtomicBool::new(false)),
             utf8_enabled: true,
+            binary_transfer: true,
         })
     }
 
     pub fn run(&mut self) -> Result<()> {
-        if let Err(e) = self.rate_limiter.check_and_record(&self.remote_ip) {
+        if let Err(_e) = self.rate_limiter.check_and_record(&self.remote_ip) {
             self.logger.lock().unwrap().warning(
                 "FTP",
-                &format!("Rate limit exceeded for {}: {}", self.remote_ip, e),
+                &format!("Rate limit exceeded for {}", self.remote_ip),
             );
             let _ = self.stream.write_all(b"421 Too many connections, try again later\r\n");
             return Ok(());
@@ -107,7 +109,7 @@ impl FtpSession {
                     log.warning("FTP", &format!("Connection rejected from {} by IP filter", self.remote_ip));
                 }
                 let _ = self.stream.write_all(b"530 Connection denied by IP filter\r\n");
-                self.rate_limiter.release();
+                self.rate_limiter.release_for_ip(&self.remote_ip);
                 return Ok(());
             }
         }
@@ -145,7 +147,7 @@ impl FtpSession {
             }
         }
 
-        self.rate_limiter.release();
+        self.rate_limiter.release_for_ip(&self.remote_ip);
         Ok(())
     }
 

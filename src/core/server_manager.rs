@@ -29,14 +29,20 @@ impl ServerManager {
         logger: Arc<Mutex<Logger>>,
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
-        let mut ftp_server = self.ftp_server.lock().unwrap();
+        let ftp_server = self.ftp_server.lock().unwrap();
         if ftp_server.is_some() {
             return Ok(());
         }
+        drop(ftp_server);
         
         let server = FtpServer::new(config, user_manager, logger, file_logger);
         server.start()?;
-        *ftp_server = Some(server);
+        
+        {
+            let mut srv = self.ftp_server.lock().unwrap();
+            *srv = Some(server);
+        }
+        
         Ok(())
     }
     
@@ -48,7 +54,6 @@ impl ServerManager {
                 log.info("FTP", "FTP server stopped");
             }
         }
-        *ftp_server = None;
     }
     
     pub fn is_ftp_running(&self) -> bool {
@@ -98,21 +103,23 @@ impl ServerManager {
     }
     
     pub fn stop_sftp(&self, logger: &Arc<Mutex<Logger>>) {
-        let runtime = {
-            let mut sftp_runtime = self.sftp_runtime.lock().unwrap();
-            sftp_runtime.take()
-        };
-        
         let server = {
             let mut sftp_server = self.sftp_server.lock().unwrap();
             sftp_server.take()
         };
         
-        if let (Some(rt), Some(srv)) = (runtime, server) {
-            rt.spawn(async move {
-                srv.stop().await
-            });
-            rt.shutdown_background();
+        if let Some(srv) = server {
+            let runtime = {
+                let mut sftp_runtime = self.sftp_runtime.lock().unwrap();
+                sftp_runtime.take()
+            };
+            
+            if let Some(rt) = runtime {
+                rt.block_on(async {
+                    srv.stop().await
+                });
+                rt.shutdown_timeout(std::time::Duration::from_secs(5));
+            }
         }
         
         if let Ok(mut log) = logger.lock() {

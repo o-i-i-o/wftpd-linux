@@ -37,30 +37,43 @@ fn start_status_monitor(
     let ftp_btn_clone = ftp_btn.clone();
     let sftp_btn_clone = sftp_btn.clone();
     
-    glib::timeout_add_seconds_local(2, move || {
+    let mut last_ftp_status = false;
+    let mut last_sftp_status = false;
+    
+    glib::timeout_add_seconds_local(5, move || {
         match IpcClient::get_status() {
             Ok(response) => {
-                if response.ftp_running {
-                    ftp_status_clone.set_markup("<span foreground='green'>运行中 ✓</span>");
-                    ftp_btn_clone.set_label("停止");
-                } else {
-                    ftp_status_clone.set_text("已停止");
-                    ftp_btn_clone.set_label("启动");
+                if response.ftp_running != last_ftp_status {
+                    last_ftp_status = response.ftp_running;
+                    if response.ftp_running {
+                        ftp_status_clone.set_markup("<span foreground='green'>运行中 ✓</span>");
+                        ftp_btn_clone.set_label("停止");
+                    } else {
+                        ftp_status_clone.set_text("已停止");
+                        ftp_btn_clone.set_label("启动");
+                    }
                 }
                 
-                if response.sftp_running {
-                    sftp_status_clone.set_markup("<span foreground='green'>运行中 ✓</span>");
-                    sftp_btn_clone.set_label("停止");
-                } else {
-                    sftp_status_clone.set_text("已停止");
-                    sftp_btn_clone.set_label("启动");
+                if response.sftp_running != last_sftp_status {
+                    last_sftp_status = response.sftp_running;
+                    if response.sftp_running {
+                        sftp_status_clone.set_markup("<span foreground='green'>运行中 ✓</span>");
+                        sftp_btn_clone.set_label("停止");
+                    } else {
+                        sftp_status_clone.set_text("已停止");
+                        sftp_btn_clone.set_label("启动");
+                    }
                 }
             }
             Err(_) => {
-                ftp_status_clone.set_markup("<span foreground='gray'>服务未运行</span>");
-                sftp_status_clone.set_markup("<span foreground='gray'>服务未运行</span>");
-                ftp_btn_clone.set_label("启动");
-                sftp_btn_clone.set_label("启动");
+                if last_ftp_status || last_sftp_status {
+                    last_ftp_status = false;
+                    last_sftp_status = false;
+                    ftp_status_clone.set_markup("<span foreground='gray'>服务未运行</span>");
+                    sftp_status_clone.set_markup("<span foreground='gray'>服务未运行</span>");
+                    ftp_btn_clone.set_label("启动");
+                    sftp_btn_clone.set_label("启动");
+                }
             }
         }
         glib::ControlFlow::Continue

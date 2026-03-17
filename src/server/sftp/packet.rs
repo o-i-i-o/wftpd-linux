@@ -1,5 +1,21 @@
 use anyhow::Result;
 
+pub const SSH_FX_OK: u32 = 0;
+pub const SSH_FX_EOF: u32 = 1;
+pub const SSH_FX_NO_SUCH_FILE: u32 = 2;
+pub const SSH_FX_PERMISSION_DENIED: u32 = 3;
+pub const SSH_FX_FAILURE: u32 = 4;
+
+#[allow(dead_code)]
+pub const SSH_FX_BAD_MESSAGE: u32 = 5;
+
+#[allow(dead_code)]
+pub const SSH_FX_NO_CONNECTION: u32 = 6;
+
+#[allow(dead_code)]
+pub const SSH_FX_CONNECTION_LOST: u32 = 7;
+pub const SSH_FX_OP_UNSUPPORTED: u32 = 8;
+
 pub fn parse_u32(data: &[u8], offset: usize) -> u32 {
     if offset + 4 > data.len() {
         return 0;
@@ -28,6 +44,7 @@ pub fn parse_string(data: &[u8], offset: usize) -> Result<String> {
     Ok(String::from_utf8_lossy(&data[offset + 4..offset + 4 + len]).to_string())
 }
 
+
 #[allow(dead_code)]
 pub fn parse_u32_checked(data: &[u8], offset: usize) -> Result<u32> {
     if offset + 4 > data.len() {
@@ -35,6 +52,7 @@ pub fn parse_u32_checked(data: &[u8], offset: usize) -> Result<u32> {
     }
     Ok(u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]))
 }
+
 
 #[allow(dead_code)]
 pub fn parse_u64_checked(data: &[u8], offset: usize) -> Result<u64> {
@@ -46,6 +64,7 @@ pub fn parse_u64_checked(data: &[u8], offset: usize) -> Result<u64> {
         data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
     ]))
 }
+
 
 #[allow(dead_code)]
 pub fn parse_string_checked(data: &[u8], offset: usize) -> Result<(String, usize)> {
@@ -116,6 +135,47 @@ pub fn build_attrs(is_dir: bool, size: u64) -> Vec<u8> {
     attrs.extend_from_slice(&permissions.to_be_bytes());
     let atime: u32 = 0;
     let mtime: u32 = 0;
+    attrs.extend_from_slice(&atime.to_be_bytes());
+    attrs.extend_from_slice(&mtime.to_be_bytes());
+    attrs
+}
+
+
+#[allow(dead_code)]
+pub fn build_attrs_from_metadata(metadata: &std::fs::Metadata) -> Vec<u8> {
+    let mut attrs = Vec::new();
+    let flags: u32 = 0x00000001 | 0x00000002 | 0x00000004 | 0x00000008 | 0x00000010;
+    attrs.extend_from_slice(&flags.to_be_bytes());
+    attrs.extend_from_slice(&metadata.len().to_be_bytes());
+    
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        attrs.extend_from_slice(&metadata.uid().to_be_bytes());
+        attrs.extend_from_slice(&metadata.gid().to_be_bytes());
+        attrs.extend_from_slice(&metadata.mode().to_be_bytes());
+    }
+    
+    #[cfg(not(unix))]
+    {
+        let uid: u32 = 1000;
+        let gid: u32 = 1000;
+        attrs.extend_from_slice(&uid.to_be_bytes());
+        attrs.extend_from_slice(&gid.to_be_bytes());
+        let permissions = if metadata.is_dir() {
+            0o40755u32
+        } else {
+            0o100644u32
+        };
+        attrs.extend_from_slice(&permissions.to_be_bytes());
+    }
+    
+    let atime: u32 = metadata.accessed()
+        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as u32)
+        .unwrap_or(0);
+    let mtime: u32 = metadata.modified()
+        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as u32)
+        .unwrap_or(0);
     attrs.extend_from_slice(&atime.to_be_bytes());
     attrs.extend_from_slice(&mtime.to_be_bytes());
     attrs

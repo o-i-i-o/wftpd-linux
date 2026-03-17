@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileLogEntry {
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Local>,
     pub username: String,
     pub client_ip: String,
     pub operation: String,
@@ -71,7 +71,7 @@ impl FileLogger {
     }
 
     fn get_available_log_path(log_dir: &Path) -> (PathBuf, u64) {
-        let date_str = Utc::now().format("%Y-%m-%d");
+        let date_str = Local::now().format("%Y-%m-%d");
         let mut seq = 1;
         
         loop {
@@ -94,7 +94,7 @@ impl FileLogger {
     }
 
     fn get_new_log_path(&self) -> PathBuf {
-        let date_str = Utc::now().format("%Y-%m-%d");
+        let date_str = Local::now().format("%Y-%m-%d");
         let mut seq = 1;
         
         loop {
@@ -111,7 +111,7 @@ impl FileLogger {
 
     pub fn log(&mut self, info: FileLogInfo<'_>) {
         let entry = FileLogEntry {
-            timestamp: Utc::now(),
+            timestamp: Local::now(),
             username: info.username.to_string(),
             client_ip: info.client_ip.to_string(),
             operation: info.operation.to_string(),

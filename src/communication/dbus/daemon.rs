@@ -1,4 +1,4 @@
-use zbus::ConnectionBuilder;
+use zbus::connection::Builder;
 use zbus::Connection;
 use std::fs;
 use std::path::Path;
@@ -60,7 +60,7 @@ impl Default for WftpgConfig {
 #[zbus::interface(name = "com.wftpg.Config")]
 impl WftpgConfig {
     async fn read_config(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<String> {
-        let creds = conn.peer_credentials().await
+        let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
         let uid = creds.unix_user_id().unwrap_or(u32::MAX);
         check_permission(uid)?;
@@ -70,7 +70,7 @@ impl WftpgConfig {
     }
     
     async fn write_config(&self, content: &str, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<()> {
-        let creds = conn.peer_credentials().await
+        let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
         let uid = creds.unix_user_id().unwrap_or(u32::MAX);
         check_permission(uid)?;
@@ -84,7 +84,7 @@ impl WftpgConfig {
     }
     
     async fn read_users(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<String> {
-        let creds = conn.peer_credentials().await
+        let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
         let uid = creds.unix_user_id().unwrap_or(u32::MAX);
         check_permission(uid)?;
@@ -97,7 +97,7 @@ impl WftpgConfig {
     }
     
     async fn write_users(&self, content: &str, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<()> {
-        let creds = conn.peer_credentials().await
+        let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
         let uid = creds.unix_user_id().unwrap_or(u32::MAX);
         check_permission(uid)?;
@@ -111,7 +111,7 @@ impl WftpgConfig {
     }
     
     async fn config_exists(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<bool> {
-        let creds = conn.peer_credentials().await
+        let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
         let uid = creds.unix_user_id().unwrap_or(u32::MAX);
         check_permission(uid)?;
@@ -120,7 +120,7 @@ impl WftpgConfig {
     }
     
     async fn users_exists(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<bool> {
-        let creds = conn.peer_credentials().await
+        let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
         let uid = creds.unix_user_id().unwrap_or(u32::MAX);
         check_permission(uid)?;
@@ -129,7 +129,7 @@ impl WftpgConfig {
     }
     
     async fn write_audit_log(&self, user: &str, action: &str, target: &str, details: &str, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<()> {
-        let creds = conn.peer_credentials().await
+        let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
         let uid = creds.unix_user_id().unwrap_or(u32::MAX);
         check_permission(uid)?;
@@ -174,7 +174,7 @@ pub async fn run_daemon() -> zbus::Result<()> {
     
     let config = WftpgConfig::new();
     
-    let _conn = ConnectionBuilder::system()?
+    let _conn = Builder::system()?
         .name("com.wftpg")?
         .serve_at("/com/wftpg/Config", config)?
         .build()

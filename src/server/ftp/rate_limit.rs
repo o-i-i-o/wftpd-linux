@@ -32,6 +32,7 @@ impl RateLimiter {
         let mut connections = self.connections.lock().unwrap();
         let mut current_total = self.current_total.lock().unwrap();
         
+        let now = Instant::now();
         connections.retain(|_, info| {
             info.first_seen.elapsed() < self.window_duration
         });
@@ -40,7 +41,6 @@ impl RateLimiter {
             return Err("Server connection limit reached".to_string());
         }
 
-        let now = Instant::now();
         if let Some(info) = connections.get_mut(ip) {
             if info.connection_count >= self.max_connections_per_ip {
                 return Err(format!(
@@ -62,10 +62,22 @@ impl RateLimiter {
         Ok(())
     }
 
-    pub fn release(&self) {
-        let mut current_total = self.current_total.lock().unwrap();
-        if *current_total > 0 {
-            *current_total -= 1;
+    pub fn release_for_ip(&self, ip: &str) {
+        {
+            let mut current_total = self.current_total.lock().unwrap();
+            if *current_total > 0 {
+                *current_total -= 1;
+            }
+        }
+        
+        let mut connections = self.connections.lock().unwrap();
+        if let Some(info) = connections.get_mut(ip) {
+            if info.connection_count > 0 {
+                info.connection_count -= 1;
+            }
+            if info.connection_count == 0 {
+                connections.remove(ip);
+            }
         }
     }
 

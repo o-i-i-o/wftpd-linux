@@ -142,8 +142,8 @@ WantedBy=multi-user.target
     }
 
     pub fn start_service(&self) -> Result<()> {
-        let status = std::process::Command::new("systemctl")
-            .args(["start", &self.service_name])
+        let status = std::process::Command::new("sudo")
+            .args(["systemctl", "start", &self.service_name])
             .status()?;
         
         if !status.success() {
@@ -153,8 +153,8 @@ WantedBy=multi-user.target
     }
 
     pub fn stop_service(&self) -> Result<()> {
-        let status = std::process::Command::new("systemctl")
-            .args(["stop", &self.service_name])
+        let status = std::process::Command::new("sudo")
+            .args(["systemctl", "stop", &self.service_name])
             .status()?;
         
         if !status.success() {
@@ -164,8 +164,8 @@ WantedBy=multi-user.target
     }
 
     pub fn restart_service(&self) -> Result<()> {
-        let status = std::process::Command::new("systemctl")
-            .args(["restart", &self.service_name])
+        let status = std::process::Command::new("sudo")
+            .args(["systemctl", "restart", &self.service_name])
             .status()?;
         
         if !status.success() {
@@ -175,8 +175,8 @@ WantedBy=multi-user.target
     }
 
     pub fn is_service_running(&self) -> bool {
-        std::process::Command::new("systemctl")
-            .args(["is-active", "--quiet", &self.service_name])
+        std::process::Command::new("sudo")
+            .args(["systemctl", "is-active", "--quiet", &self.service_name])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
@@ -187,8 +187,8 @@ WantedBy=multi-user.target
     }
 
     pub fn reload_daemon(&self) -> Result<()> {
-        let status = std::process::Command::new("systemctl")
-            .arg("daemon-reload")
+        let status = std::process::Command::new("sudo")
+            .args(["systemctl", "daemon-reload"])
             .status()?;
         
         if !status.success() {
@@ -198,8 +198,8 @@ WantedBy=multi-user.target
     }
 
     pub fn enable_service(&self) -> Result<()> {
-        let status = std::process::Command::new("systemctl")
-            .args(["enable", &self.service_name])
+        let status = std::process::Command::new("sudo")
+            .args(["systemctl", "enable", &self.service_name])
             .status()?;
         
         if !status.success() {
@@ -209,8 +209,8 @@ WantedBy=multi-user.target
     }
 
     pub fn disable_service(&self) -> Result<()> {
-        let status = std::process::Command::new("systemctl")
-            .args(["disable", &self.service_name])
+        let status = std::process::Command::new("sudo")
+            .args(["systemctl", "disable", &self.service_name])
             .status()?;
         
         if !status.success() {
@@ -220,8 +220,8 @@ WantedBy=multi-user.target
     }
 
     pub fn is_service_enabled(&self) -> bool {
-        std::process::Command::new("systemctl")
-            .args(["is-enabled", "--quiet", &self.service_name])
+        std::process::Command::new("sudo")
+            .args(["systemctl", "is-enabled", "--quiet", &self.service_name])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)

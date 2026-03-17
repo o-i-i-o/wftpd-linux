@@ -52,7 +52,7 @@ impl SftpServer {
         let (bind_ip, sftp_port, host_key_path) = {
             let cfg = self.config.lock().unwrap();
             (
-                cfg.server.bind_ip.clone(),
+                cfg.sftp.bind_ip.clone(),
                 cfg.server.sftp_port,
                 cfg.sftp.host_key_path.clone(),
             )
@@ -137,10 +137,18 @@ impl SftpServer {
                                     );
 
                                     if let Err(e) = russh::server::run_stream(config, socket, handler).await {
-                                        logger_for_error.lock().unwrap().error(
-                                            "SFTP",
-                                            &format!("SSH connection error from {}: {}", peer_addr, e),
-                                        );
+                                        let error_msg = format!("{}", e);
+                                        if error_msg.contains("Disconnected") || error_msg.contains("Connection reset") {
+                                            logger_for_error.lock().unwrap().debug(
+                                                "SFTP",
+                                                &format!("Client disconnected from {}", peer_addr),
+                                            );
+                                        } else {
+                                            logger_for_error.lock().unwrap().error(
+                                                "SFTP",
+                                                &format!("SSH connection error from {}: {}", peer_addr, e),
+                                            );
+                                        }
                                     }
                                 });
                             }

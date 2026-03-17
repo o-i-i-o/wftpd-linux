@@ -244,6 +244,11 @@ impl russh::server::Handler for SftpHandler {
             let home_dir = self.home_dir.clone().unwrap_or_else(|| "/tmp".to_string());
             let username = self.username.clone();
             
+            self.logger.lock().unwrap().info(
+                "SFTP",
+                &format!("SFTP subsystem initialized for user: {:?}, home_dir: {}", username, home_dir),
+            );
+            
             self.sftp_state = Some(Arc::new(Mutex::new(SftpState {
                 home_dir,
                 username,
@@ -258,8 +263,34 @@ impl russh::server::Handler for SftpHandler {
                 client_ip: self.client_ip.clone(),
             })));
         } else {
+            self.logger.lock().unwrap().warning(
+                "SFTP",
+                &format!("SFTP subsystem request denied. authenticated: {}, name: {}", self.authenticated, name),
+            );
             let _ = session.channel_failure(channel);
         }
+        Ok(())
+    }
+
+    async fn pty_request(
+        &mut self,
+        _channel: ChannelId,
+        _term: &str,
+        _col_width: u32,
+        _row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _modes: &[(Pty, u32)],
+        _session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn shell_request(
+        &mut self,
+        _channel: ChannelId,
+        _session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
         Ok(())
     }
 

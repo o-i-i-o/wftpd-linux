@@ -108,7 +108,11 @@ pub fn build_attrs(is_dir: bool, size: u64) -> Vec<u8> {
     let gid: u32 = 1000;
     attrs.extend_from_slice(&uid.to_be_bytes());
     attrs.extend_from_slice(&gid.to_be_bytes());
-    let permissions = if is_dir { 0o40755u32 } else { 0o100644u32 };
+    let permissions = if is_dir {
+        0o40755u32
+    } else {
+        0o100644u32
+    };
     attrs.extend_from_slice(&permissions.to_be_bytes());
     let atime: u32 = 0;
     let mtime: u32 = 0;

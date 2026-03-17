@@ -43,10 +43,22 @@ impl SftpState {
     pub async fn process_sftp_data(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         self.buffer.extend_from_slice(data);
         
+        const MAX_PACKET_SIZE: usize = 256 * 1024;
+        
         while self.buffer.len() >= 4 {
             let packet_len = u32::from_be_bytes([
                 self.buffer[0], self.buffer[1], self.buffer[2], self.buffer[3]
             ]) as usize;
+            
+            if packet_len == 0 {
+                self.buffer.clear();
+                return Ok(build_status_packet(0, 4, "Invalid packet length", ""));
+            }
+            
+            if packet_len > MAX_PACKET_SIZE {
+                self.buffer.clear();
+                return Ok(build_status_packet(0, 4, "Packet too large", ""));
+            }
             
             if self.buffer.len() < 4 + packet_len {
                 break;
@@ -65,18 +77,44 @@ impl SftpState {
     }
 
     pub fn check_permission(&self, check_fn: impl Fn(&crate::core::users::Permissions) -> bool) -> bool {
-        let users = self.user_manager.lock().unwrap();
-        if let Some(username) = &self.username {
+        let (username, logger) = {
+             let username = self.username.clone();
+             (username, Arc::clone(&self.logger))
+         };
+        
+        if let Some(username) = &username {
+            let users = self.user_manager.lock().unwrap();
             if let Some(user) = users.get_user(username) {
-                return check_fn(&user.permissions);
+                let result = check_fn(&user.permissions);
+                if !result {
+                    logger.lock().unwrap().warning(
+                        "SFTP",
+                        &format!("Permission denied for user: {}", username),
+                    );
+                }
+                return result;
+            } else {
+                logger.lock().unwrap().warning(
+                    "SFTP",
+                    &format!("User not found in permission check: {}", username),
+                );
             }
+        } else {
+            logger.lock().unwrap().warning(
+                "SFTP",
+                "Permission check failed: username is None",
+            );
         }
         false
     }
 
     async fn handle_sftp_packet(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         if data.is_empty() {
-            return Ok(build_status_packet(0, 4, "Bad packet", ""));
+            return Ok(build_status_packet(0, 4, "Bad packet: empty data", ""));
+        }
+
+        if data.len() < 5 {
+            return Ok(build_status_packet(0, 4, "Bad packet: too short", ""));
         }
 
         let msg_type = data[0];
@@ -366,23 +404,42 @@ impl SftpState {
 
         let full_path = self.resolve_path(&path);
 
-        if tokio::fs::create_dir_all(&full_path).await.is_ok() {
-            self.file_logger.lock().unwrap().log_mkdir(
-                self.username.as_deref().unwrap_or("anonymous"),
-                &self.client_ip,
-                &full_path.to_string_lossy(),
-                "SFTP",
-            );
-            self.logger.lock().unwrap().client_action(
-                "SFTP",
-                &format!("Created directory: {}", path),
-                &self.client_ip,
-                self.username.as_deref(),
-                "MKDIR",
-            );
-            Ok(build_status_packet(id, 0, "OK", ""))
-        } else {
-            Ok(build_status_packet(id, 4, "Failed to create directory", ""))
+        match tokio::fs::create_dir_all(&full_path).await {
+            Ok(_) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Err(e) = tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(0o755)).await {
+                        self.logger.lock().unwrap().warning(
+                            "SFTP",
+                            &format!("Failed to set directory permissions: {}", e),
+                        );
+                    }
+                }
+
+                self.file_logger.lock().unwrap().log_mkdir(
+                    self.username.as_deref().unwrap_or("anonymous"),
+                    &self.client_ip,
+                    &full_path.to_string_lossy(),
+                    "SFTP",
+                );
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    &format!("Created directory: {}", path),
+                    &self.client_ip,
+                    self.username.as_deref(),
+                    "MKDIR",
+                );
+                Ok(build_status_packet(id, 0, "OK", ""))
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to create directory: {} (path: {})", e, full_path.display());
+                self.logger.lock().unwrap().error(
+                    "SFTP",
+                    &error_msg,
+                );
+                Ok(build_status_packet(id, 4, &error_msg, ""))
+            }
         }
     }
 
@@ -516,7 +573,20 @@ impl SftpState {
             full_path
         };
 
-        let path_str = resolved.to_string_lossy().to_string();
+        let home = PathBuf::from(&self.home_dir);
+        let home_canon = home.canonicalize().unwrap_or(home);
+        
+        let relative_path = if resolved.starts_with(&home_canon) {
+            resolved.strip_prefix(&home_canon).unwrap_or(&resolved).to_path_buf()
+        } else {
+            resolved
+        };
+        
+        let path_str = if relative_path.as_os_str().is_empty() {
+            ".".to_string()
+        } else {
+            relative_path.to_string_lossy().to_string()
+        };
 
         let mut payload = vec![104];
         payload.extend_from_slice(&id.to_be_bytes());
@@ -604,6 +674,19 @@ impl SftpState {
 
         match file_result {
             Ok(file) => {
+                if !file_existed {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Err(e) = tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(0o644)).await {
+                            self.logger.lock().unwrap().warning(
+                                "SFTP",
+                                &format!("Failed to set file permissions: {}", e),
+                            );
+                        }
+                    }
+                }
+
                 let handle = self.generate_handle();
                 self.handles.insert(handle.clone(), SftpFileHandle::File {
                     path: full_path,
@@ -613,7 +696,14 @@ impl SftpState {
                 });
                 Ok(build_handle_packet(id, &handle))
             }
-            Err(_) => Ok(build_status_packet(id, 4, "Failed to open file", "")),
+            Err(e) => {
+                let error_msg = format!("Failed to open file: {} (path: {})", e, full_path.display());
+                self.logger.lock().unwrap().error(
+                    "SFTP",
+                    &error_msg,
+                );
+                Ok(build_status_packet(id, 4, &error_msg, ""))
+            }
         }
     }
 

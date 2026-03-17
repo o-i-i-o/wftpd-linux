@@ -174,8 +174,59 @@ pub fn get_file_mtime_raw(metadata: &std::fs::Metadata) -> String {
     "0".to_string()
 }
 
-pub fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
+pub fn escape_mlst_filename(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    for c in name.chars() {
+        match c {
+            '\\' => result.push_str("\\\\"),
+            ';' => result.push_str("\\;"),
+            '=' => result.push_str("\\="),
+            ' ' => result.push_str("\\ "),
+            '\n' => result.push_str("\\012"),
+            '\r' => result.push_str("\\015"),
+            '\t' => result.push_str("\\011"),
+            c if c.is_control() => {
+                result.push_str(&format!("\\{:03o}", c as u8));
+            }
+            c => result.push(c),
+        }
+    }
+    result
+}
+
+pub fn format_mtime_rfc3659(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
+    if let Ok(time) = metadata.modified() {
+        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+            let secs = duration.as_secs();
+            let nanos = duration.subsec_nanos();
+            if let Some(dt) = chrono::DateTime::from_timestamp(secs as i64, nanos) {
+                let formatted = dt.format("%Y%m%d%H%M%S%.3f").to_string();
+                return formatted;
+            }
+        }
+    }
+    "19700101000000".to_string()
+}
+
+pub fn get_unix_mode(metadata: &std::fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode();
+        format!("{:04o}", mode & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        if metadata.is_dir() {
+            "0755".to_string()
+        } else {
+            "0644".to_string()
+        }
+    }
+}
+
+pub fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
     let mut facts: Vec<String> = Vec::new();
 
     if metadata.is_dir() {
@@ -186,11 +237,11 @@ pub fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
 
     facts.push(format!("size={};", metadata.len()));
 
-    if let Ok(time) = metadata.modified() {
-        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
-            facts.push(format!("modify={};", duration.as_secs()));
-        }
-    }
+    let mtime = format_mtime_rfc3659(metadata);
+    facts.push(format!("modify={};", mtime));
+
+    let mode = get_unix_mode(metadata);
+    facts.push(format!("unix.mode={};", mode));
 
     facts.join("")
 }

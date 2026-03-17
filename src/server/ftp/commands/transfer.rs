@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::super::data_connection::get_data_connection;
 use super::super::handler::FtpSession;
-use super::super::utils::{build_mlst_facts, get_file_mtime, safe_resolve_path};
+use super::super::utils::{build_mlst_facts, get_file_mtime, safe_resolve_path, escape_mlst_filename};
 use crate::core::file_logger::FileLogInfo;
 
 impl FtpSession {
@@ -127,7 +127,8 @@ impl FtpSession {
                         if let Ok(metadata) = entry.metadata() {
                             let name = entry.file_name().to_string_lossy().to_string();
                             let facts = build_mlst_facts(&metadata);
-                            let line = format!("{} {}\r\n", facts, name);
+                            let escaped_name = escape_mlst_filename(&name);
+                            let line = format!("{} {}\r\n", facts, escaped_name);
                             let _ = data_stream.write_all(line.as_bytes());
                         }
                     }

@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::Path;
 
 use super::super::handler::FtpSession;
-use super::super::utils::{build_mlst_facts, safe_resolve_path};
+use super::super::utils::{build_mlst_facts, safe_resolve_path, escape_mlst_filename};
 
 impl FtpSession {
     pub fn cmd_cwd(&mut self, arg: Option<&str>) -> Result<()> {
@@ -54,7 +54,9 @@ impl FtpSession {
                 let name = target_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| target_path.to_string_lossy().to_string());
-                self.stream.write_all(format!("250-Listing {}\r\n {}; {}\r\n250 End\r\n", target_path.display(), facts, name).as_bytes())?;
+                let escaped_name = escape_mlst_filename(&name);
+                self.stream.write_all(format!("250-Listing {}\r\n {}{}\r\n250 End\r\n", 
+                    target_path.display(), facts, escaped_name).as_bytes())?;
             } else {
                 self.stream.write_all(b"550 Failed to get file info\r\n")?;
             }

@@ -84,9 +84,9 @@ impl Logger {
 
     fn get_available_log_path(log_dir: &Path) -> (PathBuf, u64) {
         let date_str = Local::now().format("%Y-%m-%d");
-        let mut seq = 1;
+        const MAX_SEQ: u32 = 10000;
         
-        loop {
+        for seq in 1..=MAX_SEQ {
             let filename = format!("wftpg-{}-{:04}.log", date_str, seq);
             let log_path = log_dir.join(&filename);
             
@@ -100,9 +100,10 @@ impl Logger {
                     return (log_path, size);
                 }
             }
-            
-            seq += 1;
         }
+        
+        let fallback_path = log_dir.join(format!("wftpg-{}-overflow.log", date_str));
+        (fallback_path, 0)
     }
 
     fn rotate_if_needed(&mut self) -> std::io::Result<()> {
@@ -123,18 +124,18 @@ impl Logger {
 
     fn get_new_log_path(&self) -> PathBuf {
         let date_str = Local::now().format("%Y-%m-%d");
-        let mut seq = 1;
+        const MAX_SEQ: u32 = 10000;
         
-        loop {
+        for seq in 1..=MAX_SEQ {
             let filename = format!("wftpg-{}-{:04}.log", date_str, seq);
             let log_path = self.log_dir.join(&filename);
             
             if !log_path.exists() {
                 return log_path;
             }
-            
-            seq += 1;
         }
+        
+        self.log_dir.join(format!("wftpg-{}-overflow.log", date_str))
     }
 
     fn cleanup_old_logs(&self) -> std::io::Result<()> {
@@ -261,5 +262,14 @@ impl Logger {
             username,
             Some(action),
         );
+    }
+}
+
+impl Drop for Logger {
+    fn drop(&mut self) {
+        if let Some(ref mut file) = self.current_file {
+            let _ = file.flush();
+            let _ = file.sync_all();
+        }
     }
 }

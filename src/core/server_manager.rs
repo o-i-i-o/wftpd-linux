@@ -29,19 +29,14 @@ impl ServerManager {
         logger: Arc<Mutex<Logger>>,
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
-        let ftp_server = self.ftp_server.lock().unwrap();
+        let mut ftp_server = self.ftp_server.lock().unwrap();
         if ftp_server.is_some() {
             return Ok(());
         }
-        drop(ftp_server);
         
         let server = FtpServer::new(config, user_manager, logger, file_logger);
         server.start()?;
-        
-        {
-            let mut srv = self.ftp_server.lock().unwrap();
-            *srv = Some(server);
-        }
+        *ftp_server = Some(server);
         
         Ok(())
     }
@@ -49,6 +44,7 @@ impl ServerManager {
     pub fn stop_ftp(&self, logger: &Arc<Mutex<Logger>>) {
         let mut ftp_server = self.ftp_server.lock().unwrap();
         if let Some(server) = ftp_server.take() {
+            drop(ftp_server);
             server.stop();
             if let Ok(mut log) = logger.lock() {
                 log.info("FTP", "FTP server stopped");
@@ -68,11 +64,10 @@ impl ServerManager {
         logger: Arc<Mutex<Logger>>,
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
-        let sftp_server = self.sftp_server.lock().unwrap();
+        let mut sftp_server = self.sftp_server.lock().unwrap();
         if sftp_server.is_some() {
             return Ok(());
         }
-        drop(sftp_server);
         
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -85,14 +80,12 @@ impl ServerManager {
             server.start().await
         })?;
         
+        *sftp_server = Some(server);
+        drop(sftp_server);
+        
         {
             let mut rt = self.sftp_runtime.lock().unwrap();
             *rt = Some(runtime);
-        }
-        
-        {
-            let mut srv = self.sftp_server.lock().unwrap();
-            *srv = Some(server);
         }
         
         if let Ok(mut log) = logger.lock() {

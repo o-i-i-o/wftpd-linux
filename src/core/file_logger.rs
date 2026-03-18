@@ -72,9 +72,9 @@ impl FileLogger {
 
     fn get_available_log_path(log_dir: &Path) -> (PathBuf, u64) {
         let date_str = Local::now().format("%Y-%m-%d");
-        let mut seq = 1;
+        const MAX_SEQ: u32 = 10000;
         
-        loop {
+        for seq in 1..=MAX_SEQ {
             let filename = format!("file-ops-{}-{:04}.log", date_str, seq);
             let log_path = log_dir.join(&filename);
             
@@ -88,25 +88,26 @@ impl FileLogger {
                     return (log_path, size);
                 }
             }
-            
-            seq += 1;
         }
+        
+        let fallback_path = log_dir.join(format!("file-ops-{}-overflow.log", date_str));
+        (fallback_path, 0)
     }
 
     fn get_new_log_path(&self) -> PathBuf {
         let date_str = Local::now().format("%Y-%m-%d");
-        let mut seq = 1;
+        const MAX_SEQ: u32 = 10000;
         
-        loop {
+        for seq in 1..=MAX_SEQ {
             let filename = format!("file-ops-{}-{:04}.log", date_str, seq);
             let log_path = self.log_dir.join(&filename);
             
             if !log_path.exists() {
                 return log_path;
             }
-            
-            seq += 1;
         }
+        
+        self.log_dir.join(format!("file-ops-{}-overflow.log", date_str))
     }
 
     pub fn log(&mut self, info: FileLogInfo<'_>) {
@@ -271,5 +272,14 @@ impl FileLogger {
             success: false,
             message: error,
         });
+    }
+}
+
+impl Drop for FileLogger {
+    fn drop(&mut self) {
+        if let Some(ref mut file) = self.current_file {
+            let _ = file.flush();
+            let _ = file.sync_all();
+        }
     }
 }

@@ -16,8 +16,19 @@ pub fn safe_resolve_path(home_dir: &str, base_path: &str, path: &str) -> PathBuf
     
     if resolved.exists() {
         match resolved.canonicalize() {
-            Ok(canon) if canon.starts_with(&home) => canon,
-            _ => home,
+            Ok(canon) => {
+                let home_canon = home.canonicalize().unwrap_or_else(|_| home.clone());
+                if canon.starts_with(&home_canon) {
+                    canon
+                } else {
+                    log::warn!("Path traversal attempt blocked: {:?} is outside home {:?}", resolved, home);
+                    home_canon
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to canonicalize path {:?}: {}", resolved, e);
+                home
+            }
         }
     } else {
         let mut safe_path = home.clone();
@@ -27,7 +38,10 @@ pub fn safe_resolve_path(home_dir: &str, base_path: &str, path: &str) -> PathBuf
                     safe_path.push(name);
                 }
                 std::path::Component::ParentDir => {
-                    safe_path.pop();
+                    if !safe_path.pop() {
+                        log::warn!("Path traversal attempt: too many parent directories in {:?}", path);
+                        return home;
+                    }
                 }
                 _ => {}
             }
@@ -35,6 +49,7 @@ pub fn safe_resolve_path(home_dir: &str, base_path: &str, path: &str) -> PathBuf
         if safe_path.starts_with(&home) {
             safe_path
         } else {
+            log::warn!("Path traversal attempt blocked: {:?} escaped home {:?}", safe_path, home);
             home
         }
     }
@@ -42,14 +57,17 @@ pub fn safe_resolve_path(home_dir: &str, base_path: &str, path: &str) -> PathBuf
 
 pub fn safe_resolve_path_with_home(home_dir: &str, path: &str) -> PathBuf {
     let home = PathBuf::from(home_dir);
+    
+    if !home.exists() {
+        log::warn!("Home directory does not exist: {:?}", home);
+        return home;
+    }
+    
     let home_canon = match home.canonicalize() {
         Ok(c) => c,
-        Err(_) => {
-            if home.exists() {
-                home.clone()
-            } else {
-                return home;
-            }
+        Err(e) => {
+            log::warn!("Failed to canonicalize home directory {:?}: {}", home, e);
+            return home;
         }
     };
     
@@ -67,8 +85,18 @@ pub fn safe_resolve_path_with_home(home_dir: &str, path: &str) -> PathBuf {
     
     if resolved.exists() {
         match resolved.canonicalize() {
-            Ok(canon) if canon.starts_with(&home_canon) => canon,
-            _ => home_canon,
+            Ok(canon) => {
+                if canon.starts_with(&home_canon) {
+                    canon
+                } else {
+                    log::warn!("Path traversal attempt blocked: {:?} is outside home {:?}", resolved, home_canon);
+                    home_canon
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to canonicalize path {:?}: {}", resolved, e);
+                home_canon
+            }
         }
     } else {
         let mut safe_path = home_canon.clone();
@@ -78,7 +106,10 @@ pub fn safe_resolve_path_with_home(home_dir: &str, path: &str) -> PathBuf {
                     safe_path.push(name);
                 }
                 std::path::Component::ParentDir => {
-                    safe_path.pop();
+                    if !safe_path.pop() {
+                        log::warn!("Path traversal attempt: too many parent directories in {:?}", path);
+                        return home_canon;
+                    }
                 }
                 _ => {}
             }
@@ -86,6 +117,7 @@ pub fn safe_resolve_path_with_home(home_dir: &str, path: &str) -> PathBuf {
         if safe_path.starts_with(&home_canon) {
             safe_path
         } else {
+            log::warn!("Path traversal attempt blocked: {:?} escaped home {:?}", safe_path, home_canon);
             home_canon
         }
     }

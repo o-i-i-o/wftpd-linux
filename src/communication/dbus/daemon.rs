@@ -1,5 +1,6 @@
 use zbus::connection::Builder;
 use zbus::Connection;
+use std::ffi::CString;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use chrono::Utc;
 const CONFIG_PATH: &str = "/etc/wftpg/config.toml";
 const USERS_PATH: &str = "/etc/wftpg/users.json";
 const AUDIT_LOG_PATH: &str = "/var/log/wftpg/audit.log";
-const WFTPG_GROUP_ID: u32 = 975;
+const WFTPG_GROUP_NAME: &str = "wftpg";
 
 #[derive(Clone, serde::Serialize)]
 struct AuditEntry {
@@ -30,12 +31,23 @@ fn check_permission(uid: u32) -> Result<(), zbus::fdo::Error> {
         return Ok(());
     }
     
-    let groups = nix::unistd::getgroups()
-        .map_err(|e| zbus::fdo::Error::Failed(format!("获取组列表失败: {}", e)))?;
+    let user = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+        .map_err(|e| zbus::fdo::Error::Failed(format!("获取用户信息失败: {}", e)))?
+        .ok_or_else(|| zbus::fdo::Error::Failed("用户不存在".to_string()))?;
     
-    for group in groups {
-        if group.as_raw() == WFTPG_GROUP_ID {
-            return Ok(());
+    let wftpg_group = nix::unistd::Group::from_name(WFTPG_GROUP_NAME)
+        .map_err(|e| zbus::fdo::Error::Failed(format!("获取 wftpg 组信息失败: {}", e)))?;
+    
+    if let Some(group) = wftpg_group {
+        let user_name_c = CString::new(user.name.as_bytes())
+            .map_err(|e| zbus::fdo::Error::Failed(format!("用户名转换失败: {}", e)))?;
+        let user_groups = nix::unistd::getgrouplist(&user_name_c, user.gid)
+            .map_err(|e| zbus::fdo::Error::Failed(format!("获取用户组列表失败: {}", e)))?;
+        
+        for g in user_groups {
+            if g == group.gid {
+                return Ok(());
+            }
         }
     }
     
@@ -62,7 +74,8 @@ impl WftpgConfig {
     async fn read_config(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<String> {
         let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
-        let uid = creds.unix_user_id().unwrap_or(u32::MAX);
+        let uid = creds.unix_user_id()
+            .ok_or_else(|| zbus::fdo::Error::Failed("无法获取调用者 UID".to_string()))?;
         check_permission(uid)?;
         let path = self.config_path.lock().await.clone();
         fs::read_to_string(&path)
@@ -72,7 +85,8 @@ impl WftpgConfig {
     async fn write_config(&self, content: &str, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<()> {
         let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
-        let uid = creds.unix_user_id().unwrap_or(u32::MAX);
+        let uid = creds.unix_user_id()
+            .ok_or_else(|| zbus::fdo::Error::Failed("无法获取调用者 UID".to_string()))?;
         check_permission(uid)?;
         let path = self.config_path.lock().await.clone();
         if let Some(parent) = Path::new(&path).parent() {
@@ -86,7 +100,8 @@ impl WftpgConfig {
     async fn read_users(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<String> {
         let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
-        let uid = creds.unix_user_id().unwrap_or(u32::MAX);
+        let uid = creds.unix_user_id()
+            .ok_or_else(|| zbus::fdo::Error::Failed("无法获取调用者 UID".to_string()))?;
         check_permission(uid)?;
         let path = self.users_path.lock().await.clone();
         if !Path::new(&path).exists() {
@@ -99,7 +114,8 @@ impl WftpgConfig {
     async fn write_users(&self, content: &str, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<()> {
         let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
-        let uid = creds.unix_user_id().unwrap_or(u32::MAX);
+        let uid = creds.unix_user_id()
+            .ok_or_else(|| zbus::fdo::Error::Failed("无法获取调用者 UID".to_string()))?;
         check_permission(uid)?;
         let path = self.users_path.lock().await.clone();
         if let Some(parent) = Path::new(&path).parent() {
@@ -113,7 +129,8 @@ impl WftpgConfig {
     async fn config_exists(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<bool> {
         let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
-        let uid = creds.unix_user_id().unwrap_or(u32::MAX);
+        let uid = creds.unix_user_id()
+            .ok_or_else(|| zbus::fdo::Error::Failed("无法获取调用者 UID".to_string()))?;
         check_permission(uid)?;
         let path = self.config_path.lock().await.clone();
         Ok(Path::new(&path).exists())
@@ -122,7 +139,8 @@ impl WftpgConfig {
     async fn users_exists(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<bool> {
         let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
-        let uid = creds.unix_user_id().unwrap_or(u32::MAX);
+        let uid = creds.unix_user_id()
+            .ok_or_else(|| zbus::fdo::Error::Failed("无法获取调用者 UID".to_string()))?;
         check_permission(uid)?;
         let path = self.users_path.lock().await.clone();
         Ok(Path::new(&path).exists())
@@ -131,7 +149,8 @@ impl WftpgConfig {
     async fn write_audit_log(&self, user: &str, action: &str, target: &str, details: &str, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<()> {
         let creds = conn.peer_creds().await
             .map_err(|e| zbus::fdo::Error::Failed(format!("获取调用者凭证失败: {}", e)))?;
-        let uid = creds.unix_user_id().unwrap_or(u32::MAX);
+        let uid = creds.unix_user_id()
+            .ok_or_else(|| zbus::fdo::Error::Failed("无法获取调用者 UID".to_string()))?;
         check_permission(uid)?;
         let entry = AuditEntry {
             timestamp: Utc::now().to_rfc3339(),
@@ -147,7 +166,7 @@ impl WftpgConfig {
         }
         
         let log_line = serde_json::to_string(&entry)
-            .unwrap_or_default()
+            .map_err(|e| zbus::fdo::Error::Failed(format!("序列化审计日志失败: {}", e)))?
             + "\n";
         
         let mut file = fs::OpenOptions::new()
@@ -159,6 +178,8 @@ impl WftpgConfig {
         use std::io::Write;
         file.write_all(log_line.as_bytes())
             .map_err(|e| zbus::fdo::Error::Failed(format!("写入审计日志失败: {}", e)))?;
+        file.sync_all()
+            .map_err(|e| zbus::fdo::Error::Failed(format!("同步审计日志失败: {}", e)))?;
         
         Ok(())
     }

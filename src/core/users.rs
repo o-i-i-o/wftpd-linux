@@ -134,7 +134,10 @@ impl UserManager {
     fn verify_password(password: &str, hash: &str) -> bool {
         let parsed_hash = match PasswordHash::new(hash) {
             Ok(h) => h,
-            Err(_) => return false,
+            Err(e) => {
+                log::warn!("Failed to parse password hash: {}", e);
+                return false;
+            }
         };
         Argon2::default()
             .verify_password(password.as_bytes(), &parsed_hash)
@@ -250,7 +253,10 @@ impl UserManager {
 
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
-            Err(_) => return Ok(()),
+            Err(e) => {
+                log::warn!("Failed to read users file during reload: {}", e);
+                return Ok(());
+            }
         };
 
         if content.trim().is_empty() {
@@ -259,7 +265,10 @@ impl UserManager {
 
         let manager: UserManager = match serde_json::from_str(&content) {
             Ok(m) => m,
-            Err(_) => return Ok(()),
+            Err(e) => {
+                log::warn!("Failed to parse users file during reload: {}", e);
+                return Ok(());
+            }
         };
 
         self.users = manager.users;

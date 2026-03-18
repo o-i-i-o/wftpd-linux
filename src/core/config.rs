@@ -178,8 +178,10 @@ impl Config {
         fs::write(&temp_path, content)
             .context("Failed to write temp config file")?;
         
-        fs::rename(&temp_path, path)
-            .context("Failed to rename temp config file")?;
+        if let Err(e) = fs::rename(&temp_path, path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(e).context("Failed to rename temp config file");
+        }
         
         Ok(())
     }
@@ -194,7 +196,13 @@ impl Config {
     
     pub fn is_ip_allowed(&self, ip: &str) -> bool {
         if self.security.denied_ips.iter().any(|cidr| {
-            ip_matches_cidr(ip, cidr).unwrap_or(false)
+            match ip_matches_cidr(ip, cidr) {
+                Ok(matches) => matches,
+                Err(e) => {
+                    log::warn!("Failed to match IP {} against denied CIDR {}: {}", ip, cidr, e);
+                    false
+                }
+            }
         }) {
             return false;
         }
@@ -204,7 +212,13 @@ impl Config {
         }
         
         self.security.allowed_ips.iter().any(|cidr| {
-            ip_matches_cidr(ip, cidr).unwrap_or(false)
+            match ip_matches_cidr(ip, cidr) {
+                Ok(matches) => matches,
+                Err(e) => {
+                    log::warn!("Failed to match IP {} against allowed CIDR {}: {}", ip, cidr, e);
+                    false
+                }
+            }
         })
     }
 }

@@ -60,20 +60,31 @@ fn resolve_existing_path(resolved: &Path, home_canon: &Path) -> PathBuf {
     }
 }
 
-fn apply_path_components(base: &Path, resolved: &Path, home_canon: &Path, original_path: &str) -> PathBuf {
-    let mut safe_path = base.to_path_buf();
+fn apply_path_components_safe(
+    base: PathBuf,
+    home_canon: &Path,
+    clean_path: &str,
+    original_path: &str,
+) -> PathBuf {
+    let mut safe_path = base;
     
-    for component in resolved.components() {
+    for component in Path::new(clean_path).components() {
         match component {
             std::path::Component::Normal(name) => {
                 safe_path.push(name);
             }
             std::path::Component::ParentDir => {
-                if !safe_path.pop() {
-                    log::warn!("Path traversal attempt: too many parent directories in {:?}", original_path);
+                if safe_path.starts_with(home_canon) && safe_path != home_canon {
+                    if !safe_path.pop() {
+                        log::warn!("Path traversal attempt: too many parent directories in {:?}", original_path);
+                        return home_canon.to_path_buf();
+                    }
+                } else {
+                    log::warn!("Path traversal attempt blocked: cannot go above home in {:?}", original_path);
                     return home_canon.to_path_buf();
                 }
             }
+            std::path::Component::CurDir => {}
             _ => {}
         }
     }
@@ -86,7 +97,7 @@ fn apply_path_components(base: &Path, resolved: &Path, home_canon: &Path, origin
     }
 }
 
-fn resolve_nonexistent_path(resolved: &Path, home_canon: &Path, base: &Path, original_path: &str) -> PathBuf {
+fn resolve_nonexistent_path(resolved: &Path, home_canon: &Path, original_path: &str) -> PathBuf {
     let clean_path = original_path.trim();
     
     if clean_path.starts_with('/') {
@@ -97,7 +108,7 @@ fn resolve_nonexistent_path(resolved: &Path, home_canon: &Path, base: &Path, ori
             home_canon.to_path_buf()
         }
     } else {
-        apply_path_components(base, resolved, home_canon, original_path)
+        apply_path_components_safe(home_canon.to_path_buf(), home_canon, clean_path, original_path)
     }
 }
 
@@ -126,7 +137,7 @@ pub fn safe_resolve_path(home_dir: &str, path: &str) -> PathBuf {
     if resolved.exists() {
         resolve_existing_path(&resolved, &home_canon)
     } else {
-        resolve_nonexistent_path(&resolved, &home_canon, &home_canon, path)
+        resolve_nonexistent_path(&resolved, &home_canon, path)
     }
 }
 
@@ -155,8 +166,23 @@ pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Path
     if resolved.exists() {
         resolve_existing_path(&resolved, &home_canon)
     } else {
-        let base = resolve_cwd_as_base(cwd, &home_canon);
-        resolve_nonexistent_path(&resolved, &home_canon, &base, path)
+        resolve_nonexistent_path_with_cwd(&resolved, &home_canon, cwd, path)
+    }
+}
+
+fn resolve_nonexistent_path_with_cwd(resolved: &Path, home_canon: &Path, cwd: &str, original_path: &str) -> PathBuf {
+    let clean_path = original_path.trim();
+    
+    if clean_path.starts_with('/') {
+        if resolved.starts_with(home_canon) {
+            resolved.to_path_buf()
+        } else {
+            log::warn!("Absolute path outside home directory: {:?}", resolved);
+            home_canon.to_path_buf()
+        }
+    } else {
+        let cwd_canon = resolve_cwd(cwd, home_canon);
+        apply_path_components_safe(cwd_canon, home_canon, clean_path, original_path)
     }
 }
 
@@ -176,26 +202,6 @@ fn resolve_cwd(cwd: &str, home_canon: &Path) -> PathBuf {
         }
     } else {
         log::warn!("CWD does not exist or is inaccessible: {:?}", cwd_path);
-        home_canon.to_path_buf()
-    }
-}
-
-fn resolve_cwd_as_base(cwd: &str, home_canon: &Path) -> PathBuf {
-    let cwd_path = PathBuf::from(cwd);
-    if cwd_path.exists() {
-        match cwd_path.canonicalize() {
-            Ok(canon) if canon.starts_with(home_canon) => canon,
-            Ok(_) => {
-                log::warn!("CWD outside home directory: {:?}", cwd_path);
-                home_canon.to_path_buf()
-            }
-            Err(e) => {
-                log::warn!("Failed to canonicalize CWD {:?}: {}", cwd_path, e);
-                home_canon.to_path_buf()
-            }
-        }
-    } else {
-        log::warn!("CWD does not exist, using home directory: {:?}", cwd_path);
         home_canon.to_path_buf()
     }
 }

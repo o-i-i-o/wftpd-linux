@@ -78,6 +78,7 @@ impl SftpServer {
         let logger_clone = Arc::clone(&self.logger);
         let file_logger_clone = Arc::clone(&self.file_logger);
         let running_clone = Arc::clone(&self.running);
+        let config_clone = Arc::clone(&self.config);
 
         let bind_addr = format!("{}:{}", bind_ip, sftp_port);
         
@@ -111,6 +112,18 @@ impl SftpServer {
                                 let file_logger = Arc::clone(&file_logger_clone);
                                 let client_ip = peer_addr.ip().to_string();
                                 let logger_for_error = Arc::clone(&logger_clone);
+                                let config_for_filter = Arc::clone(&config_clone);
+
+                                {
+                                    let cfg = config_for_filter.lock().unwrap();
+                                    if !cfg.is_ip_allowed(&client_ip) {
+                                        logger_clone.lock().unwrap().warning(
+                                            "SFTP",
+                                            &format!("Connection rejected from {} by IP filter", client_ip),
+                                        );
+                                        continue;
+                                    }
+                                }
 
                                 logger_clone.lock().unwrap().client_action(
                                     "SFTP",

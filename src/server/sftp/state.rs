@@ -1033,42 +1033,31 @@ impl SftpState {
         let home_canon = home.canonicalize().unwrap_or(home);
         
         let full_target = if target.starts_with('/') {
-            let resolved = PathBuf::from(&target);
-            if resolved.exists() {
-                match resolved.canonicalize() {
-                    Ok(canon) if canon.starts_with(&home_canon) => canon,
-                    _ => {
-                        self.logger.lock().unwrap().client_action(
-                            "SFTP",
-                            "Symlink rejected: target outside home directory",
-                            &self.client_ip,
-                            self.username.as_deref(),
-                            "SYMLINK_DENIED",
-                        );
-                        return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
-                    }
-                }
-            } else {
-                let mut safe_target = home_canon.clone();
-                for component in resolved.components() {
-                    match component {
-                        std::path::Component::Normal(name) => {
-                            safe_target.push(name);
-                        }
-                        std::path::Component::ParentDir => {
-                            safe_target.pop();
-                        }
-                        _ => {}
-                    }
-                }
-                if safe_target.starts_with(&home_canon) {
-                    safe_target
-                } else {
-                    return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
-                }
+            let resolved = safe_resolve_path(&self.home_dir, &target);
+            if !resolved.starts_with(&home_canon) {
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    "Symlink rejected: absolute target outside home directory",
+                    &self.client_ip,
+                    self.username.as_deref(),
+                    "SYMLINK_DENIED",
+                );
+                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
             }
+            resolved
         } else {
-            self.resolve_path(&target)
+            let resolved = self.resolve_path(&target);
+            if !resolved.starts_with(&home_canon) {
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    "Symlink rejected: relative target outside home directory",
+                    &self.client_ip,
+                    self.username.as_deref(),
+                    "SYMLINK_DENIED",
+                );
+                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
+            }
+            resolved
         };
 
         if tokio::fs::symlink(&full_target, &full_link).await.is_ok() {

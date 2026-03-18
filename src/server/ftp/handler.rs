@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,7 +57,17 @@ impl FtpSession {
 
         let (cwd, home_dir) = {
             let cfg = config.lock().unwrap();
-            (cfg.ftp.default_home.clone(), cfg.ftp.default_home.clone())
+            let default_home = cfg.ftp.default_home.clone();
+            let home_path = Path::new(&default_home);
+            
+            if !home_path.exists() {
+                logger.lock().unwrap().warning(
+                    "FTP",
+                    &format!("Default home directory does not exist: {}", default_home),
+                );
+            }
+            
+            (default_home.clone(), default_home)
         };
 
         Ok(Self {

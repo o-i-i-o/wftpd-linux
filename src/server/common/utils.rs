@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const MAX_PATH_LENGTH: usize = 4096;
 
 pub fn is_safe_username(username: &str) -> bool {
     if username.is_empty() || username.len() > 64 {
@@ -14,16 +16,99 @@ pub fn is_safe_username(username: &str) -> bool {
     })
 }
 
-pub fn safe_resolve_path(home_dir: &str, path: &str) -> PathBuf {
+fn is_path_too_long(path: &str) -> bool {
+    if path.len() > MAX_PATH_LENGTH {
+        log::warn!("Path too long: {} bytes (max {})", path.len(), MAX_PATH_LENGTH);
+        true
+    } else {
+        false
+    }
+}
+
+fn canonicalize_home(home_dir: &str) -> Option<PathBuf> {
     let home = PathBuf::from(home_dir);
     
     if !home.exists() {
-        return home;
+        log::warn!("Home directory does not exist: {:?}", home);
+        return None;
     }
     
-    let home_canon = match home.canonicalize() {
-        Ok(c) => c,
-        Err(_) => home.clone(),
+    match home.canonicalize() {
+        Ok(canon) => Some(canon),
+        Err(e) => {
+            log::warn!("Failed to canonicalize home directory {:?}: {}", home, e);
+            if home.exists() {
+                Some(home)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn resolve_existing_path(resolved: &Path, home_canon: &Path) -> PathBuf {
+    match resolved.canonicalize() {
+        Ok(canon) if canon.starts_with(home_canon) => canon,
+        Ok(_) => {
+            log::warn!("Path traversal attempt blocked: {:?} is outside home {:?}", resolved, home_canon);
+            home_canon.to_path_buf()
+        }
+        Err(e) => {
+            log::warn!("Failed to canonicalize path {:?}: {}", resolved, e);
+            home_canon.to_path_buf()
+        }
+    }
+}
+
+fn apply_path_components(base: &Path, resolved: &Path, home_canon: &Path, original_path: &str) -> PathBuf {
+    let mut safe_path = base.to_path_buf();
+    
+    for component in resolved.components() {
+        match component {
+            std::path::Component::Normal(name) => {
+                safe_path.push(name);
+            }
+            std::path::Component::ParentDir => {
+                if !safe_path.pop() {
+                    log::warn!("Path traversal attempt: too many parent directories in {:?}", original_path);
+                    return home_canon.to_path_buf();
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    if safe_path.starts_with(home_canon) {
+        safe_path
+    } else {
+        log::warn!("Path traversal attempt blocked: {:?} escaped home {:?}", safe_path, home_canon);
+        home_canon.to_path_buf()
+    }
+}
+
+fn resolve_nonexistent_path(resolved: &Path, home_canon: &Path, base: &Path, original_path: &str) -> PathBuf {
+    let clean_path = original_path.trim();
+    
+    if clean_path.starts_with('/') {
+        if resolved.starts_with(home_canon) {
+            resolved.to_path_buf()
+        } else {
+            log::warn!("Absolute path outside home directory: {:?}", resolved);
+            home_canon.to_path_buf()
+        }
+    } else {
+        apply_path_components(base, resolved, home_canon, original_path)
+    }
+}
+
+pub fn safe_resolve_path(home_dir: &str, path: &str) -> PathBuf {
+    if is_path_too_long(path) {
+        return PathBuf::from(home_dir);
+    }
+
+    let home_canon = match canonicalize_home(home_dir) {
+        Some(c) => c,
+        None => return PathBuf::from(home_dir),
     };
     
     let clean_path = path.trim();
@@ -39,113 +124,79 @@ pub fn safe_resolve_path(home_dir: &str, path: &str) -> PathBuf {
     };
 
     if resolved.exists() {
-        match resolved.canonicalize() {
-            Ok(canon) if canon.starts_with(&home_canon) => canon,
-            Ok(_) => home_canon,
-            _ => home_canon,
-        }
+        resolve_existing_path(&resolved, &home_canon)
     } else {
-        if clean_path.starts_with('/') {
-            if resolved.starts_with(&home_canon) {
-                return resolved;
-            } else {
-                return home_canon;
-            }
-        }
-        
-        let mut safe_path = home_canon.clone();
-        for component in resolved.components() {
-            match component {
-                std::path::Component::Normal(name) => {
-                    safe_path.push(name);
-                }
-                std::path::Component::ParentDir => {
-                    safe_path.pop();
-                }
-                _ => {}
-            }
-        }
-        if safe_path.starts_with(&home_canon) {
-            safe_path
-        } else {
-            home_canon
-        }
+        resolve_nonexistent_path(&resolved, &home_canon, &home_canon, path)
     }
 }
 
 pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> PathBuf {
-    let home = PathBuf::from(home_dir);
-    let home_canon = match home.canonicalize() {
-        Ok(c) => c,
-        Err(_) => {
-            if home.exists() {
-                home.clone()
-            } else {
-                return home;
-            }
-        }
+    if is_path_too_long(path) {
+        return PathBuf::from(home_dir);
+    }
+
+    let home_canon = match canonicalize_home(home_dir) {
+        Some(c) => c,
+        None => return PathBuf::from(home_dir),
     };
     
     let clean_path = path.trim();
     
     if clean_path.is_empty() || clean_path == "." || clean_path == "./" {
-        let cwd_path = PathBuf::from(cwd);
-        if cwd_path.exists() {
-            match cwd_path.canonicalize() {
-                Ok(canon) if canon.starts_with(&home_canon) => return canon,
-                _ => return home_canon,
-            }
-        }
-        return cwd_path;
+        return resolve_cwd(cwd, &home_canon);
     }
     
     let resolved = if clean_path.starts_with('/') {
         PathBuf::from(clean_path)
     } else {
-        std::path::Path::new(cwd).join(clean_path)
+        Path::new(cwd).join(clean_path)
     };
     
     if resolved.exists() {
-        match resolved.canonicalize() {
-            Ok(canon) if canon.starts_with(&home_canon) => canon,
-            Ok(_) => home_canon,
-            _ => home_canon,
+        resolve_existing_path(&resolved, &home_canon)
+    } else {
+        let base = resolve_cwd_as_base(cwd, &home_canon);
+        resolve_nonexistent_path(&resolved, &home_canon, &base, path)
+    }
+}
+
+fn resolve_cwd(cwd: &str, home_canon: &Path) -> PathBuf {
+    let cwd_path = PathBuf::from(cwd);
+    if cwd_path.exists() {
+        match cwd_path.canonicalize() {
+            Ok(canon) if canon.starts_with(home_canon) => canon,
+            Ok(_) => {
+                log::warn!("CWD outside home directory: {:?}", cwd_path);
+                home_canon.to_path_buf()
+            }
+            Err(e) => {
+                log::warn!("Failed to canonicalize CWD {:?}: {}", cwd_path, e);
+                home_canon.to_path_buf()
+            }
         }
     } else {
-        if clean_path.starts_with('/') {
-            if resolved.starts_with(&home_canon) {
-                return resolved;
-            } else {
-                return home_canon;
+        log::warn!("CWD does not exist or is inaccessible: {:?}", cwd_path);
+        home_canon.to_path_buf()
+    }
+}
+
+fn resolve_cwd_as_base(cwd: &str, home_canon: &Path) -> PathBuf {
+    let cwd_path = PathBuf::from(cwd);
+    if cwd_path.exists() {
+        match cwd_path.canonicalize() {
+            Ok(canon) if canon.starts_with(home_canon) => canon,
+            Ok(_) => {
+                log::warn!("CWD outside home directory: {:?}", cwd_path);
+                home_canon.to_path_buf()
+            }
+            Err(e) => {
+                log::warn!("Failed to canonicalize CWD {:?}: {}", cwd_path, e);
+                home_canon.to_path_buf()
             }
         }
-        
-        let cwd_path = PathBuf::from(cwd);
-        let mut safe_path = if cwd_path.exists() {
-            match cwd_path.canonicalize() {
-                Ok(canon) if canon.starts_with(&home_canon) => canon,
-                _ => home_canon.clone(),
-            }
-        } else {
-            home_canon.clone()
-        };
-        
-        for component in resolved.components() {
-            match component {
-                std::path::Component::Normal(name) => {
-                    safe_path.push(name);
-                }
-                std::path::Component::ParentDir => {
-                    safe_path.pop();
-                }
-                _ => {}
-            }
-        }
-        if safe_path.starts_with(&home_canon) {
-            safe_path
-        } else {
-            home_canon
-        }
+    } else {
+        log::warn!("CWD does not exist, using home directory: {:?}", cwd_path);
+        home_canon.to_path_buf()
     }
 }
 

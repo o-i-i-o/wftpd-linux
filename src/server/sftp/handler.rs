@@ -86,6 +86,20 @@ impl russh::server::Handler for SftpHandler {
                 self.username = Some(user.to_string());
                 
                 if let Some(u) = users.get_user(user) {
+                    if u.home_dir.trim().is_empty() {
+                        self.logger.lock().unwrap().client_action(
+                            "SFTP",
+                            &format!("Login failed: home directory not configured for user '{}'", user),
+                            &self.client_ip,
+                            Some(user),
+                            "LOGIN_FAIL",
+                        );
+                        return Ok(server::Auth::Reject { 
+                            proceed_with_methods: None,
+                            partial_success: false,
+                        });
+                    }
+                    
                     let home = std::path::PathBuf::from(&u.home_dir);
                     if !home.exists() {
                         self.logger.lock().unwrap().client_action(
@@ -100,14 +114,33 @@ impl russh::server::Handler for SftpHandler {
                             partial_success: false,
                         });
                     }
+                    if !home.is_dir() {
+                        self.logger.lock().unwrap().client_action(
+                            "SFTP",
+                            &format!("Login failed: home path '{}' is not a directory", u.home_dir),
+                            &self.client_ip,
+                            Some(user),
+                            "LOGIN_FAIL",
+                        );
+                        return Ok(server::Auth::Reject { 
+                            proceed_with_methods: None,
+                            partial_success: false,
+                        });
+                    }
                     let home_canon = match home.canonicalize() {
                         Ok(c) => c,
                         Err(e) => {
-                            self.logger.lock().unwrap().warning(
+                            self.logger.lock().unwrap().client_action(
                                 "SFTP",
-                                &format!("Failed to canonicalize home directory '{}': {}", home.display(), e),
+                                &format!("Login failed: cannot canonicalize home directory '{}': {}", home.display(), e),
+                                &self.client_ip,
+                                Some(user),
+                                "LOGIN_FAIL",
                             );
-                            home.clone()
+                            return Ok(server::Auth::Reject { 
+                                proceed_with_methods: None,
+                                partial_success: false,
+                            });
                         }
                     };
                     self.home_dir = Some(home_canon.to_string_lossy().to_string());
@@ -204,6 +237,20 @@ impl russh::server::Handler for SftpHandler {
                     
                     let users = self.user_manager.lock().unwrap();
                     if let Some(u) = users.get_user(user) {
+                        if u.home_dir.trim().is_empty() {
+                            self.logger.lock().unwrap().client_action(
+                                "SFTP",
+                                &format!("Login failed: home directory not configured for user '{}'", user),
+                                &self.client_ip,
+                                Some(user),
+                                "LOGIN_FAIL",
+                            );
+                            return Ok(server::Auth::Reject { 
+                                proceed_with_methods: None,
+                                partial_success: false,
+                            });
+                        }
+                        
                         let home = std::path::PathBuf::from(&u.home_dir);
                         if !home.exists() {
                             self.logger.lock().unwrap().client_action(
@@ -218,14 +265,33 @@ impl russh::server::Handler for SftpHandler {
                                 partial_success: false,
                             });
                         }
+                        if !home.is_dir() {
+                            self.logger.lock().unwrap().client_action(
+                                "SFTP",
+                                &format!("Login failed: home path '{}' is not a directory", u.home_dir),
+                                &self.client_ip,
+                                Some(user),
+                                "LOGIN_FAIL",
+                            );
+                            return Ok(server::Auth::Reject { 
+                                proceed_with_methods: None,
+                                partial_success: false,
+                            });
+                        }
                         let home_canon = match home.canonicalize() {
                             Ok(c) => c,
                             Err(e) => {
-                                self.logger.lock().unwrap().warning(
+                                self.logger.lock().unwrap().client_action(
                                     "SFTP",
-                                    &format!("Failed to canonicalize home directory '{}': {}", home.display(), e),
+                                    &format!("Login failed: cannot canonicalize home directory '{}': {}", home.display(), e),
+                                    &self.client_ip,
+                                    Some(user),
+                                    "LOGIN_FAIL",
                                 );
-                                home.clone()
+                                return Ok(server::Auth::Reject { 
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
                             }
                         };
                         self.home_dir = Some(home_canon.to_string_lossy().to_string());

@@ -367,7 +367,7 @@ fn create_ftp_config_frame(
     config_box.set_margin_end(10);
 
     let (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, 
-         default_home_entry, max_speed_spin, encoding_combo) = load_ftp_config(state);
+         anon_home_entry, max_speed_spin, encoding_combo) = load_ftp_config(state);
 
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&ftp_enabled_cb, false, false, 0);
@@ -395,9 +395,9 @@ fn create_ftp_config_frame(
     config_box.pack_start(&row3, false, false, 0);
 
     let row4 = Box::new(Orientation::Horizontal, 5);
-    row4.pack_start(&Label::new(Some("默认主目录:")), false, false, 0);
-    default_home_entry.set_hexpand(true);
-    row4.pack_start(&default_home_entry, true, true, 0);
+    row4.pack_start(&Label::new(Some("匿名用户目录:")), false, false, 0);
+    anon_home_entry.set_hexpand(true);
+    row4.pack_start(&anon_home_entry, true, true, 0);
     config_box.pack_start(&row4, false, false, 0);
 
     let row5 = Box::new(Orientation::Horizontal, 5);
@@ -410,7 +410,7 @@ fn create_ftp_config_frame(
     setup_ftp_save_button(
         state, &save_btn, &ftp_enabled_cb, &anon_cb, &bind_ip_entry, &ftp_port_spin,
         &passive_start_spin, &passive_end_spin, &welcome_entry, 
-        &default_home_entry, &max_speed_spin, &encoding_combo,
+        &anon_home_entry, &max_speed_spin, &encoding_combo,
     );
 
     config_frame.add(&config_box);
@@ -427,7 +427,7 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
     let passive_start_spin = create_spin_button(1024.0, 65535.0, 1.0);
     let passive_end_spin = create_spin_button(1024.0, 65535.0, 1.0);
     let welcome_entry = Entry::new();
-    let default_home_entry = Entry::new();
+    let anon_home_entry = Entry::new();
     let max_speed_spin = create_spin_button(0.0, 102400.0, 100.0);
     let encoding_combo = ComboBoxText::new();
     encoding_combo.append(Some("utf-8"), "UTF-8");
@@ -444,14 +444,16 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
             passive_start_spin.set_value(cfg.ftp.passive_ports.0 as f64);
             passive_end_spin.set_value(cfg.ftp.passive_ports.1 as f64);
             welcome_entry.set_text(&cfg.ftp.welcome_message);
-            default_home_entry.set_text(&cfg.ftp.default_home);
+            if let Some(ref anon_home) = cfg.ftp.anonymous_home {
+                anon_home_entry.set_text(anon_home);
+            }
             max_speed_spin.set_value(cfg.ftp.max_speed_kbps as f64);
             let encoding_id = cfg.ftp.encoding.to_lowercase();
             encoding_combo.set_active_id(Some(&encoding_id));
         }
     }
 
-    (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, default_home_entry, max_speed_spin, encoding_combo)
+    (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, anon_home_entry, max_speed_spin, encoding_combo)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -465,7 +467,7 @@ fn setup_ftp_save_button(
     passive_start_spin: &SpinButton,
     passive_end_spin: &SpinButton,
     welcome_entry: &Entry,
-    default_home_entry: &Entry,
+    anon_home_entry: &Entry,
     max_speed_spin: &SpinButton,
     encoding_combo: &ComboBoxText,
 ) {
@@ -477,13 +479,13 @@ fn setup_ftp_save_button(
     let passive_start_clone = passive_start_spin.clone();
     let passive_end_clone = passive_end_spin.clone();
     let welcome_clone = welcome_entry.clone();
-    let default_home_clone = default_home_entry.clone();
+    let anon_home_clone = anon_home_entry.clone();
     let max_speed_clone = max_speed_spin.clone();
     let encoding_clone = encoding_combo.clone();
     
     save_btn.connect_clicked(clone!(@strong state_clone, @strong ftp_enabled_clone, @strong anon_clone,
                @strong bind_ip_clone, @strong ftp_port_clone, @strong passive_start_clone, @strong passive_end_clone, 
-               @strong welcome_clone, @strong default_home_clone, @strong max_speed_clone, 
+               @strong welcome_clone, @strong anon_home_clone, @strong max_speed_clone, 
                @strong encoding_clone => move |_| {
         let enabled = ftp_enabled_clone.is_active();
         let anon = anon_clone.is_active();
@@ -492,7 +494,7 @@ fn setup_ftp_save_button(
         let start = passive_start_clone.value() as u16;
         let end = passive_end_clone.value() as u16;
         let welcome = welcome_clone.text().to_string();
-        let default_home = default_home_clone.text().to_string();
+        let anon_home = anon_home_clone.text().to_string();
         let max_speed = max_speed_clone.value() as u64;
         let encoding = encoding_clone.active_text().map(|s| s.to_string()).unwrap_or_else(|| "UTF-8".to_string());
         
@@ -505,7 +507,7 @@ fn setup_ftp_save_button(
                     cfg.server.ftp_port = ftp_port;
                     cfg.ftp.passive_ports = (start.min(end), start.max(end));
                     cfg.ftp.welcome_message = welcome;
-                    cfg.ftp.default_home = default_home;
+                    cfg.ftp.anonymous_home = if anon_home.is_empty() { None } else { Some(anon_home) };
                     cfg.ftp.max_speed_kbps = max_speed;
                     cfg.ftp.encoding = encoding.clone();
                     toml::to_string_pretty(&*cfg).unwrap_or_default()
@@ -550,7 +552,7 @@ fn create_sftp_config_frame(
     config_box.set_margin_end(10);
 
     let (sftp_enabled_cb, sftp_port_spin, max_auth_spin, auth_timeout_spin, host_key_entry, 
-         default_home_entry, log_level_combo) = load_sftp_config(state);
+         log_level_combo) = load_sftp_config(state);
 
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&sftp_enabled_cb, false, false, 0);
@@ -576,29 +578,22 @@ fn create_sftp_config_frame(
     row3.pack_start(&host_key_entry, true, true, 0);
     config_box.pack_start(&row3, false, false, 0);
 
-    let row4 = Box::new(Orientation::Horizontal, 5);
-    row4.pack_start(&Label::new(Some("默认主目录:")), false, false, 0);
-    default_home_entry.set_hexpand(true);
-    row4.pack_start(&default_home_entry, true, true, 0);
-    config_box.pack_start(&row4, false, false, 0);
-
     setup_sftp_save_button(
         state, &save_btn, &sftp_enabled_cb, &sftp_port_spin,
         &max_auth_spin, &auth_timeout_spin, &host_key_entry, 
-        &default_home_entry, &log_level_combo,
+        &log_level_combo,
     );
 
     config_frame.add(&config_box);
     container.pack_start(&config_frame, false, false, 0);
 }
 
-fn load_sftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, SpinButton, SpinButton, SpinButton, Entry, Entry, ComboBoxText) {
+fn load_sftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, SpinButton, SpinButton, SpinButton, Entry, ComboBoxText) {
     let sftp_enabled_cb = CheckButton::with_label("启用SFTP服务");
     let sftp_port_spin = create_spin_button(1.0, 65535.0, 1.0);
     let max_auth_spin = create_spin_button(1.0, 10.0, 1.0);
     let auth_timeout_spin = create_spin_button(10.0, 300.0, 5.0);
     let host_key_entry = Entry::new();
-    let default_home_entry = Entry::new();
     let log_level_combo = ComboBoxText::new();
     log_level_combo.append(Some("debug"), "Debug");
     log_level_combo.append(Some("info"), "Info");
@@ -613,13 +608,12 @@ fn load_sftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, SpinButton
             max_auth_spin.set_value(cfg.sftp.max_auth_attempts as f64);
             auth_timeout_spin.set_value(cfg.sftp.auth_timeout as f64);
             host_key_entry.set_text(&cfg.sftp.host_key_path);
-            default_home_entry.set_text(&cfg.sftp.default_home);
             let log_level_id = cfg.sftp.log_level.to_lowercase();
             log_level_combo.set_active_id(Some(&log_level_id));
         }
     }
 
-    (sftp_enabled_cb, sftp_port_spin, max_auth_spin, auth_timeout_spin, host_key_entry, default_home_entry, log_level_combo)
+    (sftp_enabled_cb, sftp_port_spin, max_auth_spin, auth_timeout_spin, host_key_entry, log_level_combo)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -631,7 +625,6 @@ fn setup_sftp_save_button(
     max_auth_spin: &SpinButton,
     auth_timeout_spin: &SpinButton,
     host_key_entry: &Entry,
-    default_home_entry: &Entry,
     log_level_combo: &ComboBoxText,
 ) {
     let state_clone = Arc::clone(state);
@@ -640,18 +633,16 @@ fn setup_sftp_save_button(
     let max_auth_clone = max_auth_spin.clone();
     let auth_timeout_clone = auth_timeout_spin.clone();
     let host_key_clone = host_key_entry.clone();
-    let default_home_clone = default_home_entry.clone();
     let log_level_clone = log_level_combo.clone();
     
     save_btn.connect_clicked(clone!(@strong state_clone, @strong sftp_enabled_clone, @strong sftp_port_clone,
                @strong max_auth_clone, @strong auth_timeout_clone, @strong host_key_clone, 
-               @strong default_home_clone, @strong log_level_clone => move |_| {
+               @strong log_level_clone => move |_| {
         let enabled = sftp_enabled_clone.is_active();
         let sftp_port = sftp_port_clone.value() as u16;
         let max_auth = max_auth_clone.value() as u32;
         let auth_timeout = auth_timeout_clone.value() as u64;
         let host_key = host_key_clone.text().to_string();
-        let default_home = default_home_clone.text().to_string();
         let log_level = log_level_clone.active_text().map(|s| s.to_string()).unwrap_or_else(|| "info".to_string());
         
         let config_str = {
@@ -662,7 +653,6 @@ fn setup_sftp_save_button(
                     cfg.sftp.max_auth_attempts = max_auth;
                     cfg.sftp.auth_timeout = auth_timeout;
                     cfg.sftp.host_key_path = host_key;
-                    cfg.sftp.default_home = default_home;
                     cfg.sftp.log_level = log_level.clone();
                     toml::to_string_pretty(&*cfg).unwrap_or_default()
                 } else { return; }

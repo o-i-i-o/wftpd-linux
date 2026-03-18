@@ -296,7 +296,12 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
         self.log_path_info("OPENDIR", &full_path);
 
         if !full_path.exists() {
@@ -504,7 +509,12 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         match tokio::fs::remove_file(&full_path).await {
             Ok(_) => {
@@ -538,7 +548,12 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         match tokio::fs::create_dir_all(&full_path).await {
             Ok(_) => {
@@ -587,7 +602,12 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         if tokio::fs::remove_dir_all(&full_path).await.is_ok() {
             self.file_logger.lock().unwrap().log_rmdir(
@@ -619,8 +639,18 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let old_full = self.resolve_path(&old_path);
-        let new_full = self.resolve_path(&new_path);
+        let old_full = match self.resolve_path(&old_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
+        let new_full = match self.resolve_path(&new_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         if tokio::fs::rename(&old_full, &new_full).await.is_ok() {
             self.file_logger.lock().unwrap().log_rename(
@@ -651,7 +681,12 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
         self.log_path_info("STAT", &full_path);
 
         match tokio::fs::metadata(&full_path).await {
@@ -683,7 +718,12 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         let attrs_offset = 5 + 4 + path.len();
         if data.len() < attrs_offset + 4 {
@@ -796,7 +836,12 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         let resolved = if full_path.exists() {
             full_path.canonicalize().unwrap_or(full_path)
@@ -832,8 +877,8 @@ impl SftpState {
         Ok(build_packet(&payload))
     }
 
-    pub fn resolve_path(&self, path: &str) -> PathBuf {
-        let resolved = safe_resolve_path(&self.home_dir, path);
+    pub fn resolve_path(&self, path: &str) -> Result<PathBuf> {
+        let resolved = safe_resolve_path(&self.home_dir, path)?;
         
         self.logger.lock().unwrap().debug(
             "SFTP",
@@ -843,7 +888,7 @@ impl SftpState {
             ),
         );
         
-        resolved
+        Ok(resolved)
     }
     
     #[allow(dead_code)]
@@ -905,14 +950,24 @@ impl SftpState {
     }
 
     async fn handle_open(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        const SSH_FXF_READ: u32   = 0x00000001;
+        const SSH_FXF_WRITE: u32  = 0x00000002;
+        const SSH_FXF_APPEND: u32 = 0x00000004;
+        const SSH_FXF_CREAT: u32  = 0x00000008;
+        const SSH_FXF_TRUNC: u32  = 0x00000010;
+        const SSH_FXF_EXCL: u32   = 0x00000020;
+
         let id = parse_u32(data, 1);
         let path = parse_string(data, 5)?;
         let pflags_pos = 5 + 4 + path.len();
         let pflags = parse_u32(data, pflags_pos);
 
-        let need_read = pflags & 0x00000001 != 0;
-        let need_write = pflags & 0x00000002 != 0;
-        let need_append = pflags & 0x00000008 != 0;
+        let need_read = pflags & SSH_FXF_READ != 0;
+        let need_write = pflags & SSH_FXF_WRITE != 0;
+        let need_append = pflags & SSH_FXF_APPEND != 0;
+        let need_creat = pflags & SSH_FXF_CREAT != 0;
+        let need_trunc = pflags & SSH_FXF_TRUNC != 0;
+        let need_excl = pflags & SSH_FXF_EXCL != 0;
 
         if !self.check_permission(|p| {
             (!need_read || p.can_read) &&
@@ -922,10 +977,23 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
         self.log_path_info("OPEN", &full_path);
         
         let file_existed = full_path.exists();
+
+        if need_excl && need_creat && file_existed {
+            self.logger.lock().unwrap().warning(
+                "SFTP",
+                &format!("OPEN: File already exists (EXCL): {}", full_path.display()),
+            );
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "File already exists", ""));
+        }
         
         if need_read && !need_write && !file_existed {
             self.logger.lock().unwrap().warning(
@@ -935,25 +1003,32 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, &format!("File not found: {}", full_path.display()), ""));
         }
 
-        let file_result = if pflags & 0x00000002 != 0 {
-            if pflags & 0x00000010 != 0 {
+        let file_result = if need_write {
+            if need_trunc && need_creat {
                 tokio::fs::OpenOptions::new()
+                    .read(need_read)
                     .write(true)
                     .create(true)
                     .truncate(true)
                     .open(&full_path).await
-            } else if pflags & 0x00000008 != 0 {
+            } else if need_append {
                 tokio::fs::OpenOptions::new()
+                    .read(need_read)
                     .write(true)
-                    .create(true)
+                    .create(need_creat)
                     .append(true)
                     .open(&full_path).await
-            } else {
+            } else if need_creat {
                 tokio::fs::OpenOptions::new()
-                    .read(true)
+                    .read(need_read)
                     .write(true)
                     .create(true)
                     .truncate(false)
+                    .open(&full_path).await
+            } else {
+                tokio::fs::OpenOptions::new()
+                    .read(need_read)
+                    .write(true)
                     .open(&full_path).await
             }
         } else {
@@ -999,7 +1074,12 @@ impl SftpState {
         let id = parse_u32(data, 1);
         let path = parse_string(data, 5)?;
 
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         match tokio::fs::read_link(&full_path).await {
             Ok(target) => {
@@ -1028,12 +1108,22 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_link = self.resolve_path(&link_path);
+        let full_link = match self.resolve_path(&link_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
         let home = PathBuf::from(&self.home_dir);
         let home_canon = home.canonicalize().unwrap_or(home);
         
         let full_target = if target.starts_with('/') {
-            let resolved = safe_resolve_path(&self.home_dir, &target);
+            let resolved = match safe_resolve_path(&self.home_dir, &target) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                }
+            };
             if !resolved.starts_with(&home_canon) {
                 self.logger.lock().unwrap().client_action(
                     "SFTP",
@@ -1046,7 +1136,12 @@ impl SftpState {
             }
             resolved
         } else {
-            let resolved = self.resolve_path(&target);
+            let resolved = match self.resolve_path(&target) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                }
+            };
             if !resolved.starts_with(&home_canon) {
                 self.logger.lock().unwrap().client_action(
                     "SFTP",

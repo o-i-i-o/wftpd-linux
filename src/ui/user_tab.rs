@@ -408,21 +408,18 @@ fn show_user_dialog(
                             if !pwd.is_empty() {
                                 let _ = users.update_password(&username, &pwd);
                             }
-                            let _ = users.update_home_dir(&username, &home_dir);
+                            let _ = users.update_home_dir(&username, home_dir.clone());
                             let _ = users.update_permissions(&username, perms);
                             true
                         } else {
                             if pwd.is_empty() {
                                 false
                             } else {
-                                users.add_user(&username, &pwd, &home_dir, false).is_ok()
+                                users.add_user(username.clone(), &pwd, home_dir.clone(), perms, false).is_ok()
                             }
                         };
                         
                         if success {
-                            if !is_edit {
-                                let _ = users.update_permissions(&username, perms);
-                            }
                             if !is_edit {
                                 if let Err(e) = std::fs::create_dir_all(&home_dir) {
                                     log::warn!("Failed to create home directory: {}", e);

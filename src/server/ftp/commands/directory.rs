@@ -13,7 +13,14 @@ impl FtpSession {
         }
 
         if let Some(dir) = arg {
-            let new_path = safe_resolve_path(&self.cwd, &self.home_dir, dir);
+            let new_path = match safe_resolve_path(&self.cwd, &self.home_dir, dir) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             let home_path = Path::new(&self.home_dir);
 
             if new_path.exists() && new_path.is_dir() && new_path.starts_with(home_path) {
@@ -27,7 +34,14 @@ impl FtpSession {
     }
 
     pub fn cmd_cdup(&mut self) -> Result<()> {
-        let new_path = safe_resolve_path(&self.cwd, &self.home_dir, "..");
+        let new_path = match safe_resolve_path(&self.cwd, &self.home_dir, "..") {
+            Ok(p) => p,
+            Err(e) => {
+                let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                self.stream.write_all(error_msg.as_bytes())?;
+                return Ok(());
+            }
+        };
         let home_path = Path::new(&self.home_dir);
         if new_path.starts_with(home_path) && new_path.exists() {
             self.cwd = new_path.to_string_lossy().to_string();
@@ -45,7 +59,14 @@ impl FtpSession {
         }
 
         let target_path = if let Some(path_arg) = arg {
-            safe_resolve_path(&self.cwd, &self.home_dir, path_arg)
+            match safe_resolve_path(&self.cwd, &self.home_dir, path_arg) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            }
         } else {
             Path::new(&self.cwd).to_path_buf()
         };
@@ -88,7 +109,14 @@ impl FtpSession {
         }
 
         if let Some(dirname) = arg {
-            let dir_path = safe_resolve_path(&self.cwd, &self.home_dir, dirname);
+            let dir_path = match safe_resolve_path(&self.cwd, &self.home_dir, dirname) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             let home_path = Path::new(&self.home_dir);
             if !dir_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
@@ -135,7 +163,14 @@ impl FtpSession {
         }
 
         if let Some(dirname) = arg {
-            let dir_path = safe_resolve_path(&self.cwd, &self.home_dir, dirname);
+            let dir_path = match safe_resolve_path(&self.cwd, &self.home_dir, dirname) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             let home_path = Path::new(&self.home_dir);
             if !dir_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;

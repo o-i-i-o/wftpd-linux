@@ -155,7 +155,14 @@ impl FtpSession {
         }
 
         if let Some(filename) = arg {
-            let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
+            let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             
             self.logger.lock().unwrap().debug(
                 "FTP",
@@ -297,7 +304,14 @@ impl FtpSession {
                 }
             }
 
-            let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
+            let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             
             self.logger.lock().unwrap().debug(
                 "FTP",
@@ -428,7 +442,14 @@ impl FtpSession {
                 }
             }
 
-            let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
+            let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             if !file_path.starts_with(&self.home_dir) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
                 return Ok(());

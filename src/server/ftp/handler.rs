@@ -1,7 +1,6 @@
 use anyhow::Result;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,21 +54,6 @@ impl FtpSession {
             .ok()
             .map(|addr| addr.ip().to_string());
 
-        let (cwd, home_dir) = {
-            let cfg = config.lock().unwrap();
-            let default_home = cfg.ftp.default_home.clone();
-            let home_path = Path::new(&default_home);
-            
-            if !home_path.exists() {
-                logger.lock().unwrap().warning(
-                    "FTP",
-                    &format!("Default home directory does not exist: {}", default_home),
-                );
-            }
-            
-            (default_home.clone(), default_home)
-        };
-
         Ok(Self {
             stream,
             config,
@@ -82,8 +66,8 @@ impl FtpSession {
             local_ip,
             current_user: None,
             authenticated: false,
-            cwd,
-            home_dir,
+            cwd: String::new(),
+            home_dir: String::new(),
             data_port: None,
             data_addr: None,
             passive_mode: false,

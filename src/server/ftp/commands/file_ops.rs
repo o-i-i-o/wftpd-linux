@@ -25,7 +25,14 @@ impl FtpSession {
         }
 
         if let Some(filename) = arg {
-            let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
+            let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             let home_path = Path::new(&self.home_dir);
             if !file_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
@@ -76,7 +83,14 @@ impl FtpSession {
         }
 
         if let Some(from_name) = arg {
-            let from_path = safe_resolve_path(&self.cwd, &self.home_dir, from_name);
+            let from_path = match safe_resolve_path(&self.cwd, &self.home_dir, from_name) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             let home_path = Path::new(&self.home_dir);
             if from_path.exists() && from_path.starts_with(home_path) {
                 self.rename_from = Some(from_path.to_string_lossy().to_string());
@@ -97,7 +111,15 @@ impl FtpSession {
 
         if let Some(ref from_path) = self.rename_from {
             if let Some(to_name) = arg {
-                let to_path = safe_resolve_path(&self.cwd, &self.home_dir, to_name);
+                let to_path = match safe_resolve_path(&self.cwd, &self.home_dir, to_name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                        self.stream.write_all(error_msg.as_bytes())?;
+                        self.rename_from = None;
+                        return Ok(());
+                    }
+                };
                 let home_path = Path::new(&self.home_dir);
                 if !to_path.starts_with(home_path) {
                     self.stream.write_all(b"550 Permission denied\r\n")?;
@@ -138,7 +160,14 @@ impl FtpSession {
         }
 
         if let Some(filename) = arg {
-            let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
+            let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             let home_path = Path::new(&self.home_dir);
             if !file_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
@@ -162,7 +191,14 @@ impl FtpSession {
         }
 
         if let Some(filename) = arg {
-            let file_path = safe_resolve_path(&self.cwd, &self.home_dir, filename);
+            let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
+                Ok(p) => p,
+                Err(e) => {
+                    let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                    self.stream.write_all(error_msg.as_bytes())?;
+                    return Ok(());
+                }
+            };
             let home_path = Path::new(&self.home_dir);
             if !file_path.starts_with(home_path) {
                 self.stream.write_all(b"550 Permission denied\r\n")?;

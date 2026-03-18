@@ -10,6 +10,7 @@ pub enum WftpgError {
     UserError(String),
     ProtocolError(String),
     InternalError(String),
+    PathResolveError(String),
 }
 
 impl fmt::Display for WftpgError {
@@ -23,6 +24,7 @@ impl fmt::Display for WftpgError {
             WftpgError::UserError(msg) => write!(f, "用户错误: {}", msg),
             WftpgError::ProtocolError(msg) => write!(f, "协议错误: {}", msg),
             WftpgError::InternalError(msg) => write!(f, "内部错误: {}", msg),
+            WftpgError::PathResolveError(msg) => write!(f, "路径解析错误: {}", msg),
         }
     }
 }

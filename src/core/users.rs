@@ -64,7 +64,7 @@ impl fmt::Display for Permissions {
         if self.can_rmdir { perms.push("删目录"); }
         if self.can_rename { perms.push("重命名"); }
         if self.can_append { perms.push("追加"); }
-        write!(f, "{}", perms.join(","))
+        write!(f, "{}", perms.join(", "))
     }
 }
 
@@ -146,34 +146,51 @@ impl UserManager {
 
     pub fn add_user(
         &mut self,
-        username: &str,
+        username: String,
         password: &str,
-        home_dir: &str,
+        home_dir: String,
+        permissions: Permissions,
         is_admin: bool,
     ) -> Result<()> {
-        if self.users.contains_key(username) {
-            anyhow::bail!("User already exists: {}", username);
+        if username.is_empty() {
+            return Err(anyhow::anyhow!("用户名不能为空"));
+        }
+        
+        if self.users.contains_key(&username) {
+            return Err(anyhow::anyhow!("用户已存在: {}", username));
+        }
+        
+        if home_dir.trim().is_empty() {
+            return Err(anyhow::anyhow!("家目录不能为空"));
+        }
+        
+        let home_path = Path::new(&home_dir);
+        if !home_path.exists() {
+            return Err(anyhow::anyhow!("家目录不存在: {}", home_dir));
+        }
+        if !home_path.is_dir() {
+            return Err(anyhow::anyhow!("家目录路径不是目录: {}", home_dir));
         }
 
         let password_hash = Self::hash_password(password)?;
         let user = User {
-            username: username.to_string(),
+            username: username.clone(),
             password_hash,
-            home_dir: home_dir.to_string(),
-            permissions: Permissions::full(),
+            home_dir,
+            permissions,
             created_at: Utc::now(),
             last_login: None,
             enabled: true,
             is_admin,
         };
 
-        self.users.insert(username.to_string(), user);
+        self.users.insert(username, user);
         Ok(())
     }
 
     pub fn remove_user(&mut self, username: &str) -> Result<()> {
         if self.users.remove(username).is_none() {
-            anyhow::bail!("User not found: {}", username);
+            return Err(anyhow::anyhow!("用户不存在: {}", username));
         }
         Ok(())
     }
@@ -182,31 +199,39 @@ impl UserManager {
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("User not found: {}", username))?;
+            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
 
         user.password_hash = Self::hash_password(new_password)?;
         Ok(())
     }
 
-    pub fn update_home_dir(&mut self, username: &str, home_dir: &str) -> Result<()> {
+    pub fn update_home_dir(&mut self, username: &str, home_dir: String) -> Result<()> {
+        if home_dir.trim().is_empty() {
+            return Err(anyhow::anyhow!("家目录不能为空"));
+        }
+        
+        let home_path = Path::new(&home_dir);
+        if !home_path.exists() {
+            return Err(anyhow::anyhow!("家目录不存在: {}", home_dir));
+        }
+        if !home_path.is_dir() {
+            return Err(anyhow::anyhow!("家目录路径不是目录: {}", home_dir));
+        }
+        
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("User not found: {}", username))?;
+            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
 
-        user.home_dir = home_dir.to_string();
+        user.home_dir = home_dir;
         Ok(())
     }
 
-    pub fn update_permissions(
-        &mut self,
-        username: &str,
-        permissions: Permissions,
-    ) -> Result<()> {
+    pub fn update_permissions(&mut self, username: &str, permissions: Permissions) -> Result<()> {
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("User not found: {}", username))?;
+            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
 
         user.permissions = permissions;
         Ok(())
@@ -216,7 +241,7 @@ impl UserManager {
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("User not found: {}", username))?;
+            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
 
         user.enabled = enabled;
         Ok(())
@@ -226,7 +251,7 @@ impl UserManager {
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("User not found: {}", username))?;
+            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
 
         if !user.enabled {
             return Ok(false);
@@ -289,5 +314,21 @@ impl UserManager {
 
     pub fn list_users(&self) -> impl Iterator<Item = (&String, &User)> {
         self.users.iter()
+    }
+    
+    pub fn validate_anonymous_home(home_dir: &str) -> Result<()> {
+        if home_dir.trim().is_empty() {
+            return Err(anyhow::anyhow!("匿名用户目录不能为空"));
+        }
+        
+        let home_path = Path::new(home_dir);
+        if !home_path.exists() {
+            return Err(anyhow::anyhow!("匿名用户目录不存在: {}", home_dir));
+        }
+        if !home_path.is_dir() {
+            return Err(anyhow::anyhow!("匿名用户目录路径不是目录: {}", home_dir));
+        }
+        
+        Ok(())
     }
 }

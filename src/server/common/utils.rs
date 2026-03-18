@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::core::error::{WftpgError, WftpgResult};
+
 const MAX_PATH_LENGTH: usize = 4096;
 
 pub fn is_safe_username(username: &str) -> bool {
@@ -16,46 +18,49 @@ pub fn is_safe_username(username: &str) -> bool {
     })
 }
 
-fn is_path_too_long(path: &str) -> bool {
+fn check_path_length(path: &str) -> WftpgResult<()> {
     if path.len() > MAX_PATH_LENGTH {
-        log::warn!("Path too long: {} bytes (max {})", path.len(), MAX_PATH_LENGTH);
-        true
-    } else {
-        false
+        return Err(WftpgError::PathResolveError(
+            format!("路径过长: {} 字节 (最大 {})", path.len(), MAX_PATH_LENGTH)
+        ));
     }
+    Ok(())
 }
 
-fn canonicalize_home(home_dir: &str) -> Option<PathBuf> {
+fn canonicalize_home(home_dir: &str) -> WftpgResult<PathBuf> {
     let home = PathBuf::from(home_dir);
     
     if !home.exists() {
-        log::warn!("Home directory does not exist: {:?}", home);
-        return None;
+        return Err(WftpgError::PathResolveError(
+            format!("主目录不存在: {:?}", home)
+        ));
     }
     
     match home.canonicalize() {
-        Ok(canon) => Some(canon),
+        Ok(canon) => Ok(canon),
         Err(e) => {
-            log::warn!("Failed to canonicalize home directory {:?}: {}", home, e);
-            if home.exists() {
-                Some(home)
-            } else {
-                None
-            }
+            Err(WftpgError::PathResolveError(
+                format!("无法规范化主目录 {:?}: {}", home, e)
+            ))
         }
     }
 }
 
-fn resolve_existing_path(resolved: &Path, home_canon: &Path) -> PathBuf {
+fn resolve_existing_path(resolved: &Path, home_canon: &Path) -> WftpgResult<PathBuf> {
     match resolved.canonicalize() {
-        Ok(canon) if canon.starts_with(home_canon) => canon,
-        Ok(_) => {
-            log::warn!("Path traversal attempt blocked: {:?} is outside home {:?}", resolved, home_canon);
-            home_canon.to_path_buf()
+        Ok(canon) => {
+            if canon.starts_with(home_canon) {
+                Ok(canon)
+            } else {
+                Err(WftpgError::PathResolveError(
+                    format!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", resolved, home_canon)
+                ))
+            }
         }
         Err(e) => {
-            log::warn!("Failed to canonicalize path {:?}: {}", resolved, e);
-            home_canon.to_path_buf()
+            Err(WftpgError::PathResolveError(
+                format!("无法规范化路径 {:?}: {}", resolved, e)
+            ))
         }
     }
 }
@@ -65,7 +70,7 @@ fn apply_path_components_safe(
     home_canon: &Path,
     clean_path: &str,
     original_path: &str,
-) -> PathBuf {
+) -> WftpgResult<PathBuf> {
     let mut safe_path = base;
     
     for component in Path::new(clean_path).components() {
@@ -76,12 +81,14 @@ fn apply_path_components_safe(
             std::path::Component::ParentDir => {
                 if safe_path.starts_with(home_canon) && safe_path != home_canon {
                     if !safe_path.pop() {
-                        log::warn!("Path traversal attempt: too many parent directories in {:?}", original_path);
-                        return home_canon.to_path_buf();
+                        return Err(WftpgError::PathResolveError(
+                            format!("路径遍历攻击: {:?} 中包含过多的父目录", original_path)
+                        ));
                     }
                 } else {
-                    log::warn!("Path traversal attempt blocked: cannot go above home in {:?}", original_path);
-                    return home_canon.to_path_buf();
+                    return Err(WftpgError::PathResolveError(
+                        format!("路径遍历攻击被阻止: {:?} 中无法访问主目录之上的目录", original_path)
+                    ));
                 }
             }
             std::path::Component::CurDir => {}
@@ -90,42 +97,49 @@ fn apply_path_components_safe(
     }
     
     if safe_path.starts_with(home_canon) {
-        safe_path
+        Ok(safe_path)
     } else {
-        log::warn!("Path traversal attempt blocked: {:?} escaped home {:?}", safe_path, home_canon);
-        home_canon.to_path_buf()
+        Err(WftpgError::PathResolveError(
+            format!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", safe_path, home_canon)
+        ))
     }
 }
 
-fn resolve_nonexistent_path(resolved: &Path, home_canon: &Path, original_path: &str) -> PathBuf {
+fn resolve_nonexistent_path(resolved: &Path, home_canon: &Path, original_path: &str) -> WftpgResult<PathBuf> {
     let clean_path = original_path.trim();
     
     if clean_path.starts_with('/') {
         if resolved.starts_with(home_canon) {
-            resolved.to_path_buf()
+            Ok(resolved.to_path_buf())
         } else {
-            log::warn!("Absolute path outside home directory: {:?}", resolved);
-            home_canon.to_path_buf()
+            Err(WftpgError::PathResolveError(
+                format!("绝对路径位于主目录之外: {:?}", resolved)
+            ))
         }
     } else {
         apply_path_components_safe(home_canon.to_path_buf(), home_canon, clean_path, original_path)
     }
 }
 
-pub fn safe_resolve_path(home_dir: &str, path: &str) -> PathBuf {
-    if is_path_too_long(path) {
-        return PathBuf::from(home_dir);
-    }
+pub fn safe_resolve_path(home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
+    check_path_length(path)?;
 
-    let home_canon = match canonicalize_home(home_dir) {
-        Some(c) => c,
-        None => return PathBuf::from(home_dir),
-    };
+    let home_canon = canonicalize_home(home_dir)?;
     
     let clean_path = path.trim();
 
     if clean_path.is_empty() || clean_path == "." || clean_path == "./" {
-        return home_canon;
+        return Ok(home_canon);
+    }
+
+    let clean_path = if let Some(stripped) = clean_path.strip_prefix("./") {
+        stripped
+    } else {
+        clean_path
+    };
+
+    if clean_path.is_empty() {
+        return Ok(home_canon);
     }
 
     let resolved = if clean_path.starts_with('/') {
@@ -141,15 +155,10 @@ pub fn safe_resolve_path(home_dir: &str, path: &str) -> PathBuf {
     }
 }
 
-pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> PathBuf {
-    if is_path_too_long(path) {
-        return PathBuf::from(home_dir);
-    }
+pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
+    check_path_length(path)?;
 
-    let home_canon = match canonicalize_home(home_dir) {
-        Some(c) => c,
-        None => return PathBuf::from(home_dir),
-    };
+    let home_canon = canonicalize_home(home_dir)?;
     
     let clean_path = path.trim();
     
@@ -170,39 +179,46 @@ pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Path
     }
 }
 
-fn resolve_nonexistent_path_with_cwd(resolved: &Path, home_canon: &Path, cwd: &str, original_path: &str) -> PathBuf {
+fn resolve_nonexistent_path_with_cwd(resolved: &Path, home_canon: &Path, cwd: &str, original_path: &str) -> WftpgResult<PathBuf> {
     let clean_path = original_path.trim();
     
     if clean_path.starts_with('/') {
         if resolved.starts_with(home_canon) {
-            resolved.to_path_buf()
+            Ok(resolved.to_path_buf())
         } else {
-            log::warn!("Absolute path outside home directory: {:?}", resolved);
-            home_canon.to_path_buf()
+            Err(WftpgError::PathResolveError(
+                format!("绝对路径位于主目录之外: {:?}", resolved)
+            ))
         }
     } else {
-        let cwd_canon = resolve_cwd(cwd, home_canon);
+        let cwd_canon = resolve_cwd(cwd, home_canon)?;
         apply_path_components_safe(cwd_canon, home_canon, clean_path, original_path)
     }
 }
 
-fn resolve_cwd(cwd: &str, home_canon: &Path) -> PathBuf {
+fn resolve_cwd(cwd: &str, home_canon: &Path) -> WftpgResult<PathBuf> {
     let cwd_path = PathBuf::from(cwd);
     if cwd_path.exists() {
         match cwd_path.canonicalize() {
-            Ok(canon) if canon.starts_with(home_canon) => canon,
-            Ok(_) => {
-                log::warn!("CWD outside home directory: {:?}", cwd_path);
-                home_canon.to_path_buf()
+            Ok(canon) => {
+                if canon.starts_with(home_canon) {
+                    Ok(canon)
+                } else {
+                    Err(WftpgError::PathResolveError(
+                        format!("当前工作目录位于主目录之外: {:?}", cwd_path)
+                    ))
+                }
             }
             Err(e) => {
-                log::warn!("Failed to canonicalize CWD {:?}: {}", cwd_path, e);
-                home_canon.to_path_buf()
+                Err(WftpgError::PathResolveError(
+                    format!("无法规范化当前工作目录 {:?}: {}", cwd_path, e)
+                ))
             }
         }
     } else {
-        log::warn!("CWD does not exist or is inaccessible: {:?}", cwd_path);
-        home_canon.to_path_buf()
+        Err(WftpgError::PathResolveError(
+            format!("当前工作目录不存在或无法访问: {:?}", cwd_path)
+        ))
     }
 }
 

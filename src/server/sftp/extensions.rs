@@ -46,7 +46,12 @@ impl SftpState {
 
     async fn handle_statvfs(&self, id: u32, data: &[u8]) -> Result<Vec<u8>> {
         let path = parse_string(data, 5 + 4)?;
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         #[cfg(unix)]
         {
@@ -91,7 +96,12 @@ impl SftpState {
 
     async fn handle_md5sum(&self, id: u32, data: &[u8]) -> Result<Vec<u8>> {
         let path = parse_string(data, 5 + 4)?;
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         if !self.check_permission(|p| p.can_read) {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
@@ -125,7 +135,12 @@ impl SftpState {
 
     async fn handle_sha256sum(&self, id: u32, data: &[u8]) -> Result<Vec<u8>> {
         let path = parse_string(data, 5 + 4)?;
-        let full_path = self.resolve_path(&path);
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         if !self.check_permission(|p| p.can_read) {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
@@ -166,8 +181,18 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let src_full = self.resolve_path(&src_path);
-        let dst_full = self.resolve_path(&dst_path);
+        let src_full = match self.resolve_path(&src_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
+        let dst_full = match self.resolve_path(&dst_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         match tokio::fs::copy(&src_full, &dst_full).await {
             Ok(size) => {
@@ -203,8 +228,18 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let src_full = self.resolve_path(&src_path);
-        let dst_full = self.resolve_path(&dst_path);
+        let src_full = match self.resolve_path(&src_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
+        let dst_full = match self.resolve_path(&dst_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
 
         #[cfg(unix)]
         {

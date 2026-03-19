@@ -231,20 +231,35 @@ impl FtpSession {
                         }
 
                         let mut buf = [0u8; 8192];
+                        let mut transfer_success = true;
+                        let mut total_read: u64 = 0;
                         loop {
                             if abort.load(Ordering::Relaxed) {
+                                transfer_success = false;
                                 break;
                             }
                             match file.read(&mut buf) {
                                 Ok(0) => break,
                                 Ok(n) => {
+                                    total_read += n as u64;
                                     if data_stream.write_all(&buf[..n]).is_err() {
+                                        log::error!("RETR write error to data stream for file: {}", file_path.display());
+                                        transfer_success = false;
                                         break;
                                     }
                                 }
-                                Err(_) => break,
+                                Err(e) => {
+                                    log::error!("RETR read error from file: {} - {}", file_path.display(), e);
+                                    transfer_success = false;
+                                    break;
+                                }
                             }
                         }
+                        if transfer_success {
+                            log::info!("RETR completed: {} bytes sent from {}", total_read, file_path.display());
+                        }
+                    } else {
+                        log::error!("RETR failed to open file: {}", file_path.display());
                     }
                     self.cleanup_data_connection();
                     self.stream.write_all(b"226 Transfer complete\r\n")?;
@@ -312,7 +327,7 @@ impl FtpSession {
                     return Ok(());
                 }
             };
-            
+
             self.logger.lock().unwrap().debug(
                 "FTP",
                 &format!(
@@ -320,7 +335,7 @@ impl FtpSession {
                     filename, self.cwd, self.home_dir, file_path.display()
                 ),
             );
-            
+
             if !file_path.starts_with(&self.home_dir) {
                 self.logger.lock().unwrap().warning(
                     "FTP",
@@ -329,6 +344,7 @@ impl FtpSession {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
                 return Ok(());
             }
+
             let file_existed = file_path.exists();
             self.stream.write_all(b"150 Opening BINARY mode data connection\r\n")?;
 
@@ -341,6 +357,9 @@ impl FtpSession {
                 &self.passive_listeners,
                 data_timeout,
             );
+
+            let mut transfer_success = false;
+            let mut total_written: u64 = 0;
 
             match data_result {
                 Ok(mut data_stream) => {
@@ -355,30 +374,64 @@ impl FtpSession {
                         std::fs::File::create(&file_path)
                     };
 
-                    if let Ok(mut file) = file_result {
-                        use std::io::Seek;
-                        if self.rest_offset > 0 {
-                            let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset));
-                        }
-
-                        let mut buf = [0u8; 8192];
-                        loop {
-                            if abort.load(Ordering::Relaxed) {
-                                break;
+                    match file_result {
+                        Ok(mut file) => {
+                            use std::io::Seek;
+                            if self.rest_offset > 0 {
+                                let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset));
                             }
-                            match data_stream.read(&mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    if file.write_all(&buf[..n]).is_err() {
+
+                            let mut buf = [0u8; 8192];
+                            transfer_success = true;
+                            loop {
+                                if abort.load(Ordering::Relaxed) {
+                                    transfer_success = false;
+                                    break;
+                                }
+                                match data_stream.read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        if file.write_all(&buf[..n]).is_err() {
+                                            self.logger.lock().unwrap().error(
+                                                "FTP",
+                                                &format!("STOR write error for file: {}", file_path.display()),
+                                            );
+                                            transfer_success = false;
+                                            break;
+                                        }
+                                        total_written += n as u64;
+                                    }
+                                    Err(e) => {
+                                        self.logger.lock().unwrap().error(
+                                            "FTP",
+                                            &format!("STOR read error from data stream: {}", e),
+                                        );
+                                        transfer_success = false;
                                         break;
                                     }
                                 }
-                                Err(_) => break,
                             }
+                            if transfer_success {
+                                if let Err(e) = file.sync_all() {
+                                    self.logger.lock().unwrap().error(
+                                        "FTP",
+                                        &format!("Failed to sync file {:?}: {}", file_path, e),
+                                    );
+                                }
+                                self.logger.lock().unwrap().info(
+                                    "FTP",
+                                    &format!("STOR completed: {} bytes written to {}", total_written, file_path.display()),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            self.logger.lock().unwrap().error(
+                                "FTP",
+                                &format!("STOR failed to create file {}: {}", file_path.display(), e),
+                            );
                         }
                     }
                     self.cleanup_data_connection();
-                    self.stream.write_all(b"226 Transfer complete\r\n")?;
                 }
                 Err(e) => {
                     self.logger.lock().unwrap().warning(
@@ -391,32 +444,46 @@ impl FtpSession {
                 }
             }
 
-            let uploaded_size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
-            if file_existed {
-                self.file_logger.lock().unwrap().log_update(
-                    self.current_user.as_deref().unwrap_or("anonymous"),
-                    &self.remote_ip,
-                    &file_path.to_string_lossy(),
-                    uploaded_size,
+            if transfer_success {
+                self.stream.write_all(b"226 Transfer complete\r\n")?;
+
+                let uploaded_size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(total_written);
+                if file_existed {
+                    self.file_logger.lock().unwrap().log_update(
+                        self.current_user.as_deref().unwrap_or("anonymous"),
+                        &self.remote_ip,
+                        &file_path.to_string_lossy(),
+                        uploaded_size,
+                        "FTP",
+                    );
+                } else {
+                    self.file_logger.lock().unwrap().log_upload(
+                        self.current_user.as_deref().unwrap_or("anonymous"),
+                        &self.remote_ip,
+                        &file_path.to_string_lossy(),
+                        uploaded_size,
+                        "FTP",
+                    );
+                }
+
+                self.logger.lock().unwrap().client_action(
                     "FTP",
+                    &format!("Uploaded: {} ({} bytes) at offset {}", filename, uploaded_size, self.rest_offset),
+                    &self.remote_ip,
+                    self.current_user.as_deref(),
+                    "UPLOAD",
                 );
             } else {
-                self.file_logger.lock().unwrap().log_upload(
+                self.stream.write_all(b"451 Transfer failed\r\n")?;
+                self.file_logger.lock().unwrap().log_failed(
                     self.current_user.as_deref().unwrap_or("anonymous"),
                     &self.remote_ip,
+                    "UPLOAD",
                     &file_path.to_string_lossy(),
-                    uploaded_size,
                     "FTP",
+                    "Transfer failed",
                 );
             }
-
-            self.logger.lock().unwrap().client_action(
-                "FTP",
-                &format!("Uploaded: {} at offset {}", filename, self.rest_offset),
-                &self.remote_ip,
-                self.current_user.as_deref(),
-                "UPLOAD",
-            );
 
             self.rest_offset = 0;
         }
@@ -524,6 +591,138 @@ impl FtpSession {
                 "APPEND",
             );
         }
+        Ok(())
+    }
+
+    pub fn cmd_stou(&mut self, _arg: Option<&str>) -> Result<()> {
+        if !self.authenticated {
+            self.stream.write_all(b"530 Not logged in\r\n")?;
+            return Ok(());
+        }
+
+        {
+            let users = self.user_manager.lock().unwrap();
+            let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
+
+            if let Some(user) = user {
+                if !user.permissions.can_write {
+                    self.stream.write_all(b"550 Permission denied\r\n")?;
+                    return Ok(());
+                }
+            }
+        }
+
+        let cwd_path = std::path::Path::new(&self.cwd);
+        let mut unique_name = format!("ftp_{}", chrono::Utc::now().format("%Y%m%d_%H%M%S_%f"));
+        let mut file_path = cwd_path.join(&unique_name);
+        let mut counter = 0u32;
+
+        while file_path.exists() {
+            counter += 1;
+            unique_name = format!("ftp_{}_{}", chrono::Utc::now().format("%Y%m%d_%H%M%S"), counter);
+            file_path = cwd_path.join(&unique_name);
+        }
+
+        let home_path = std::path::Path::new(&self.home_dir);
+        if !file_path.starts_with(home_path) {
+            self.stream.write_all(b"550 Permission denied\r\n")?;
+            return Ok(());
+        }
+
+        self.stream.write_all(format!("150 FILE: {}\r\n", unique_name).as_bytes())?;
+
+        let data_timeout = self.get_data_timeout();
+        let data_result = get_data_connection(
+            self.passive_mode,
+            self.data_port,
+            &self.data_addr,
+            &self.remote_ip,
+            &self.passive_listeners,
+            data_timeout,
+        );
+
+        let mut transfer_success = false;
+        let mut total_written: u64 = 0;
+
+        match data_result {
+            Ok(mut data_stream) => {
+                let abort = Arc::clone(&self.abort_flag);
+                match std::fs::File::create(&file_path) {
+                    Ok(mut file) => {
+                        let mut buf = [0u8; 8192];
+                        transfer_success = true;
+                        loop {
+                            if abort.load(Ordering::Relaxed) {
+                                transfer_success = false;
+                                break;
+                            }
+                            match data_stream.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if file.write_all(&buf[..n]).is_err() {
+                                        transfer_success = false;
+                                        break;
+                                    }
+                                    total_written += n as u64;
+                                }
+                                Err(_) => {
+                                    transfer_success = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if transfer_success {
+                            if let Err(e) = file.sync_all() {
+                                self.logger.lock().unwrap().error(
+                                    "FTP",
+                                    &format!("STOU sync error: {}", e),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.logger.lock().unwrap().error(
+                            "FTP",
+                            &format!("STOU failed to create file: {}", e),
+                        );
+                    }
+                }
+                self.cleanup_data_connection();
+            }
+            Err(e) => {
+                self.logger.lock().unwrap().warning(
+                    "FTP",
+                    &format!("Failed to get data connection: {}", e),
+                );
+                self.cleanup_data_connection();
+                self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                return Ok(());
+            }
+        }
+
+        if transfer_success {
+            self.stream.write_all(format!("226 Transfer complete, file: {}\r\n", unique_name).as_bytes())?;
+
+            let uploaded_size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(total_written);
+            self.file_logger.lock().unwrap().log_upload(
+                self.current_user.as_deref().unwrap_or("anonymous"),
+                &self.remote_ip,
+                &file_path.to_string_lossy(),
+                uploaded_size,
+                "FTP",
+            );
+
+            self.logger.lock().unwrap().client_action(
+                "FTP",
+                &format!("STOU uploaded: {} ({} bytes)", unique_name, uploaded_size),
+                &self.remote_ip,
+                self.current_user.as_deref(),
+                "UPLOAD",
+            );
+        } else {
+            self.stream.write_all(b"451 Transfer failed\r\n")?;
+        }
+
         Ok(())
     }
 }

@@ -21,10 +21,10 @@ impl FtpSession {
             return Ok(());
         }
 
-        let (port_min, port_max, bind_ip) = {
+        let (port_min, port_max, bind_ip, masquerade_ip) = {
             let cfg = self.config.lock().unwrap();
             let ports = cfg.ftp.passive_ports;
-            (ports.0, ports.1, cfg.server.bind_ip.clone())
+            (ports.0, ports.1, cfg.server.bind_ip.clone(), cfg.ftp.masquerade_ip.clone())
         };
 
         let passive_port = find_available_passive_port(&self.passive_listeners, port_min, port_max)?;
@@ -37,7 +37,9 @@ impl FtpSession {
 
         self.data_port = Some(passive_port);
 
-        let server_ip = if bind_ip == "0.0.0.0" {
+        let server_ip = if let Some(ref masq_ip) = masquerade_ip {
+            masq_ip.clone()
+        } else if bind_ip == "0.0.0.0" {
             self.local_ip.clone().unwrap_or_else(|| self.remote_ip.clone())
         } else {
             bind_ip.clone()

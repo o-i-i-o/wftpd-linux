@@ -38,6 +38,8 @@ pub struct FtpConfig {
     pub encoding: String,
     #[serde(default = "default_data_timeout")]
     pub data_timeout: u64,
+    #[serde(default)]
+    pub masquerade_ip: Option<String>,
 }
 
 fn default_bind_ip() -> String {
@@ -112,6 +114,7 @@ impl Default for Config {
                 max_speed_kbps: 0,
                 encoding: "UTF-8".to_string(),
                 data_timeout: 300,
+                masquerade_ip: None,
             },
             sftp: SftpConfig {
                 enabled: true,
@@ -188,6 +191,45 @@ impl Config {
     
     pub fn get_users_path() -> PathBuf {
         PathBuf::from("/etc/wftpg/users.json")
+    }
+    
+    pub fn validate(&self) -> Result<()> {
+        if self.ftp.enabled && self.ftp.allow_anonymous {
+            match &self.ftp.anonymous_home {
+                Some(home) if !home.trim().is_empty() => {
+                    let home_path = Path::new(home);
+                    if !home_path.exists() {
+                        return Err(anyhow::anyhow!(
+                            "FTP匿名访问已启用，但匿名用户主目录不存在: {}",
+                            home
+                        ));
+                    }
+                    if !home_path.is_dir() {
+                        return Err(anyhow::anyhow!(
+                            "FTP匿名访问已启用，但匿名用户主目录路径不是目录: {}",
+                            home
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "FTP匿名访问已启用，但未配置匿名用户主目录(anonymous_home)"
+                    ));
+                }
+            }
+        }
+        
+        if self.sftp.enabled {
+            let host_key = Path::new(&self.sftp.host_key_path);
+            if !host_key.exists() {
+                log::warn!(
+                    "SFTP主机密钥不存在: {}，请运行安装脚本生成",
+                    self.sftp.host_key_path
+                );
+            }
+        }
+        
+        Ok(())
     }
     
     pub fn is_ip_allowed(&self, ip: &str) -> bool {

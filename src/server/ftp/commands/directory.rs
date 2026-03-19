@@ -176,6 +176,18 @@ impl FtpSession {
                 self.stream.write_all(b"550 Permission denied\r\n")?;
                 return Ok(());
             }
+            
+            let cwd_path = Path::new(&self.cwd);
+            if dir_path == cwd_path {
+                self.stream.write_all(b"550 Cannot remove current working directory\r\n")?;
+                return Ok(());
+            }
+            
+            if cwd_path.starts_with(&dir_path) && cwd_path != dir_path {
+                self.stream.write_all(b"550 Cannot remove parent of current working directory\r\n")?;
+                return Ok(());
+            }
+            
             if std::fs::remove_dir_all(&dir_path).is_ok() {
                 self.stream.write_all(b"250 Directory removed\r\n")?;
                 self.file_logger.lock().unwrap().log_rmdir(

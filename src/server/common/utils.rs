@@ -197,6 +197,10 @@ fn resolve_nonexistent_path_with_cwd(resolved: &Path, home_canon: &Path, cwd: &s
 }
 
 fn resolve_cwd(cwd: &str, home_canon: &Path) -> WftpgResult<PathBuf> {
+    if cwd.is_empty() {
+        return Ok(home_canon.to_path_buf());
+    }
+    
     let cwd_path = PathBuf::from(cwd);
     if cwd_path.exists() {
         match cwd_path.canonicalize() {

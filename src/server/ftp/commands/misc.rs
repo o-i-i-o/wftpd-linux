@@ -190,4 +190,65 @@ impl FtpSession {
         }
         Ok(())
     }
+
+    pub fn cmd_rein(&mut self) -> Result<()> {
+        self.current_user = None;
+        self.authenticated = false;
+        self.cwd = String::new();
+        self.home_dir = String::new();
+        self.rest_offset = 0;
+        self.rename_from = None;
+        self.passive_mode = false;
+        self.data_port = None;
+        self.data_addr = None;
+        
+        self.stream.write_all(b"220 Ready for new user\r\n")?;
+        
+        self.logger.lock().unwrap().client_action(
+            "FTP",
+            "Session reinitialized",
+            &self.remote_ip,
+            None,
+            "REIN",
+        );
+        
+        Ok(())
+    }
+
+    pub fn cmd_site(&mut self, arg: Option<&str>) -> Result<()> {
+        if let Some(site_arg) = arg {
+            let parts: Vec<&str> = site_arg.split_whitespace().collect();
+            
+            if parts.is_empty() {
+                self.stream.write_all(b"501 Syntax error: SITE requires parameters\r\n")?;
+                return Ok(());
+            }
+
+            match parts[0].to_uppercase().as_str() {
+                "CHMOD" => {
+                    if parts.len() >= 3 {
+                        self.stream.write_all(b"200 SITE CHMOD command accepted\r\n")?;
+                    } else {
+                        self.stream.write_all(b"501 Syntax error: SITE CHMOD requires mode and path\r\n")?;
+                    }
+                }
+                "UMASK" => {
+                    if parts.len() >= 2 {
+                        self.stream.write_all(b"200 SITE UMASK command accepted\r\n")?;
+                    } else {
+                        self.stream.write_all(b"501 Syntax error: SITE UMASK requires mask\r\n")?;
+                    }
+                }
+                "HELP" => {
+                    self.stream.write_all(b"214-SITE commands: CHMOD, UMASK, HELP\r\n214 End\r\n")?;
+                }
+                _ => {
+                    self.stream.write_all(b"500 Unknown SITE command\r\n")?;
+                }
+            }
+        } else {
+            self.stream.write_all(b"501 Syntax error: SITE requires parameters\r\n")?;
+        }
+        Ok(())
+    }
 }

@@ -155,7 +155,7 @@ impl FtpSession {
                 return Ok(true);
             }
             "SYST" => self.stream.write_all(b"215 UNIX Type: L8\r\n")?,
-            "FEAT" => self.stream.write_all(b"211-Features:\r\n SIZE\r\n MDTM\r\n REST STREAM\r\n PASV\r\n EPSV\r\n EPRT\r\n PORT\r\n MLST\r\n MLSD\r\n MODE\r\n STRU\r\n UTF8\r\n TVFS\r\n211 End\r\n")?,
+            "FEAT" => self.stream.write_all(b"211-Features:\r\n SIZE\r\n MDTM\r\n REST STREAM\r\n PASV\r\n EPSV\r\n EPRT\r\n PORT\r\n MLST\r\n MLSD\r\n MODE\r\n STRU\r\n UTF8\r\n TVFS\r\n STOU\r\n SITE\r\n211 End\r\n")?,
             "HELP" => self.cmd_help(arg)?,
             "MODE" => self.cmd_mode(arg)?,
             "STRU" => self.cmd_stru(arg)?,
@@ -177,6 +177,7 @@ impl FtpSession {
             "MLSD" => self.cmd_mlsd()?,
             "RETR" => self.cmd_retr(arg)?,
             "STOR" => self.cmd_stor(arg)?,
+            "STOU" => self.cmd_stou(arg)?,
             "APPE" => self.cmd_appe(arg)?,
             "DELE" => self.cmd_dele(arg)?,
             "MKD" | "XMKD" => self.cmd_mkd(arg)?,
@@ -188,6 +189,8 @@ impl FtpSession {
             "NOOP" => self.stream.write_all(b"200 OK\r\n")?,
             "STAT" => self.cmd_stat()?,
             "ABOR" => self.handle_abor()?,
+            "REIN" => self.cmd_rein()?,
+            "SITE" => self.cmd_site(arg)?,
             _ => self.stream.write_all(b"202 Command not implemented\r\n")?,
         }
         Ok(false)

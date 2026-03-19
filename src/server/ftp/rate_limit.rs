@@ -9,39 +9,44 @@ pub struct ConnectionInfo {
     pub last_connection: Instant,
 }
 
+struct RateLimiterInner {
+    connections: HashMap<String, ConnectionInfo>,
+    current_total: u32,
+}
+
 pub struct RateLimiter {
-    connections: Mutex<HashMap<String, ConnectionInfo>>,
+    inner: Mutex<RateLimiterInner>,
     max_connections_per_ip: u32,
     window_duration: Duration,
     max_total_connections: u32,
-    current_total: Mutex<u32>,
 }
 
 impl RateLimiter {
     pub fn new(max_connections_per_ip: u32, window_secs: u64, max_total_connections: u32) -> Self {
         Self {
-            connections: Mutex::new(HashMap::new()),
+            inner: Mutex::new(RateLimiterInner {
+                connections: HashMap::new(),
+                current_total: 0,
+            }),
             max_connections_per_ip,
             window_duration: Duration::from_secs(window_secs),
             max_total_connections,
-            current_total: Mutex::new(0),
         }
     }
 
     pub fn check_and_record(&self, ip: &str) -> Result<(), String> {
-        let mut connections = self.connections.lock().unwrap();
-        let mut current_total = self.current_total.lock().unwrap();
-        
+        let mut inner = self.inner.lock().unwrap();
         let now = Instant::now();
-        connections.retain(|_, info| {
+        
+        inner.connections.retain(|_, info| {
             info.first_seen.elapsed() < self.window_duration
         });
 
-        if *current_total >= self.max_total_connections {
+        if inner.current_total >= self.max_total_connections {
             return Err("Server connection limit reached".to_string());
         }
 
-        if let Some(info) = connections.get_mut(ip) {
+        if let Some(info) = inner.connections.get_mut(ip) {
             if info.connection_count >= self.max_connections_per_ip {
                 return Err(format!(
                     "Rate limit exceeded for {}: {} connections in {} seconds",
@@ -51,40 +56,37 @@ impl RateLimiter {
             info.connection_count += 1;
             info.last_connection = now;
         } else {
-            connections.insert(ip.to_string(), ConnectionInfo {
+            inner.connections.insert(ip.to_string(), ConnectionInfo {
                 first_seen: now,
                 connection_count: 1,
                 last_connection: now,
             });
         }
 
-        *current_total += 1;
+        inner.current_total += 1;
         Ok(())
     }
 
     pub fn release_for_ip(&self, ip: &str) {
-        {
-            let mut current_total = self.current_total.lock().unwrap();
-            if *current_total > 0 {
-                *current_total -= 1;
-            }
+        let mut inner = self.inner.lock().unwrap();
+        
+        if inner.current_total > 0 {
+            inner.current_total -= 1;
         }
         
-        let mut connections = self.connections.lock().unwrap();
-        if let Some(info) = connections.get_mut(ip) {
+        if let Some(info) = inner.connections.get_mut(ip) {
             if info.connection_count > 0 {
                 info.connection_count -= 1;
             }
             if info.connection_count == 0 {
-                connections.remove(ip);
+                inner.connections.remove(ip);
             }
         }
     }
 
     pub fn get_stats(&self) -> (usize, u32) {
-        let connections = self.connections.lock().unwrap();
-        let current_total = self.current_total.lock().unwrap();
-        (connections.len(), *current_total)
+        let inner = self.inner.lock().unwrap();
+        (inner.connections.len(), inner.current_total)
     }
 }
 

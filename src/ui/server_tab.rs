@@ -1,10 +1,11 @@
 use gtk::prelude::*;
 use gtk::{
     Box, Orientation, Label, Button, Entry, Frame, Separator, SpinButton, Adjustment,
-    CheckButton, glib, ComboBoxText,
+    CheckButton, glib, ComboBoxText, FileChooserDialog, FileChooserAction,
 };
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::path::Path;
 use crate::AppState;
 use crate::communication::ipc::IpcClient;
 
@@ -367,7 +368,7 @@ fn create_ftp_config_frame(
     config_box.set_margin_end(10);
 
     let (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, 
-         anon_home_entry, max_speed_spin, encoding_combo) = load_ftp_config(state);
+         anon_home_entry, max_speed_spin, encoding_combo, anon_status_label, masquerade_ip_entry) = load_ftp_config(state);
 
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&ftp_enabled_cb, false, false, 0);
@@ -375,7 +376,6 @@ fn create_ftp_config_frame(
     row1.pack_start(&bind_ip_entry, false, false, 0);
     row1.pack_start(&Label::new(Some("端口:")), false, false, 0);
     row1.pack_start(&ftp_port_spin, false, false, 0);
-    row1.pack_start(&anon_cb, false, false, 0);
     
     let save_btn = Button::with_label("保存配置");
     row1.pack_end(&save_btn, false, false, 0);
@@ -388,17 +388,64 @@ fn create_ftp_config_frame(
     row2.pack_start(&passive_end_spin, false, false, 0);
     config_box.pack_start(&row2, false, false, 0);
 
+    let row_masq = Box::new(Orientation::Horizontal, 5);
+    let masq_label = Label::new(Some("对外公开IP:"));
+    row_masq.pack_start(&masq_label, false, false, 0);
+    row_masq.pack_start(&masquerade_ip_entry, false, false, 0);
+    let masq_hint = Label::new(Some("(NAT环境下PASV模式返回的IP地址)"));
+    masq_hint.set_markup("<span foreground='gray' size='small'>(NAT环境下PASV模式返回的IP地址)</span>");
+    row_masq.pack_start(&masq_hint, false, false, 0);
+    config_box.pack_start(&row_masq, false, false, 0);
+
     let row3 = Box::new(Orientation::Horizontal, 5);
     row3.pack_start(&Label::new(Some("欢迎消息:")), false, false, 0);
     welcome_entry.set_hexpand(true);
     row3.pack_start(&welcome_entry, true, true, 0);
     config_box.pack_start(&row3, false, false, 0);
 
+    let anon_row = Box::new(Orientation::Horizontal, 5);
+    anon_row.pack_start(&anon_cb, false, false, 0);
+    config_box.pack_start(&anon_row, false, false, 0);
+
     let row4 = Box::new(Orientation::Horizontal, 5);
     row4.pack_start(&Label::new(Some("匿名用户目录:")), false, false, 0);
     anon_home_entry.set_hexpand(true);
     row4.pack_start(&anon_home_entry, true, true, 0);
+    
+    let browse_btn = Button::with_label("浏览...");
+    row4.pack_start(&browse_btn, false, false, 0);
     config_box.pack_start(&row4, false, false, 0);
+    
+    let anon_status_clone = anon_status_label.clone();
+    let anon_home_clone = anon_home_entry.clone();
+    browse_btn.connect_clicked(clone!(@strong anon_status_clone, @strong anon_home_clone => move |_| {
+        let dialog = FileChooserDialog::new(
+            Some("选择匿名用户主目录"),
+            None::<&gtk::Window>,
+            FileChooserAction::SelectFolder,
+        );
+        dialog.add_button("取消", gtk::ResponseType::Cancel);
+        dialog.add_button("选择", gtk::ResponseType::Accept);
+        
+        let entry = anon_home_clone.clone();
+        let status = anon_status_clone.clone();
+        dialog.connect_response(clone!(@strong entry, @strong status, @strong dialog => move |dlg, resp| {
+            if resp == gtk::ResponseType::Accept {
+                if let Some(path) = dlg.filename() {
+                    let path_str = path.to_string_lossy().to_string();
+                    entry.set_text(&path_str);
+                    validate_anonymous_home(&entry, &status, true);
+                }
+            }
+            dlg.close();
+        }));
+        
+        dialog.run();
+    }));
+
+    let row4_status = Box::new(Orientation::Horizontal, 5);
+    row4_status.pack_start(&anon_status_label, false, false, 0);
+    config_box.pack_start(&row4_status, false, false, 0);
 
     let row5 = Box::new(Orientation::Horizontal, 5);
     row5.pack_start(&Label::new(Some("最大传输速度(KB/s):")), false, false, 0);
@@ -407,17 +454,31 @@ fn create_ftp_config_frame(
     row5.pack_start(&encoding_combo, false, false, 0);
     config_box.pack_start(&row5, false, false, 0);
 
+    let anon_cb_for_signal = anon_cb.clone();
+    let anon_home_for_signal = anon_home_entry.clone();
+    let anon_status_for_signal = anon_status_label.clone();
+    anon_cb.connect_toggled(clone!(@strong anon_cb_for_signal, @strong anon_home_for_signal, @strong anon_status_for_signal => move |_| {
+        validate_anonymous_home(&anon_home_for_signal, &anon_status_for_signal, anon_cb_for_signal.is_active());
+    }));
+
+    let anon_home_for_change = anon_home_entry.clone();
+    let anon_status_for_change = anon_status_label.clone();
+    let anon_cb_for_change = anon_cb.clone();
+    anon_home_entry.connect_changed(clone!(@strong anon_home_for_change, @strong anon_status_for_change, @strong anon_cb_for_change => move |_| {
+        validate_anonymous_home(&anon_home_for_change, &anon_status_for_change, anon_cb_for_change.is_active());
+    }));
+
     setup_ftp_save_button(
         state, &save_btn, &ftp_enabled_cb, &anon_cb, &bind_ip_entry, &ftp_port_spin,
         &passive_start_spin, &passive_end_spin, &welcome_entry, 
-        &anon_home_entry, &max_speed_spin, &encoding_combo,
+        &anon_home_entry, &max_speed_spin, &encoding_combo, &anon_status_label, &masquerade_ip_entry,
     );
 
     config_frame.add(&config_box);
     container.pack_start(&config_frame, false, false, 0);
 }
 
-fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton, Entry, SpinButton, SpinButton, SpinButton, Entry, Entry, SpinButton, ComboBoxText) {
+fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton, Entry, SpinButton, SpinButton, SpinButton, Entry, Entry, SpinButton, ComboBoxText, Label, Entry) {
     let ftp_enabled_cb = CheckButton::with_label("启用FTP服务");
     let anon_cb = CheckButton::with_label("允许匿名访问");
     let bind_ip_entry = Entry::new();
@@ -434,6 +495,10 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
     encoding_combo.append(Some("gbk"), "GBK");
     encoding_combo.append(Some("gb2312"), "GB2312");
     encoding_combo.set_active_id(Some("utf-8"));
+    let anon_status_label = Label::new(None);
+    let masquerade_ip_entry = Entry::new();
+    masquerade_ip_entry.set_width_chars(15);
+    masquerade_ip_entry.set_placeholder_text(Some("如: 192.168.1.100"));
 
     if let Ok(s) = state.try_lock() {
         if let Ok(cfg) = s.config.try_lock() {
@@ -450,10 +515,49 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
             max_speed_spin.set_value(cfg.ftp.max_speed_kbps as f64);
             let encoding_id = cfg.ftp.encoding.to_lowercase();
             encoding_combo.set_active_id(Some(&encoding_id));
+            if let Some(ref masq_ip) = cfg.ftp.masquerade_ip {
+                masquerade_ip_entry.set_text(masq_ip);
+            }
         }
     }
 
-    (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, anon_home_entry, max_speed_spin, encoding_combo)
+    validate_anonymous_home(&anon_home_entry, &anon_status_label, anon_cb.is_active());
+
+    (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, anon_home_entry, max_speed_spin, encoding_combo, anon_status_label, masquerade_ip_entry)
+}
+
+fn validate_anonymous_home(entry: &Entry, status_label: &Label, allow_anon: bool) {
+    let home = entry.text().to_string();
+    
+    if !allow_anon {
+        status_label.set_markup("<span foreground='gray' size='small'>匿名访问未启用</span>");
+        return;
+    }
+    
+    if home.trim().is_empty() {
+        status_label.set_markup("<span foreground='red' size='small'>⚠ 启用匿名访问必须配置匿名用户目录</span>");
+        return;
+    }
+    
+    let path = Path::new(&home);
+    
+    if !path.exists() {
+        status_label.set_markup(&format!(
+            "<span foreground='red' size='small'>⚠ 目录不存在: {}</span>",
+            home
+        ));
+        return;
+    }
+    
+    if !path.is_dir() {
+        status_label.set_markup(&format!(
+            "<span foreground='red' size='small'>⚠ 路径不是目录: {}</span>",
+            home
+        ));
+        return;
+    }
+    
+    status_label.set_markup("<span foreground='green' size='small'>✓ 目录有效</span>");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -470,6 +574,8 @@ fn setup_ftp_save_button(
     anon_home_entry: &Entry,
     max_speed_spin: &SpinButton,
     encoding_combo: &ComboBoxText,
+    anon_status_label: &Label,
+    masquerade_ip_entry: &Entry,
 ) {
     let state_clone = Arc::clone(state);
     let ftp_enabled_clone = ftp_enabled_cb.clone();
@@ -482,11 +588,13 @@ fn setup_ftp_save_button(
     let anon_home_clone = anon_home_entry.clone();
     let max_speed_clone = max_speed_spin.clone();
     let encoding_clone = encoding_combo.clone();
+    let anon_status_clone = anon_status_label.clone();
+    let masquerade_ip_clone = masquerade_ip_entry.clone();
     
     save_btn.connect_clicked(clone!(@strong state_clone, @strong ftp_enabled_clone, @strong anon_clone,
                @strong bind_ip_clone, @strong ftp_port_clone, @strong passive_start_clone, @strong passive_end_clone, 
                @strong welcome_clone, @strong anon_home_clone, @strong max_speed_clone, 
-               @strong encoding_clone => move |_| {
+               @strong encoding_clone, @strong anon_status_clone, @strong masquerade_ip_clone => move |_| {
         let enabled = ftp_enabled_clone.is_active();
         let anon = anon_clone.is_active();
         let bind_ip = bind_ip_clone.text().to_string();
@@ -497,6 +605,47 @@ fn setup_ftp_save_button(
         let anon_home = anon_home_clone.text().to_string();
         let max_speed = max_speed_clone.value() as u64;
         let encoding = encoding_clone.active_text().map(|s| s.to_string()).unwrap_or_else(|| "UTF-8".to_string());
+        let masquerade_ip = masquerade_ip_clone.text().to_string();
+        let masquerade_ip_opt = if masquerade_ip.trim().is_empty() { None } else { Some(masquerade_ip.trim().to_string()) };
+        
+        if anon {
+            if anon_home.trim().is_empty() {
+                anon_status_clone.set_markup("<span foreground='red' size='small'>⚠ 启用匿名访问必须配置匿名用户目录</span>");
+                if let Ok(s) = state_clone.try_lock() {
+                    if let Ok(mut log) = s.logger.try_lock() {
+                        log.error("CONFIG", "保存失败: 启用匿名访问必须配置匿名用户目录");
+                    }
+                }
+                return;
+            }
+            
+            let path = Path::new(&anon_home);
+            if !path.exists() {
+                anon_status_clone.set_markup(&format!(
+                    "<span foreground='red' size='small'>⚠ 目录不存在: {}</span>",
+                    anon_home
+                ));
+                if let Ok(s) = state_clone.try_lock() {
+                    if let Ok(mut log) = s.logger.try_lock() {
+                        log.error("CONFIG", &format!("保存失败: 匿名用户目录不存在: {}", anon_home));
+                    }
+                }
+                return;
+            }
+            
+            if !path.is_dir() {
+                anon_status_clone.set_markup(&format!(
+                    "<span foreground='red' size='small'>⚠ 路径不是目录: {}</span>",
+                    anon_home
+                ));
+                if let Ok(s) = state_clone.try_lock() {
+                    if let Ok(mut log) = s.logger.try_lock() {
+                        log.error("CONFIG", &format!("保存失败: 匿名用户目录路径不是目录: {}", anon_home));
+                    }
+                }
+                return;
+            }
+        }
         
         let config_str = {
             if let Ok(s) = state_clone.try_lock() {
@@ -510,6 +659,7 @@ fn setup_ftp_save_button(
                     cfg.ftp.anonymous_home = if anon_home.is_empty() { None } else { Some(anon_home) };
                     cfg.ftp.max_speed_kbps = max_speed;
                     cfg.ftp.encoding = encoding.clone();
+                    cfg.ftp.masquerade_ip = masquerade_ip_opt;
                     toml::to_string_pretty(&*cfg).unwrap_or_default()
                 } else { return; }
             } else { return; }
@@ -517,14 +667,21 @@ fn setup_ftp_save_button(
         
         match crate::communication::dbus::write_config(&config_str) {
             Ok(()) => {
+                if anon {
+                    anon_status_clone.set_markup("<span foreground='green' size='small'>✓ 目录有效</span>");
+                } else {
+                    anon_status_clone.set_markup("<span foreground='gray' size='small'>匿名访问未启用</span>");
+                }
                 if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut log) = s.logger.try_lock() {
                         log.info("CONFIG", &format!(
-                            "FTP配置已保存: 启用={}, 绑定={}, 端口={}, 编码={}",
+                            "FTP配置已保存: 启用={}, 绑定={}, 端口={}, 编码={}, 匿名={}, 对外IP={}",
                             if enabled { "是" } else { "否" },
                             bind_ip_clone.text(),
                             ftp_port,
-                            encoding
+                            encoding,
+                            if anon { "是" } else { "否" },
+                            masquerade_ip_clone.text()
                         ));
                     }
                 }

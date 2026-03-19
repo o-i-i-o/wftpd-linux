@@ -4,7 +4,7 @@ use gtk::{
     CellRendererText, TreeViewColumn, CellRendererToggle, CheckButton, Dialog,
     DialogFlags, ResponseType, SpinButton, Adjustment, FileChooserDialog, FileChooserAction,
 };
-use gtk::glib::clone;
+use gtk::glib::{self, clone};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::os::unix::fs::PermissionsExt;
 use crate::AppState;
@@ -392,14 +392,57 @@ fn show_user_dialog(
 
             let state = Arc::clone(&state_clone);
             let store = store_clone.clone();
-            let home_dir = if home.is_empty() {
-                get_default_home_dir(&uname)
-            } else {
-                home.clone()
-            };
+            let home_dir = home.clone();
             let pwd = password.clone();
             let username = uname.clone();
             let is_edit = edit_username.is_some();
+
+            if home_dir.is_empty() {
+                glib::idle_add_local_once(move || {
+                    let err_dialog = gtk::MessageDialog::new(
+                        None::<&gtk::Window>,
+                        gtk::DialogFlags::MODAL,
+                        gtk::MessageType::Error,
+                        gtk::ButtonsType::Ok,
+                        "主目录不能为空",
+                    );
+                    err_dialog.run();
+                    err_dialog.close();
+                });
+                return;
+            }
+
+            let home_path = std::path::Path::new(&home_dir);
+            if !home_path.exists() {
+                let home_dir_msg = home_dir.clone();
+                glib::idle_add_local_once(move || {
+                    let err_dialog = gtk::MessageDialog::new(
+                        None::<&gtk::Window>,
+                        gtk::DialogFlags::MODAL,
+                        gtk::MessageType::Error,
+                        gtk::ButtonsType::Ok,
+                        &format!("主目录不存在: {}", home_dir_msg),
+                    );
+                    err_dialog.run();
+                    err_dialog.close();
+                });
+                return;
+            }
+            if !home_path.is_dir() {
+                let home_dir_msg = home_dir.clone();
+                glib::idle_add_local_once(move || {
+                    let err_dialog = gtk::MessageDialog::new(
+                        None::<&gtk::Window>,
+                        gtk::DialogFlags::MODAL,
+                        gtk::MessageType::Error,
+                        gtk::ButtonsType::Ok,
+                        &format!("主目录路径不是目录: {}", home_dir_msg),
+                    );
+                    err_dialog.run();
+                    err_dialog.close();
+                });
+                return;
+            }
 
             let users_json = {
                 if let Ok(s) = state.try_lock() {
@@ -420,12 +463,6 @@ fn show_user_dialog(
                         };
                         
                         if success {
-                            if !is_edit {
-                                if let Err(e) = std::fs::create_dir_all(&home_dir) {
-                                    log::warn!("Failed to create home directory: {}", e);
-                                }
-                            }
-                            
                             if let Err(e) = setup_shared_directory_permissions(&home_dir) {
                                 log::warn!("Failed to setup directory permissions: {}", e);
                             }
@@ -522,14 +559,6 @@ fn show_confirm_dialog(
     }));
 
     dialog.run();
-}
-
-fn get_default_home_dir(username: &str) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        format!("{}/Desktop/文件共享", home)
-    } else {
-        format!("/home/{}/Desktop/文件共享", username)
-    }
 }
 
 fn refresh_user_list(store: &ListStore, state: &Arc<StdMutex<AppState>>) {

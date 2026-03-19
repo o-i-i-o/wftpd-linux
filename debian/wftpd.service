@@ -28,11 +28,11 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=false
 PrivateTmp=yes
 PrivateDevices=yes
 
-ReadWritePaths=/var/log/wftpg /var/lib/wftpg /etc/wftpg /run/wftpd /home/wftpg
+ReadWritePaths=/var/log/wftpg /var/lib/wftpg /etc/wftpg /run/wftpd /home
 
 LimitNOFILE=65536
 

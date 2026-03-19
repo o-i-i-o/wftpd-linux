@@ -11,6 +11,14 @@ pub fn run_service() -> Result<()> {
     let config_path = Config::get_config_path();
     let config = Arc::new(Mutex::new(Config::load(&config_path)?));
     
+    {
+        let cfg = config.lock().unwrap();
+        if let Err(e) = cfg.validate() {
+            eprintln!("Configuration validation failed: {}", e);
+            return Err(e);
+        }
+    }
+    
     let users_path = Config::get_users_path();
     let user_manager = Arc::new(Mutex::new(UserManager::load(&users_path)?));
     

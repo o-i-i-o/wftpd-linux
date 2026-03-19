@@ -126,6 +126,21 @@ impl FtpSession {
                     self.rename_from = None;
                     return Ok(());
                 }
+                
+                let from_path_buf = Path::new(from_path);
+                let cwd_path = Path::new(&self.cwd);
+                if from_path_buf == cwd_path {
+                    self.stream.write_all(b"550 Cannot rename current working directory\r\n")?;
+                    self.rename_from = None;
+                    return Ok(());
+                }
+                
+                if cwd_path.starts_with(from_path_buf) && cwd_path != from_path_buf {
+                    self.stream.write_all(b"550 Cannot rename parent of current working directory\r\n")?;
+                    self.rename_from = None;
+                    return Ok(());
+                }
+                
                 if std::fs::rename(from_path, &to_path).is_ok() {
                     self.stream.write_all(b"250 Rename successful\r\n")?;
                     self.file_logger.lock().unwrap().log_rename(

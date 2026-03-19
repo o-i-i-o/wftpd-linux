@@ -410,9 +410,61 @@ impl russh::server::Handler for SftpHandler {
                 };
                 
                 if let Ok(resp) = response {
-                    let _ = session.data(channel, CryptoVec::from_slice(&resp));
+                    if !resp.is_empty() {
+                        let _ = session.data(channel, CryptoVec::from_slice(&resp));
+                    }
                 }
             }
+        }
+        Ok(())
+    }
+
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        if self.sftp_channel == Some(channel) {
+            if let Some(state) = &self.sftp_state {
+                let mut sftp_state = state.lock().await;
+                let buffer_len = sftp_state.buffer.len();
+                if buffer_len > 0 {
+                    self.logger.lock().unwrap().warning(
+                        "SFTP",
+                        &format!(
+                            "Channel EOF received with {} bytes of incomplete data in buffer, clearing",
+                            buffer_len
+                        ),
+                    );
+                    sftp_state.buffer.clear();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn channel_close(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        if self.sftp_channel == Some(channel) {
+            if let Some(state) = &self.sftp_state {
+                let mut sftp_state = state.lock().await;
+                let buffer_len = sftp_state.buffer.len();
+                if buffer_len > 0 {
+                    self.logger.lock().unwrap().warning(
+                        "SFTP",
+                        &format!(
+                            "Channel closed with {} bytes of incomplete data in buffer, clearing",
+                            buffer_len
+                        ),
+                    );
+                    sftp_state.buffer.clear();
+                }
+            }
+            self.sftp_channel = None;
+            self.sftp_state = None;
         }
         Ok(())
     }

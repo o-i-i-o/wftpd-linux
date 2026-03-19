@@ -48,6 +48,7 @@ pub enum SftpFileHandle {
         file: tokio::fs::File,
         locked: bool,
         existed: bool,
+        written_bytes: u64,
     },
     Dir {
         path: PathBuf,
@@ -155,37 +156,9 @@ impl SftpState {
                 self.buffer[0], self.buffer[1], self.buffer[2], self.buffer[3]
             ]) as usize;
             
-            if packet_len == 0 {
+            if packet_len == 0 || packet_len > MAX_PACKET_SIZE {
                 self.buffer.clear();
                 return Ok(build_status_packet(0, SSH_FX_FAILURE, "Invalid packet length", ""));
-            }
-            
-            if packet_len > MAX_PACKET_SIZE {
-                if self.buffer.len() >= 4 + packet_len {
-                    let packet_data = &self.buffer[4..4 + packet_len];
-                    let response = if !packet_data.is_empty() {
-                        let id = if packet_data.len() >= 5 {
-                            parse_u32(packet_data, 1)
-                        } else {
-                            0
-                        };
-                        self.logger.lock().unwrap().warning(
-                            "SFTP",
-                            &format!("Dropping oversized packet: {} bytes (id: {})", packet_len, id),
-                        );
-                        build_status_packet(id, SSH_FX_FAILURE, "Packet too large", "")
-                    } else {
-                        Vec::new()
-                    };
-                    self.buffer.drain(..4 + packet_len);
-                    if !response.is_empty() {
-                        return Ok(response);
-                    }
-                    continue;
-                } else {
-                    self.buffer.clear();
-                    return Ok(build_status_packet(0, SSH_FX_FAILURE, "Packet too large", ""));
-                }
             }
             
             if self.buffer.len() < 4 + packet_len {
@@ -334,7 +307,40 @@ impl SftpState {
         let id = parse_u32(data, 1);
         let handle = parse_string(data, 5)?;
 
-        self.handles.remove(&handle);
+        if let Some(SftpFileHandle::File { path, existed, written_bytes, .. }) = self.handles.remove(&handle) {
+            if written_bytes > 0 {
+                let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(written_bytes);
+                
+                if existed {
+                    self.file_logger.lock().unwrap().log_update(
+                        self.username.as_deref().unwrap_or("anonymous"),
+                        &self.client_ip,
+                        &path.to_string_lossy(),
+                        file_size,
+                        "SFTP",
+                    );
+                } else {
+                    self.file_logger.lock().unwrap().log_upload(
+                        self.username.as_deref().unwrap_or("anonymous"),
+                        &self.client_ip,
+                        &path.to_string_lossy(),
+                        file_size,
+                        "SFTP",
+                    );
+                }
+
+                self.logger.lock().unwrap().client_action(
+                    "SFTP",
+                    &format!("Closed file: {} ({} bytes)", path.display(), file_size),
+                    &self.client_ip,
+                    self.username.as_deref(),
+                    "CLOSE",
+                );
+            }
+        } else {
+            self.handles.remove(&handle);
+        }
+
         Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
     }
 
@@ -413,10 +419,36 @@ impl SftpState {
         match handle {
             Some(SftpFileHandle::File { path, file, .. }) => {
                 use tokio::io::{AsyncSeekExt, AsyncReadExt};
-                let _ = file.seek(std::io::SeekFrom::Start(offset)).await;
                 
-                let mut buffer = vec![0u8; len.min(32768)];
-                let n = file.read(&mut buffer).await.unwrap_or(0);
+                if let Err(e) = file.seek(std::io::SeekFrom::Start(offset)).await {
+                    self.logger.lock().unwrap().warning(
+                        "SFTP",
+                        &format!("Failed to seek to offset {}: {}", offset, e),
+                    );
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, "Seek failed", ""));
+                }
+                
+                let read_len = len.min(32768);
+                let mut buffer = vec![0u8; read_len];
+                let n = match file.read(&mut buffer).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        self.logger.lock().unwrap().warning(
+                            "SFTP",
+                            &format!("Failed to read from {:?}: {}", path, e),
+                        );
+                        return Ok(build_status_packet(id, SSH_FX_FAILURE, "Read failed", ""));
+                    }
+                };
+
+                if n == 0 {
+                    self.logger.lock().unwrap().debug(
+                        "SFTP",
+                        &format!("EOF reached for {:?}", path),
+                    );
+                    return Ok(build_status_packet(id, SSH_FX_EOF, "End of file", ""));
+                }
+
                 buffer.truncate(n);
 
                 self.logger.lock().unwrap().client_action(
@@ -427,15 +459,13 @@ impl SftpState {
                     "READ",
                 );
 
-                if n > 0 {
-                    self.file_logger.lock().unwrap().log_download(
-                        self.username.as_deref().unwrap_or("anonymous"),
-                        &self.client_ip,
-                        &path.to_string_lossy(),
-                        n as u64,
-                        "SFTP",
-                    );
-                }
+                self.file_logger.lock().unwrap().log_download(
+                    self.username.as_deref().unwrap_or("anonymous"),
+                    &self.client_ip,
+                    &path.to_string_lossy(),
+                    n as u64,
+                    "SFTP",
+                );
 
                 Ok(build_data_packet(id, &buffer))
             }
@@ -463,37 +493,18 @@ impl SftpState {
 
         let handle = self.handles.get_mut(&handle_str);
         match handle {
-            Some(SftpFileHandle::File { path, file, existed, .. }) => {
+            Some(SftpFileHandle::File { path, file, written_bytes, .. }) => {
                 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
                 let _ = file.seek(std::io::SeekFrom::Start(offset)).await;
                 file.write_all(write_data).await?;
                 let _ = file.flush().await;
 
-                self.logger.lock().unwrap().client_action(
+                *written_bytes += data_len as u64;
+
+                self.logger.lock().unwrap().debug(
                     "SFTP",
                     &format!("Wrote {} bytes to {:?}", data_len, path),
-                    &self.client_ip,
-                    self.username.as_deref(),
-                    "WRITE",
                 );
-
-                if *existed {
-                    self.file_logger.lock().unwrap().log_update(
-                        self.username.as_deref().unwrap_or("anonymous"),
-                        &self.client_ip,
-                        &path.to_string_lossy(),
-                        data_len as u64,
-                        "SFTP",
-                    );
-                } else {
-                    self.file_logger.lock().unwrap().log_upload(
-                        self.username.as_deref().unwrap_or("anonymous"),
-                        &self.client_ip,
-                        &path.to_string_lossy(),
-                        data_len as u64,
-                        "SFTP",
-                    );
-                }
 
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
@@ -631,8 +642,18 @@ impl SftpState {
 
     async fn handle_rename(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let id = parse_u32(data, 1);
+        
+        if data.len() < 9 {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
+        }
+        
         let old_path = parse_string(data, 5)?;
         let new_path_pos = 5 + 4 + old_path.len();
+        
+        if data.len() < new_path_pos + 4 {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
+        }
+        
         let new_path = parse_string(data, new_path_pos)?;
 
         if !self.check_permission(|p| p.can_rename) {
@@ -645,6 +666,11 @@ impl SftpState {
                 return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
             }
         };
+        
+        if !old_full.exists() {
+            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""));
+        }
+        
         let new_full = match self.resolve_path(&new_path) {
             Ok(p) => p,
             Err(e) => {
@@ -1056,6 +1082,7 @@ impl SftpState {
                     file,
                     locked: false,
                     existed: file_existed,
+                    written_bytes: 0,
                 });
                 Ok(build_handle_packet(id, &handle))
             }
@@ -1081,20 +1108,35 @@ impl SftpState {
             }
         };
 
-        match tokio::fs::read_link(&full_path).await {
-            Ok(target) => {
-                let target_str = target.to_string_lossy().to_string();
+        match tokio::fs::symlink_metadata(&full_path).await {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    if let Ok(target) = tokio::fs::read_link(&full_path).await {
+                        let target_str = target.to_string_lossy().to_string();
+                        let mut payload = vec![104];
+                        payload.extend_from_slice(&id.to_be_bytes());
+                        payload.extend_from_slice(&1u32.to_be_bytes());
+                        payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
+                        payload.extend_from_slice(target_str.as_bytes());
+                        payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
+                        payload.extend_from_slice(target_str.as_bytes());
+                        payload.extend_from_slice(&build_attrs(false, 0));
+                        return Ok(build_packet(&payload));
+                    }
+                }
                 let mut payload = vec![104];
                 payload.extend_from_slice(&id.to_be_bytes());
-                payload.extend_from_slice(&1u32.to_be_bytes());
-                payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
-                payload.extend_from_slice(target_str.as_bytes());
-                payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
-                payload.extend_from_slice(target_str.as_bytes());
-                payload.extend_from_slice(&build_attrs(false, 0));
+                payload.extend_from_slice(&0u32.to_be_bytes());
+                payload.extend_from_slice(&build_attrs(metadata.is_dir(), metadata.len()));
                 Ok(build_packet(&payload))
             }
-            Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
+            Err(e) => {
+                self.logger.lock().unwrap().warning(
+                    "SFTP",
+                    &format!("READLINK: symlink_metadata failed for {}: {}", full_path.display(), e),
+                );
+                Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""))
+            }
         }
     }
 

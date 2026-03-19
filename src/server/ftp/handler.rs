@@ -197,11 +197,10 @@ impl FtpSession {
     }
 
     pub fn cleanup_data_connection(&mut self) {
-        if self.passive_mode {
-            if let Some(port) = self.data_port {
+        if self.passive_mode
+            && let Some(port) = self.data_port {
                 let mut listeners = self.passive_listeners.lock().unwrap();
                 listeners.remove(&port);
             }
-        }
     }
 }

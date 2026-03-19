@@ -154,11 +154,10 @@ fn setup_ftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, sta
                         if response.success {
                             status.set_text("已停止");
                             btn.set_label("启动");
-                            if let Ok(s) = state.try_lock() {
-                                if let Ok(mut log) = s.logger.try_lock() {
+                            if let Ok(s) = state.try_lock()
+                                && let Ok(mut log) = s.logger.try_lock() {
                                     log.info("FTP", "FTP服务已停止");
                                 }
-                            }
                         } else {
                             status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
                         }
@@ -180,8 +179,8 @@ fn setup_ftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, sta
                         if response.success {
                             status.set_markup("<span foreground='green'>运行中 ✓</span>");
                             btn.set_label("停止");
-                            if let Ok(s) = state.try_lock() {
-                                if let Ok(mut log) = s.logger.try_lock() {
+                            if let Ok(s) = state.try_lock()
+                                && let Ok(mut log) = s.logger.try_lock() {
                                     let (bind_ip, ftp_port) = {
                                         if let Ok(cfg) = s.config.try_lock() {
                                             (cfg.server.bind_ip.clone(), cfg.server.ftp_port)
@@ -191,7 +190,6 @@ fn setup_ftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, sta
                                     };
                                     log.info("FTP", &format!("FTP服务已启动，监听 {}:{}", bind_ip, ftp_port));
                                 }
-                            }
                         } else {
                             status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
                         }
@@ -225,11 +223,10 @@ fn setup_sftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
                         if response.success {
                             status.set_text("已停止");
                             btn.set_label("启动");
-                            if let Ok(s) = state.try_lock() {
-                                if let Ok(mut log) = s.logger.try_lock() {
+                            if let Ok(s) = state.try_lock()
+                                && let Ok(mut log) = s.logger.try_lock() {
                                     log.info("SFTP", "SFTP服务已停止");
                                 }
-                            }
                         } else {
                             status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
                         }
@@ -251,8 +248,8 @@ fn setup_sftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
                         if response.success {
                             status.set_markup("<span foreground='green'>运行中 ✓</span>");
                             btn.set_label("停止");
-                            if let Ok(s) = state.try_lock() {
-                                if let Ok(mut log) = s.logger.try_lock() {
+                            if let Ok(s) = state.try_lock()
+                                && let Ok(mut log) = s.logger.try_lock() {
                                     let (bind_ip, sftp_port) = {
                                         if let Ok(cfg) = s.config.try_lock() {
                                             (cfg.server.bind_ip.clone(), cfg.server.sftp_port)
@@ -262,7 +259,6 @@ fn setup_sftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
                                     };
                                     log.info("SFTP", &format!("SFTP服务已启动，监听 {}:{}", bind_ip, sftp_port));
                                 }
-                            }
                         } else {
                             status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
                         }
@@ -297,11 +293,10 @@ fn setup_ftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
                     if response.success {
                         status.set_markup("<span foreground='green'>运行中 ✓</span>");
                         toggle.set_label("停止");
-                        if let Ok(s) = state.try_lock() {
-                            if let Ok(mut log) = s.logger.try_lock() {
+                        if let Ok(s) = state.try_lock()
+                            && let Ok(mut log) = s.logger.try_lock() {
                                 log.info("FTP", "FTP服务已重启");
                             }
-                        }
                     } else {
                         status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
                         toggle.set_label("启动");
@@ -337,11 +332,10 @@ fn setup_sftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, s
                     if response.success {
                         status.set_markup("<span foreground='green'>运行中 ✓</span>");
                         toggle.set_label("停止");
-                        if let Ok(s) = state.try_lock() {
-                            if let Ok(mut log) = s.logger.try_lock() {
+                        if let Ok(s) = state.try_lock()
+                            && let Ok(mut log) = s.logger.try_lock() {
                                 log.info("SFTP", "SFTP服务已重启");
                             }
-                        }
                     } else {
                         status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
                         toggle.set_label("启动");
@@ -430,13 +424,12 @@ fn create_ftp_config_frame(
         let entry = anon_home_clone.clone();
         let status = anon_status_clone.clone();
         dialog.connect_response(clone!(@strong entry, @strong status, @strong dialog => move |dlg, resp| {
-            if resp == gtk::ResponseType::Accept {
-                if let Some(path) = dlg.filename() {
+            if resp == gtk::ResponseType::Accept
+                && let Some(path) = dlg.filename() {
                     let path_str = path.to_string_lossy().to_string();
                     entry.set_text(&path_str);
                     validate_anonymous_home(&entry, &status, true);
                 }
-            }
             dlg.close();
         }));
         
@@ -500,8 +493,8 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
     masquerade_ip_entry.set_width_chars(15);
     masquerade_ip_entry.set_placeholder_text(Some("如: 192.168.1.100"));
 
-    if let Ok(s) = state.try_lock() {
-        if let Ok(cfg) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(cfg) = s.config.try_lock() {
             ftp_enabled_cb.set_active(cfg.ftp.enabled);
             anon_cb.set_active(cfg.ftp.allow_anonymous);
             bind_ip_entry.set_text(&cfg.ftp.bind_ip);
@@ -519,7 +512,6 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
                 masquerade_ip_entry.set_text(masq_ip);
             }
         }
-    }
 
     validate_anonymous_home(&anon_home_entry, &anon_status_label, anon_cb.is_active());
 
@@ -611,11 +603,10 @@ fn setup_ftp_save_button(
         if anon {
             if anon_home.trim().is_empty() {
                 anon_status_clone.set_markup("<span foreground='red' size='small'>⚠ 启用匿名访问必须配置匿名用户目录</span>");
-                if let Ok(s) = state_clone.try_lock() {
-                    if let Ok(mut log) = s.logger.try_lock() {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut log) = s.logger.try_lock() {
                         log.error("CONFIG", "保存失败: 启用匿名访问必须配置匿名用户目录");
                     }
-                }
                 return;
             }
             
@@ -625,11 +616,10 @@ fn setup_ftp_save_button(
                     "<span foreground='red' size='small'>⚠ 目录不存在: {}</span>",
                     anon_home
                 ));
-                if let Ok(s) = state_clone.try_lock() {
-                    if let Ok(mut log) = s.logger.try_lock() {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut log) = s.logger.try_lock() {
                         log.error("CONFIG", &format!("保存失败: 匿名用户目录不存在: {}", anon_home));
                     }
-                }
                 return;
             }
             
@@ -638,11 +628,10 @@ fn setup_ftp_save_button(
                     "<span foreground='red' size='small'>⚠ 路径不是目录: {}</span>",
                     anon_home
                 ));
-                if let Ok(s) = state_clone.try_lock() {
-                    if let Ok(mut log) = s.logger.try_lock() {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut log) = s.logger.try_lock() {
                         log.error("CONFIG", &format!("保存失败: 匿名用户目录路径不是目录: {}", anon_home));
                     }
-                }
                 return;
             }
         }
@@ -672,8 +661,8 @@ fn setup_ftp_save_button(
                 } else {
                     anon_status_clone.set_markup("<span foreground='gray' size='small'>匿名访问未启用</span>");
                 }
-                if let Ok(s) = state_clone.try_lock() {
-                    if let Ok(mut log) = s.logger.try_lock() {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut log) = s.logger.try_lock() {
                         log.info("CONFIG", &format!(
                             "FTP配置已保存: 启用={}, 绑定={}, 端口={}, 编码={}, 匿名={}, 对外IP={}",
                             if enabled { "是" } else { "否" },
@@ -684,14 +673,12 @@ fn setup_ftp_save_button(
                             masquerade_ip_clone.text()
                         ));
                     }
-                }
             }
             Err(e) => {
-                if let Ok(s) = state_clone.try_lock() {
-                    if let Ok(mut log) = s.logger.try_lock() {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut log) = s.logger.try_lock() {
                         log.error("CONFIG", &format!("保存配置失败: {}", e));
                     }
-                }
             }
         }
     }));
@@ -758,8 +745,8 @@ fn load_sftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, SpinButton
     log_level_combo.append(Some("error"), "Error");
     log_level_combo.set_active_id(Some("info"));
 
-    if let Ok(s) = state.try_lock() {
-        if let Ok(cfg) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(cfg) = s.config.try_lock() {
             sftp_enabled_cb.set_active(cfg.sftp.enabled);
             sftp_port_spin.set_value(cfg.server.sftp_port as f64);
             max_auth_spin.set_value(cfg.sftp.max_auth_attempts as f64);
@@ -768,7 +755,6 @@ fn load_sftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, SpinButton
             let log_level_id = cfg.sftp.log_level.to_lowercase();
             log_level_combo.set_active_id(Some(&log_level_id));
         }
-    }
 
     (sftp_enabled_cb, sftp_port_spin, max_auth_spin, auth_timeout_spin, host_key_entry, log_level_combo)
 }
@@ -818,8 +804,8 @@ fn setup_sftp_save_button(
         
         match crate::communication::dbus::write_config(&config_str) {
             Ok(()) => {
-                if let Ok(s) = state_clone.try_lock() {
-                    if let Ok(mut log) = s.logger.try_lock() {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut log) = s.logger.try_lock() {
                         log.info("CONFIG", &format!(
                             "SFTP配置已保存: 启用={}, 端口={}, 日志级别={}",
                             if enabled { "是" } else { "否" },
@@ -827,14 +813,12 @@ fn setup_sftp_save_button(
                             log_level
                         ));
                     }
-                }
             }
             Err(e) => {
-                if let Ok(s) = state_clone.try_lock() {
-                    if let Ok(mut log) = s.logger.try_lock() {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut log) = s.logger.try_lock() {
                         log.error("CONFIG", &format!("保存配置失败: {}", e));
                     }
-                }
             }
         }
     }));

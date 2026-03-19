@@ -229,9 +229,9 @@ impl russh::server::Handler for SftpHandler {
             });
         }
         
-        if let Ok(stored_key) = tokio::fs::read_to_string(&user_pubkey_path).await {
-            if let Ok(stored_pubkey) = keys::parse_public_key_base64(stored_key.trim()) {
-                if public_key == &stored_pubkey {
+        if let Ok(stored_key) = tokio::fs::read_to_string(&user_pubkey_path).await
+            && let Ok(stored_pubkey) = keys::parse_public_key_base64(stored_key.trim())
+                && public_key == &stored_pubkey {
                     self.authenticated = true;
                     self.username = Some(user.to_string());
                     
@@ -307,8 +307,6 @@ impl russh::server::Handler for SftpHandler {
 
                     return Ok(server::Auth::Accept);
                 }
-            }
-        }
 
         self.logger.lock().unwrap().client_action(
             "SFTP",
@@ -402,20 +400,18 @@ impl russh::server::Handler for SftpHandler {
         data: &[u8],
         session: &mut server::Session,
     ) -> Result<(), Self::Error> {
-        if self.sftp_channel == Some(channel) {
-            if let Some(state) = &self.sftp_state {
+        if self.sftp_channel == Some(channel)
+            && let Some(state) = &self.sftp_state {
                 let response = {
                     let mut sftp_state = state.lock().await;
                     sftp_state.process_sftp_data(data).await
                 };
                 
-                if let Ok(resp) = response {
-                    if !resp.is_empty() {
+                if let Ok(resp) = response
+                    && !resp.is_empty() {
                         let _ = session.data(channel, CryptoVec::from_slice(&resp));
                     }
-                }
             }
-        }
         Ok(())
     }
 
@@ -424,8 +420,8 @@ impl russh::server::Handler for SftpHandler {
         channel: ChannelId,
         _session: &mut server::Session,
     ) -> Result<(), Self::Error> {
-        if self.sftp_channel == Some(channel) {
-            if let Some(state) = &self.sftp_state {
+        if self.sftp_channel == Some(channel)
+            && let Some(state) = &self.sftp_state {
                 let mut sftp_state = state.lock().await;
                 let buffer_len = sftp_state.buffer.len();
                 if buffer_len > 0 {
@@ -439,7 +435,6 @@ impl russh::server::Handler for SftpHandler {
                     sftp_state.buffer.clear();
                 }
             }
-        }
         Ok(())
     }
 

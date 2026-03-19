@@ -89,17 +89,15 @@ WantedBy=multi-user.target
             return Some(user);
         }
         
-        if let Ok(user) = std::env::var("PKEXEC_UID") {
-            if let Ok(uid) = user.parse::<u32>() {
+        if let Ok(user) = std::env::var("PKEXEC_UID")
+            && let Ok(uid) = user.parse::<u32>() {
                 return self.get_username_by_uid(uid);
             }
-        }
         
-        if let Ok(user) = std::env::var("USER") {
-            if user != "root" {
+        if let Ok(user) = std::env::var("USER")
+            && user != "root" {
                 return Some(user);
             }
-        }
         
         self.get_session_user()
     }

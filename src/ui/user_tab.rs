@@ -246,11 +246,10 @@ fn show_user_dialog(
         
         let entry = home_entry_clone.clone();
         dialog.connect_response(clone!(@strong entry, @strong dialog => move |dlg, resp| {
-            if resp == ResponseType::Accept {
-                if let Some(path) = dlg.filename() {
+            if resp == ResponseType::Accept
+                && let Some(path) = dlg.filename() {
                     entry.set_text(&path.to_string_lossy());
                 }
-            }
             dlg.close();
         }));
         
@@ -317,10 +316,10 @@ fn show_user_dialog(
     quota_frame.add(&quota_box);
     box_.pack_start(&quota_frame, false, false, 0);
 
-    if let Some(name) = username {
-        if let Ok(s) = state.try_lock() {
-            if let Ok(users) = s.user_manager.try_lock() {
-                if let Some(user) = users.get_user(name) {
+    if let Some(name) = username
+        && let Ok(s) = state.try_lock()
+            && let Ok(users) = s.user_manager.try_lock()
+                && let Some(user) = users.get_user(name) {
                     home_entry.set_text(&user.home_dir);
                     read_cb.set_active(user.permissions.can_read);
                     write_cb.set_active(user.permissions.can_write);
@@ -336,9 +335,6 @@ fn show_user_dialog(
                         quota_spin.set_value(quota as f64);
                     }
                 }
-            }
-        }
-    }
 
     content.add(&box_);
     content.show_all();
@@ -563,8 +559,8 @@ fn show_confirm_dialog(
 
 fn refresh_user_list(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
     store.clear();
-    if let Ok(s) = state.try_lock() {
-        if let Ok(users) = s.user_manager.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(users) = s.user_manager.try_lock() {
             for (username, user) in users.list_users() {
                 let quota_str = user.permissions.quota_mb
                     .map(|q| format!("{} MB", q))
@@ -577,7 +573,6 @@ fn refresh_user_list(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
                 store.set_value(&iter, 4, &quota_str.to_value());
             }
         }
-    }
 }
 
 fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {

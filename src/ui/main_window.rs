@@ -86,10 +86,9 @@ async fn ensure_default_directories_async(state: &Arc<StdMutex<AppState>>) {
 
     for dir in dirs_to_create {
         let path = std::path::Path::new(&dir);
-        if !path.exists() {
-            if let Err(e) = std::fs::create_dir_all(path) {
+        if !path.exists()
+            && let Err(e) = std::fs::create_dir_all(path) {
                 eprintln!("Failed to create directory {}: {}", dir, e);
             }
-        }
     }
 }

@@ -31,12 +31,11 @@ pub fn set_window_icon(window: &ApplicationWindow) {
 
     for path in &icon_paths {
         let icon_path = std::path::Path::new(path);
-        if icon_path.exists() {
-            if let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_file(icon_path) {
+        if icon_path.exists()
+            && let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_file(icon_path) {
                 window.set_icon(Some(&pixbuf));
                 return;
             }
-        }
     }
 
     if let Some(icon_theme) = gtk::IconTheme::default() {

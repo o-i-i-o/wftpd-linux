@@ -33,20 +33,18 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&Label::new(Some("最大登录尝试次数:")), false, false, 0);
     let max_attempts_spin = create_spin_button(1.0, 20.0, 1.0);
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             max_attempts_spin.set_value(config.security.max_login_attempts as f64);
         }
-    }
     row1.pack_start(&max_attempts_spin, false, false, 0);
 
     row1.pack_start(&Label::new(Some("封禁时长(秒):")), false, false, 0);
     let ban_duration_spin = create_spin_button(60.0, 86400.0, 60.0);
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             ban_duration_spin.set_value(config.security.ban_duration as f64);
         }
-    }
     row1.pack_start(&ban_duration_spin, false, false, 0);
     box_.pack_start(&row1, false, false, 0);
 
@@ -517,24 +515,22 @@ fn validate_ip_or_cidr(input: &str) -> bool {
 
 fn refresh_whitelist(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
     store.clear();
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             for ip in &config.security.allowed_ips {
                 let iter = store.append();
                 store.set_value(&iter, 0, &ip.to_value());
             }
         }
-    }
 }
 
 fn refresh_blacklist(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
     store.clear();
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             for ip in &config.security.denied_ips {
                 let iter = store.append();
                 store.set_value(&iter, 0, &ip.to_value());
             }
         }
-    }
 }

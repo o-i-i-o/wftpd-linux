@@ -57,7 +57,7 @@ pub fn get_data_connection(
         } else {
             anyhow::bail!("No passive listener")
         }
-    } else if let Some(ref addr) = data_addr {
+    } else if let Some(addr) = data_addr {
         TcpStream::connect(addr)
             .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", addr, e))
     } else {

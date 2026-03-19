@@ -236,8 +236,8 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
     store.clear();
     
     if source == "current" {
-        if let Ok(s) = state.try_lock() {
-            if let Ok(file_logger) = s.file_logger.try_lock() {
+        if let Ok(s) = state.try_lock()
+            && let Ok(file_logger) = s.file_logger.try_lock() {
                 let entries = file_logger.get_recent_logs(500);
                 for entry in entries.into_iter().rev() {
                     let iter = store.append();
@@ -252,7 +252,6 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
                     store.set_value(&iter, 8, &entry.message.to_value());
                 }
             }
-        }
     } else {
         match fs::read_to_string(source) {
             Ok(content) => {
@@ -294,20 +293,18 @@ fn setup_button_handlers(
         let source = log_file_combo_clone.active_id()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "current".to_string());
-        if let Some(store) = tree_view_clone.model() {
-            if let Ok(store) = store.downcast::<ListStore>() {
+        if let Some(store) = tree_view_clone.model()
+            && let Ok(store) = store.downcast::<ListStore>() {
                 populate_log_store(&store, &state_clone, &source);
             }
-        }
     }));
 
     let tree_view_clone = tree_view.clone();
     clear_btn.connect_clicked(clone!(@strong tree_view_clone => move |_| {
-        if let Some(store) = tree_view_clone.model() {
-            if let Ok(store) = store.downcast::<ListStore>() {
+        if let Some(store) = tree_view_clone.model()
+            && let Ok(store) = store.downcast::<ListStore>() {
                 store.clear();
             }
-        }
     }));
 
     let state_clone = Arc::clone(state);
@@ -321,13 +318,11 @@ fn setup_button_handlers(
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "current".to_string());
             
-            if source == "current" {
-                if let Some(store) = tree_view_clone.model() {
-                    if let Ok(store) = store.downcast::<ListStore>() {
+            if source == "current"
+                && let Some(store) = tree_view_clone.model()
+                    && let Ok(store) = store.downcast::<ListStore>() {
                         populate_log_store(&store, &state_clone, &source);
                     }
-                }
-            }
         }
         glib::ControlFlow::Continue
     });
@@ -338,10 +333,9 @@ fn setup_button_handlers(
         let source = log_file_combo.active_id()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "current".to_string());
-        if let Some(store) = tree_view_clone.model() {
-            if let Ok(store) = store.downcast::<ListStore>() {
+        if let Some(store) = tree_view_clone.model()
+            && let Ok(store) = store.downcast::<ListStore>() {
                 populate_log_store(&store, &state_clone, &source);
             }
-        }
     }));
 }

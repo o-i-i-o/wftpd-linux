@@ -228,25 +228,23 @@ fn resolve_cwd(cwd: &str, home_canon: &Path) -> WftpgResult<PathBuf> {
 
 pub fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
-    if let Ok(time) = metadata.modified() {
-        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+    if let Ok(time) = metadata.modified()
+        && let Ok(duration) = time.duration_since(UNIX_EPOCH) {
             let secs = duration.as_secs();
             let datetime = chrono::DateTime::from_timestamp(secs as i64, 0);
             if let Some(dt) = datetime {
                 return dt.format("%Y-%m-%d %H:%M").to_string();
             }
         }
-    }
     "1970-01-01 00:00".to_string()
 }
 
 pub fn get_file_mtime_raw(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
-    if let Ok(time) = metadata.modified() {
-        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+    if let Ok(time) = metadata.modified()
+        && let Ok(duration) = time.duration_since(UNIX_EPOCH) {
             return format!("{}", duration.as_secs());
         }
-    }
     "0".to_string()
 }
 
@@ -272,8 +270,8 @@ pub fn escape_mlst_filename(name: &str) -> String {
 
 pub fn format_mtime_rfc3659(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
-    if let Ok(time) = metadata.modified() {
-        if let Ok(duration) = time.duration_since(UNIX_EPOCH) {
+    if let Ok(time) = metadata.modified()
+        && let Ok(duration) = time.duration_since(UNIX_EPOCH) {
             let secs = duration.as_secs();
             let nanos = duration.subsec_nanos();
             if let Some(dt) = chrono::DateTime::from_timestamp(secs as i64, nanos) {
@@ -281,7 +279,6 @@ pub fn format_mtime_rfc3659(metadata: &std::fs::Metadata) -> String {
                 return formatted;
             }
         }
-    }
     "19700101000000".to_string()
 }
 

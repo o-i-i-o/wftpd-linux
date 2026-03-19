@@ -23,12 +23,11 @@ impl FtpSession {
         {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
-            if let Some(user) = user {
-                if !user.permissions.can_list {
+            if let Some(user) = user
+                && !user.permissions.can_list {
                     self.stream.write_all(b"550 Permission denied\r\n")?;
                     return Ok(());
                 }
-            }
         }
 
         self.stream.write_all(b"150 Here comes the directory listing\r\n")?;
@@ -99,12 +98,11 @@ impl FtpSession {
         {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
-            if let Some(user) = user {
-                if !user.permissions.can_list {
+            if let Some(user) = user
+                && !user.permissions.can_list {
                     self.stream.write_all(b"550 Permission denied\r\n")?;
                     return Ok(());
                 }
-            }
         }
 
         self.stream.write_all(b"150 Here comes the directory listing\r\n")?;
@@ -191,12 +189,11 @@ impl FtpSession {
                 let users = self.user_manager.lock().unwrap();
                 let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
 
-                if let Some(user) = user {
-                    if !user.permissions.can_read {
+                if let Some(user) = user
+                    && !user.permissions.can_read {
                         self.stream.write_all(b"550 Permission denied\r\n")?;
                         return Ok(());
                     }
-                }
             }
 
             let file_size = std::fs::metadata(&file_path)?.len();
@@ -311,12 +308,11 @@ impl FtpSession {
                 let users = self.user_manager.lock().unwrap();
                 let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
 
-                if let Some(user) = user {
-                    if !user.permissions.can_write {
+                if let Some(user) = user
+                    && !user.permissions.can_write {
                         self.stream.write_all(b"550 Permission denied\r\n")?;
                         return Ok(());
                     }
-                }
             }
 
             let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
@@ -501,12 +497,11 @@ impl FtpSession {
                 let users = self.user_manager.lock().unwrap();
                 let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
 
-                if let Some(user) = user {
-                    if !user.permissions.can_append {
+                if let Some(user) = user
+                    && !user.permissions.can_append {
                         self.stream.write_all(b"550 Permission denied\r\n")?;
                         return Ok(());
                     }
-                }
             }
 
             let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
@@ -604,12 +599,11 @@ impl FtpSession {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
 
-            if let Some(user) = user {
-                if !user.permissions.can_write {
+            if let Some(user) = user
+                && !user.permissions.can_write {
                     self.stream.write_all(b"550 Permission denied\r\n")?;
                     return Ok(());
                 }
-            }
         }
 
         let cwd_path = std::path::Path::new(&self.cwd);
@@ -671,14 +665,13 @@ impl FtpSession {
                                 }
                             }
                         }
-                        if transfer_success {
-                            if let Err(e) = file.sync_all() {
+                        if transfer_success
+                            && let Err(e) = file.sync_all() {
                                 self.logger.lock().unwrap().error(
                                     "FTP",
                                     &format!("STOU sync error: {}", e),
                                 );
                             }
-                        }
                     }
                     Err(e) => {
                         self.logger.lock().unwrap().error(

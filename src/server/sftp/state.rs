@@ -102,11 +102,10 @@ impl Drop for SftpState {
             }) 
         {
             Ok(handle) => {
-                if let Err(e) = handle.join() {
-                    if let Ok(mut log) = self.logger.lock() {
+                if let Err(e) = handle.join()
+                    && let Ok(mut log) = self.logger.lock() {
                         log.warning("SFTP", &format!("Cleanup thread panicked: {:?}", e));
                     }
-                }
             }
             Err(e) => {
                 if let Ok(mut log) = self.logger.lock() {
@@ -138,11 +137,10 @@ impl SftpState {
                 }
             };
             
-            if unlocked {
-                if let Ok(mut log) = logger.lock() {
+            if unlocked
+                && let Ok(mut log) = logger.lock() {
                     log.info("SFTP", &format!("Auto-unlocked file on drop: {:?}", path));
                 }
-            }
         }
     }
 
@@ -1110,8 +1108,8 @@ impl SftpState {
 
         match tokio::fs::symlink_metadata(&full_path).await {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() {
-                    if let Ok(target) = tokio::fs::read_link(&full_path).await {
+                if metadata.file_type().is_symlink()
+                    && let Ok(target) = tokio::fs::read_link(&full_path).await {
                         let target_str = target.to_string_lossy().to_string();
                         let mut payload = vec![104];
                         payload.extend_from_slice(&id.to_be_bytes());
@@ -1123,7 +1121,6 @@ impl SftpState {
                         payload.extend_from_slice(&build_attrs(false, 0));
                         return Ok(build_packet(&payload));
                     }
-                }
                 let mut payload = vec![104];
                 payload.extend_from_slice(&id.to_be_bytes());
                 payload.extend_from_slice(&0u32.to_be_bytes());

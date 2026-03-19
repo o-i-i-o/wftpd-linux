@@ -28,11 +28,10 @@ impl IpcClient {
     
     fn load_ports_from_config() -> (u16, u16) {
         let config_path = Path::new("/etc/wftpg/config.toml");
-        if let Ok(content) = std::fs::read_to_string(config_path) {
-            if let Ok(config) = toml::from_str::<crate::core::config::Config>(&content) {
+        if let Ok(content) = std::fs::read_to_string(config_path)
+            && let Ok(config) = toml::from_str::<crate::core::config::Config>(&content) {
                 return (config.server.ftp_port, config.server.sftp_port);
             }
-        }
         (2121, 2222)
     }
     

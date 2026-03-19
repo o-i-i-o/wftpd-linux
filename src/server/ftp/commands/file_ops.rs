@@ -16,12 +16,11 @@ impl FtpSession {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
 
-            if let Some(user) = user {
-                if !user.permissions.can_delete {
+            if let Some(user) = user
+                && !user.permissions.can_delete {
                     self.stream.write_all(b"550 Permission denied\r\n")?;
                     return Ok(());
                 }
-            }
         }
 
         if let Some(filename) = arg {
@@ -74,12 +73,11 @@ impl FtpSession {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
 
-            if let Some(user) = user {
-                if !user.permissions.can_rename {
+            if let Some(user) = user
+                && !user.permissions.can_rename {
                     self.stream.write_all(b"550 Permission denied\r\n")?;
                     return Ok(());
                 }
-            }
         }
 
         if let Some(from_name) = arg {

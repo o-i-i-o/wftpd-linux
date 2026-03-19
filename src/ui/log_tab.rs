@@ -38,11 +38,10 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     row1.pack_start(&Label::new(Some("日志目录:")), false, false, 0);
     let log_dir_entry = Entry::new();
     log_dir_entry.set_hexpand(true);
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             log_dir_entry.set_text(&config.logging.log_dir);
         }
-    }
     row1.pack_start(&log_dir_entry, true, true, 0);
     box_.pack_start(&row1, false, false, 0);
 
@@ -53,8 +52,8 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     log_level_combo.append(Some("info"), "Info");
     log_level_combo.append(Some("warn"), "Warning");
     log_level_combo.append(Some("error"), "Error");
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             let level = config.logging.log_level.as_str();
             let id = match level {
                 "debug" => Some("debug"),
@@ -64,43 +63,38 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
             };
             log_level_combo.set_active_id(id);
         }
-    }
     row2.pack_start(&log_level_combo, false, false, 0);
 
     row2.pack_start(&Label::new(Some("最大文件大小(MB):")), false, false, 0);
     let max_size_spin = create_spin_button(1.0, 1000.0, 1.0);
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             max_size_spin.set_value((config.logging.max_log_size / (1024 * 1024)) as f64);
         }
-    }
     row2.pack_start(&max_size_spin, false, false, 0);
 
     row2.pack_start(&Label::new(Some("最大文件数:")), false, false, 0);
     let max_files_spin = create_spin_button(1.0, 100.0, 1.0);
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             max_files_spin.set_value(config.logging.max_log_files as f64);
         }
-    }
     row2.pack_start(&max_files_spin, false, false, 0);
     box_.pack_start(&row2, false, false, 0);
 
     let row3 = Box::new(Orientation::Horizontal, 5);
     let log_to_file_cb = CheckButton::with_label("记录到文件");
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             log_to_file_cb.set_active(config.logging.log_to_file);
         }
-    }
     row3.pack_start(&log_to_file_cb, false, false, 0);
 
     let log_to_gui_cb = CheckButton::with_label("显示在界面");
-    if let Ok(s) = state.try_lock() {
-        if let Ok(config) = s.config.try_lock() {
+    if let Ok(s) = state.try_lock()
+        && let Ok(config) = s.config.try_lock() {
             log_to_gui_cb.set_active(config.logging.log_to_gui);
         }
-    }
     row3.pack_start(&log_to_gui_cb, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
 
@@ -127,8 +121,8 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
             let log_to_gui = log_to_gui_clone.is_active();
             
             glib::MainContext::ref_thread_default().spawn_local(async move {
-                if let Ok(s) = state.try_lock() {
-                    if let Ok(mut config) = s.config.try_lock() {
+                if let Ok(s) = state.try_lock()
+                    && let Ok(mut config) = s.config.try_lock() {
                         config.logging.log_dir = log_dir;
                         config.logging.log_level = log_level;
                         config.logging.max_log_size = max_size;
@@ -138,7 +132,6 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
                         let _ = config.save(&crate::core::config::Config::get_config_path());
                         log::info!("Logging configuration saved");
                     }
-                }
             });
         }),
     );
@@ -294,8 +287,8 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
     store.clear();
     
     if source == "current" {
-        if let Ok(s) = state.try_lock() {
-            if let Ok(logger) = s.logger.try_lock() {
+        if let Ok(s) = state.try_lock()
+            && let Ok(logger) = s.logger.try_lock() {
                 let entries = logger.get_recent_logs(500);
                 for entry in entries.into_iter().rev() {
                     let iter = store.append();
@@ -307,7 +300,6 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
                     store.set_value(&iter, 5, &entry.action.unwrap_or_default().to_value());
                 }
             }
-        }
     } else {
         match fs::read_to_string(source) {
             Ok(content) => {
@@ -346,20 +338,18 @@ fn setup_button_handlers(
         let source = log_file_combo_clone.active_id()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "current".to_string());
-        if let Some(store) = tree_view_clone.model() {
-            if let Ok(store) = store.downcast::<ListStore>() {
+        if let Some(store) = tree_view_clone.model()
+            && let Ok(store) = store.downcast::<ListStore>() {
                 populate_log_store(&store, &state_clone, &source);
             }
-        }
     }));
 
     let tree_view_clone = tree_view.clone();
     clear_btn.connect_clicked(clone!(@strong tree_view_clone => move |_| {
-        if let Some(store) = tree_view_clone.model() {
-            if let Ok(store) = store.downcast::<ListStore>() {
+        if let Some(store) = tree_view_clone.model()
+            && let Ok(store) = store.downcast::<ListStore>() {
                 store.clear();
             }
-        }
     }));
 
     let state_clone = Arc::clone(state);
@@ -373,13 +363,11 @@ fn setup_button_handlers(
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "current".to_string());
             
-            if source == "current" {
-                if let Some(store) = tree_view_clone.model() {
-                    if let Ok(store) = store.downcast::<ListStore>() {
+            if source == "current"
+                && let Some(store) = tree_view_clone.model()
+                    && let Ok(store) = store.downcast::<ListStore>() {
                         populate_log_store(&store, &state_clone, &source);
                     }
-                }
-            }
         }
         glib::ControlFlow::Continue
     });
@@ -390,11 +378,10 @@ fn setup_button_handlers(
         let source = log_file_combo.active_id()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "current".to_string());
-        if let Some(store) = tree_view_clone.model() {
-            if let Ok(store) = store.downcast::<ListStore>() {
+        if let Some(store) = tree_view_clone.model()
+            && let Ok(store) = store.downcast::<ListStore>() {
                 populate_log_store(&store, &state_clone, &source);
             }
-        }
     }));
 }
 

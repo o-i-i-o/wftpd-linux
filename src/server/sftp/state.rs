@@ -444,7 +444,7 @@ impl SftpState {
         let id = parse_u32_checked(data, 1)?;
         let (handle_str, handle_len) = parse_string_checked(data, 5)?;
         
-        let offset_pos = 5 + handle_len;
+        let offset_pos = 5 + 4 + handle_len;
         if data.len() < offset_pos + 12 {
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet: too short for read", ""));
         }
@@ -516,7 +516,7 @@ impl SftpState {
         let id = parse_u32_checked(data, 1)?;
         let (handle_str, handle_len) = parse_string_checked(data, 5)?;
         
-        let offset_pos = 5 + handle_len;
+        let offset_pos = 5 + 4 + handle_len;
         if data.len() < offset_pos + 12 {
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet: too short for write", ""));
         }
@@ -701,7 +701,7 @@ impl SftpState {
         }
         
         let (old_path, old_len) = parse_string_checked(data, 5)?;
-        let new_path_pos = 5 + old_len;
+        let new_path_pos = 5 + 4 + old_len;
         
         if let Ok(mut log) = self.logger.lock() {
             log.debug("SFTP", &format!("[RENAME] old_path='{}', old_len={}, new_path_pos={}", old_path, old_len, new_path_pos));
@@ -853,7 +853,7 @@ impl SftpState {
             }
         };
 
-        let attrs_offset = 5 + path_len;
+        let attrs_offset = 5 + 4 + path_len;
         if data.len() < attrs_offset + 4 {
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid SETSTAT packet", ""));
         }
@@ -883,7 +883,7 @@ impl SftpState {
         let handle = self.handles.get(&handle_str);
         match handle {
             Some(h) if !h.is_dir => {
-                let attrs_offset = 5 + handle_len;
+                let attrs_offset = 5 + 4 + handle_len;
                 if data.len() < attrs_offset + 4 {
                     return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid FSETSTAT packet", ""));
                 }
@@ -1040,7 +1040,7 @@ impl SftpState {
 
         let id = parse_u32_checked(data, 1)?;
         let (path, path_len) = parse_string_checked(data, 5)?;
-        let pflags_pos = 5 + path_len;
+        let pflags_pos = 5 + 4 + path_len;
         
         if data.len() < pflags_pos + 4 {
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet: missing pflags", ""));
@@ -1199,7 +1199,7 @@ impl SftpState {
     async fn handle_symlink(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let id = parse_u32_checked(data, 1)?;
         let (target, target_len) = parse_string_checked(data, 5)?;
-        let link_pos = 5 + target_len;
+        let link_pos = 5 + 4 + target_len;
         let (link_path, _) = parse_string_checked(data, link_pos)?;
 
         if !self.check_permission_cached(|p| p.can_write) {

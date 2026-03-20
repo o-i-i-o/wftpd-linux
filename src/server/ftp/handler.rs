@@ -20,6 +20,13 @@ use super::tls::TlsConfig;
 pub enum FtpStream {
     Plain(TcpStream),
     Tls(Box<TlsStream<TcpStream>>),
+    Taken,
+}
+
+impl Default for FtpStream {
+    fn default() -> Self {
+        FtpStream::Taken
+    }
 }
 
 impl FtpStream {
@@ -27,6 +34,7 @@ impl FtpStream {
         match self {
             FtpStream::Plain(stream) => stream.write_all(buf).await,
             FtpStream::Tls(stream) => stream.write_all(buf).await,
+            FtpStream::Taken => Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "Stream taken")),
         }
     }
 
@@ -34,6 +42,7 @@ impl FtpStream {
         match self {
             FtpStream::Plain(stream) => stream.read(buf).await,
             FtpStream::Tls(stream) => stream.read(buf).await,
+            FtpStream::Taken => Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "Stream taken")),
         }
     }
 
@@ -41,6 +50,7 @@ impl FtpStream {
         match self {
             FtpStream::Plain(stream) => stream.peer_addr(),
             FtpStream::Tls(stream) => stream.get_ref().0.peer_addr(),
+            FtpStream::Taken => Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "Stream taken")),
         }
     }
 
@@ -48,6 +58,7 @@ impl FtpStream {
         match self {
             FtpStream::Plain(stream) => stream.local_addr(),
             FtpStream::Tls(stream) => stream.get_ref().0.local_addr(),
+            FtpStream::Taken => Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "Stream taken")),
         }
     }
 }

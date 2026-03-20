@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::mem;
 use tokio_rustls::TlsAcceptor;
 
 use super::super::handler::{FtpSession, FtpStream};
@@ -25,12 +26,14 @@ impl FtpSession {
                     self.tls_server_config.as_ref().unwrap().clone()
                 );
 
-                let stream = unsafe { std::ptr::read(&self.stream) };
+                let stream = mem::take(&mut self.stream);
                 let raw_stream = match stream {
                     FtpStream::Plain(s) => s,
                     FtpStream::Tls(_) => {
-                        self.stream = stream;
                         anyhow::bail!("Unexpected TLS stream in AUTH");
+                    }
+                    FtpStream::Taken => {
+                        anyhow::bail!("Stream already taken");
                     }
                 };
 

@@ -1,8 +1,9 @@
 use anyhow::Result;
-use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::fs::File;
 
 use super::super::data_connection::get_data_connection;
 use super::super::handler::FtpSession;
@@ -10,27 +11,24 @@ use super::super::utils::{build_mlst_facts, get_file_mtime, safe_resolve_path, e
 use crate::core::file_logger::FileLogInfo;
 
 impl FtpSession {
-    fn get_data_timeout(&self) -> u64 {
-        self.config.lock().unwrap().ftp.data_timeout
-    }
-
-    pub fn cmd_list(&mut self, _arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_list(&mut self, _arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
-        {
+        let can_list = {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
-            if let Some(user) = user
-                && !user.permissions.can_list {
-                    self.stream.write_all(b"550 Permission denied\r\n")?;
-                    return Ok(());
-                }
+            user.is_none_or(|u| u.permissions.can_list)
+        };
+        
+        if !can_list {
+            self.stream.write_all(b"550 Permission denied\r\n").await?;
+            return Ok(());
         }
 
-        self.stream.write_all(b"150 Here comes the directory listing\r\n")?;
+        self.stream.write_all(b"150 Here comes the directory listing\r\n").await?;
 
         let cwd = self.cwd.clone();
         let data_timeout = self.get_data_timeout();
@@ -41,7 +39,7 @@ impl FtpSession {
             &self.remote_ip,
             &self.passive_listeners,
             data_timeout,
-        );
+        ).await;
         
         match data_result {
             Ok(mut data_stream) => {
@@ -62,7 +60,7 @@ impl FtpSession {
                                     "{} 1 user user {:>10} {} {}\r\n",
                                     perms, size, mtime, name
                                 );
-                                let _ = data_stream.write_all(line.as_bytes());
+                                let _ = data_stream.write_all(line.as_bytes()).await;
                             }
                         }
                     }
@@ -74,7 +72,7 @@ impl FtpSession {
                     }
                 }
                 self.cleanup_data_connection();
-                self.stream.write_all(b"226 Transfer complete\r\n")?;
+                self.stream.write_all(b"226 Transfer complete\r\n").await?;
             }
             Err(e) => {
                 self.logger.lock().unwrap().warning(
@@ -82,30 +80,31 @@ impl FtpSession {
                     &format!("Failed to get data connection: {}", e),
                 );
                 self.cleanup_data_connection();
-                self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
             }
         }
 
         Ok(())
     }
 
-    pub fn cmd_mlsd(&mut self) -> Result<()> {
+    pub async fn cmd_mlsd(&mut self) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
-        {
+        let can_list = {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
-            if let Some(user) = user
-                && !user.permissions.can_list {
-                    self.stream.write_all(b"550 Permission denied\r\n")?;
-                    return Ok(());
-                }
+            user.is_none_or(|u| u.permissions.can_list)
+        };
+        
+        if !can_list {
+            self.stream.write_all(b"550 Permission denied\r\n").await?;
+            return Ok(());
         }
 
-        self.stream.write_all(b"150 Here comes the directory listing\r\n")?;
+        self.stream.write_all(b"150 Here comes the directory listing\r\n").await?;
 
         let data_timeout = self.get_data_timeout();
         let data_result = get_data_connection(
@@ -115,7 +114,7 @@ impl FtpSession {
             &self.remote_ip,
             &self.passive_listeners,
             data_timeout,
-        );
+        ).await;
 
         match data_result {
             Ok(mut data_stream) => {
@@ -127,12 +126,12 @@ impl FtpSession {
                             let facts = build_mlst_facts(&metadata);
                             let escaped_name = escape_mlst_filename(&name);
                             let line = format!("{} {}\r\n", facts, escaped_name);
-                            let _ = data_stream.write_all(line.as_bytes());
+                            let _ = data_stream.write_all(line.as_bytes()).await;
                         }
                     }
                 }
                 self.cleanup_data_connection();
-                self.stream.write_all(b"226 Transfer complete\r\n")?;
+                self.stream.write_all(b"226 Transfer complete\r\n").await?;
             }
             Err(e) => {
                 self.logger.lock().unwrap().warning(
@@ -140,15 +139,15 @@ impl FtpSession {
                     &format!("Failed to get data connection: {}", e),
                 );
                 self.cleanup_data_connection();
-                self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
             }
         }
         Ok(())
     }
 
-    pub fn cmd_retr(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_retr(&mut self, arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
@@ -157,7 +156,7 @@ impl FtpSession {
                 Ok(p) => p,
                 Err(e) => {
                     let error_msg = format!("550 Path resolution failed: {}\r\n", e);
-                    self.stream.write_all(error_msg.as_bytes())?;
+                    self.stream.write_all(error_msg.as_bytes()).await?;
                     return Ok(());
                 }
             };
@@ -181,19 +180,19 @@ impl FtpSession {
                         file_path.starts_with(&self.home_dir)
                     ),
                 );
-                self.stream.write_all(b"550 File not found\r\n")?;
+                self.stream.write_all(b"550 File not found\r\n").await?;
                 return Ok(());
             }
 
-            {
+            let can_read = {
                 let users = self.user_manager.lock().unwrap();
                 let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
+                user.is_none_or(|u| u.permissions.can_read)
+            };
 
-                if let Some(user) = user
-                    && !user.permissions.can_read {
-                        self.stream.write_all(b"550 Permission denied\r\n")?;
-                        return Ok(());
-                    }
+            if !can_read {
+                self.stream.write_all(b"550 Permission denied\r\n").await?;
+                return Ok(());
             }
 
             let file_size = std::fs::metadata(&file_path)?.len();
@@ -206,7 +205,7 @@ impl FtpSession {
             self.stream.write_all(
                 format!("150 Opening BINARY mode data connection ({} bytes)\r\n", remaining)
                     .as_bytes(),
-            )?;
+            ).await?;
 
             let data_timeout = self.get_data_timeout();
             let data_result = get_data_connection(
@@ -216,15 +215,14 @@ impl FtpSession {
                 &self.remote_ip,
                 &self.passive_listeners,
                 data_timeout,
-            );
+            ).await;
 
             match data_result {
                 Ok(mut data_stream) => {
                     let abort = Arc::clone(&self.abort_flag);
-                    if let Ok(mut file) = std::fs::File::open(&file_path) {
-                        use std::io::Seek;
+                    if let Ok(mut file) = File::open(&file_path).await {
                         if self.rest_offset > 0 {
-                            let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset));
+                            let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset)).await;
                         }
 
                         let mut buf = [0u8; 8192];
@@ -235,11 +233,11 @@ impl FtpSession {
                                 transfer_success = false;
                                 break;
                             }
-                            match file.read(&mut buf) {
+                            match file.read(&mut buf).await {
                                 Ok(0) => break,
                                 Ok(n) => {
                                     total_read += n as u64;
-                                    if data_stream.write_all(&buf[..n]).is_err() {
+                                    if data_stream.write_all(&buf[..n]).await.is_err() {
                                         log::error!("RETR write error to data stream for file: {}", file_path.display());
                                         transfer_success = false;
                                         break;
@@ -259,7 +257,7 @@ impl FtpSession {
                         log::error!("RETR failed to open file: {}", file_path.display());
                     }
                     self.cleanup_data_connection();
-                    self.stream.write_all(b"226 Transfer complete\r\n")?;
+                    self.stream.write_all(b"226 Transfer complete\r\n").await?;
                 }
                 Err(e) => {
                     self.logger.lock().unwrap().warning(
@@ -267,7 +265,7 @@ impl FtpSession {
                         &format!("Failed to get data connection: {}", e),
                     );
                     self.cleanup_data_connection();
-                    self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                    self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                     return Ok(());
                 }
             }
@@ -297,29 +295,29 @@ impl FtpSession {
         Ok(())
     }
 
-    pub fn cmd_stor(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_stor(&mut self, arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
         if let Some(filename) = arg {
-            {
+            let can_write = {
                 let users = self.user_manager.lock().unwrap();
                 let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
+                user.is_none_or(|u| u.permissions.can_write)
+            };
 
-                if let Some(user) = user
-                    && !user.permissions.can_write {
-                        self.stream.write_all(b"550 Permission denied\r\n")?;
-                        return Ok(());
-                    }
+            if !can_write {
+                self.stream.write_all(b"550 Permission denied\r\n").await?;
+                return Ok(());
             }
 
             let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
                 Ok(p) => p,
                 Err(e) => {
                     let error_msg = format!("550 Path resolution failed: {}\r\n", e);
-                    self.stream.write_all(error_msg.as_bytes())?;
+                    self.stream.write_all(error_msg.as_bytes()).await?;
                     return Ok(());
                 }
             };
@@ -337,12 +335,12 @@ impl FtpSession {
                     "FTP",
                     &format!("STOR: Path outside home directory: {}", file_path.display()),
                 );
-                self.stream.write_all(b"550 Permission denied\r\n")?;
+                self.stream.write_all(b"550 Permission denied\r\n").await?;
                 return Ok(());
             }
 
             let file_existed = file_path.exists();
-            self.stream.write_all(b"150 Opening BINARY mode data connection\r\n")?;
+            self.stream.write_all(b"150 Opening BINARY mode data connection\r\n").await?;
 
             let data_timeout = self.get_data_timeout();
             let data_result = get_data_connection(
@@ -352,7 +350,7 @@ impl FtpSession {
                 &self.remote_ip,
                 &self.passive_listeners,
                 data_timeout,
-            );
+            ).await;
 
             let mut transfer_success = false;
             let mut total_written: u64 = 0;
@@ -361,20 +359,20 @@ impl FtpSession {
                 Ok(mut data_stream) => {
                     let abort = Arc::clone(&self.abort_flag);
                     let file_result = if self.rest_offset > 0 {
-                        std::fs::OpenOptions::new()
+                        tokio::fs::OpenOptions::new()
                             .write(true)
                             .create(true)
                             .truncate(false)
                             .open(&file_path)
+                            .await
                     } else {
-                        std::fs::File::create(&file_path)
+                        File::create(&file_path).await
                     };
 
                     match file_result {
                         Ok(mut file) => {
-                            use std::io::Seek;
                             if self.rest_offset > 0 {
-                                let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset));
+                                let _ = file.seek(std::io::SeekFrom::Start(self.rest_offset)).await;
                             }
 
                             let mut buf = [0u8; 8192];
@@ -384,10 +382,10 @@ impl FtpSession {
                                     transfer_success = false;
                                     break;
                                 }
-                                match data_stream.read(&mut buf) {
+                                match data_stream.read(&mut buf).await {
                                     Ok(0) => break,
                                     Ok(n) => {
-                                        if file.write_all(&buf[..n]).is_err() {
+                                        if file.write_all(&buf[..n]).await.is_err() {
                                             self.logger.lock().unwrap().error(
                                                 "FTP",
                                                 &format!("STOR write error for file: {}", file_path.display()),
@@ -408,7 +406,7 @@ impl FtpSession {
                                 }
                             }
                             if transfer_success {
-                                if let Err(e) = file.sync_all() {
+                                if let Err(e) = file.sync_all().await {
                                     self.logger.lock().unwrap().error(
                                         "FTP",
                                         &format!("Failed to sync file {:?}: {}", file_path, e),
@@ -435,13 +433,13 @@ impl FtpSession {
                         &format!("Failed to get data connection: {}", e),
                     );
                     self.cleanup_data_connection();
-                    self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                    self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                     return Ok(());
                 }
             }
 
             if transfer_success {
-                self.stream.write_all(b"226 Transfer complete\r\n")?;
+                self.stream.write_all(b"226 Transfer complete\r\n").await?;
 
                 let uploaded_size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(total_written);
                 if file_existed {
@@ -470,7 +468,7 @@ impl FtpSession {
                     "UPLOAD",
                 );
             } else {
-                self.stream.write_all(b"451 Transfer failed\r\n")?;
+                self.stream.write_all(b"451 Transfer failed\r\n").await?;
                 self.file_logger.lock().unwrap().log_failed(
                     self.current_user.as_deref().unwrap_or("anonymous"),
                     &self.remote_ip,
@@ -486,37 +484,37 @@ impl FtpSession {
         Ok(())
     }
 
-    pub fn cmd_appe(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_appe(&mut self, arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
         if let Some(filename) = arg {
-            {
+            let can_append = {
                 let users = self.user_manager.lock().unwrap();
                 let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
+                user.is_none_or(|u| u.permissions.can_append)
+            };
 
-                if let Some(user) = user
-                    && !user.permissions.can_append {
-                        self.stream.write_all(b"550 Permission denied\r\n")?;
-                        return Ok(());
-                    }
+            if !can_append {
+                self.stream.write_all(b"550 Permission denied\r\n").await?;
+                return Ok(());
             }
 
             let file_path = match safe_resolve_path(&self.cwd, &self.home_dir, filename) {
                 Ok(p) => p,
                 Err(e) => {
                     let error_msg = format!("550 Path resolution failed: {}\r\n", e);
-                    self.stream.write_all(error_msg.as_bytes())?;
+                    self.stream.write_all(error_msg.as_bytes()).await?;
                     return Ok(());
                 }
             };
             if !file_path.starts_with(&self.home_dir) {
-                self.stream.write_all(b"550 Permission denied\r\n")?;
+                self.stream.write_all(b"550 Permission denied\r\n").await?;
                 return Ok(());
             }
-            self.stream.write_all(b"150 Opening BINARY mode data connection for append\r\n")?;
+            self.stream.write_all(b"150 Opening BINARY mode data connection for append\r\n").await?;
 
             let data_timeout = self.get_data_timeout();
             let data_result = get_data_connection(
@@ -526,25 +524,26 @@ impl FtpSession {
                 &self.remote_ip,
                 &self.passive_listeners,
                 data_timeout,
-            );
+            ).await;
 
             match data_result {
                 Ok(mut data_stream) => {
                     let abort = Arc::clone(&self.abort_flag);
-                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                    if let Ok(mut file) = tokio::fs::OpenOptions::new()
                         .append(true)
                         .create(true)
                         .open(&file_path)
+                        .await
                     {
                         let mut buf = [0u8; 8192];
                         loop {
                             if abort.load(Ordering::Relaxed) {
                                 break;
                             }
-                            match data_stream.read(&mut buf) {
+                            match data_stream.read(&mut buf).await {
                                 Ok(0) => break,
                                 Ok(n) => {
-                                    if file.write_all(&buf[..n]).is_err() {
+                                    if file.write_all(&buf[..n]).await.is_err() {
                                         break;
                                     }
                                 }
@@ -553,7 +552,7 @@ impl FtpSession {
                         }
                     }
                     self.cleanup_data_connection();
-                    self.stream.write_all(b"226 Transfer complete\r\n")?;
+                    self.stream.write_all(b"226 Transfer complete\r\n").await?;
                 }
                 Err(e) => {
                     self.logger.lock().unwrap().warning(
@@ -561,7 +560,7 @@ impl FtpSession {
                         &format!("Failed to get data connection: {}", e),
                     );
                     self.cleanup_data_connection();
-                    self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                    self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                     return Ok(());
                 }
             }
@@ -589,21 +588,21 @@ impl FtpSession {
         Ok(())
     }
 
-    pub fn cmd_stou(&mut self, _arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_stou(&mut self, _arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
-        {
+        let can_write = {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
+            user.is_none_or(|u| u.permissions.can_write)
+        };
 
-            if let Some(user) = user
-                && !user.permissions.can_write {
-                    self.stream.write_all(b"550 Permission denied\r\n")?;
-                    return Ok(());
-                }
+        if !can_write {
+            self.stream.write_all(b"550 Permission denied\r\n").await?;
+            return Ok(());
         }
 
         let cwd_path = std::path::Path::new(&self.cwd);
@@ -619,11 +618,11 @@ impl FtpSession {
 
         let home_path = std::path::Path::new(&self.home_dir);
         if !file_path.starts_with(home_path) {
-            self.stream.write_all(b"550 Permission denied\r\n")?;
+            self.stream.write_all(b"550 Permission denied\r\n").await?;
             return Ok(());
         }
 
-        self.stream.write_all(format!("150 FILE: {}\r\n", unique_name).as_bytes())?;
+        self.stream.write_all(format!("150 FILE: {}\r\n", unique_name).as_bytes()).await?;
 
         let data_timeout = self.get_data_timeout();
         let data_result = get_data_connection(
@@ -633,7 +632,7 @@ impl FtpSession {
             &self.remote_ip,
             &self.passive_listeners,
             data_timeout,
-        );
+        ).await;
 
         let mut transfer_success = false;
         let mut total_written: u64 = 0;
@@ -641,7 +640,7 @@ impl FtpSession {
         match data_result {
             Ok(mut data_stream) => {
                 let abort = Arc::clone(&self.abort_flag);
-                match std::fs::File::create(&file_path) {
+                match File::create(&file_path).await {
                     Ok(mut file) => {
                         let mut buf = [0u8; 8192];
                         transfer_success = true;
@@ -650,10 +649,10 @@ impl FtpSession {
                                 transfer_success = false;
                                 break;
                             }
-                            match data_stream.read(&mut buf) {
+                            match data_stream.read(&mut buf).await {
                                 Ok(0) => break,
                                 Ok(n) => {
-                                    if file.write_all(&buf[..n]).is_err() {
+                                    if file.write_all(&buf[..n]).await.is_err() {
                                         transfer_success = false;
                                         break;
                                     }
@@ -666,7 +665,7 @@ impl FtpSession {
                             }
                         }
                         if transfer_success
-                            && let Err(e) = file.sync_all() {
+                            && let Err(e) = file.sync_all().await {
                                 self.logger.lock().unwrap().error(
                                     "FTP",
                                     &format!("STOU sync error: {}", e),
@@ -688,13 +687,13 @@ impl FtpSession {
                     &format!("Failed to get data connection: {}", e),
                 );
                 self.cleanup_data_connection();
-                self.stream.write_all(b"425 Cannot open data connection\r\n")?;
+                self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                 return Ok(());
             }
         }
 
         if transfer_success {
-            self.stream.write_all(format!("226 Transfer complete, file: {}\r\n", unique_name).as_bytes())?;
+            self.stream.write_all(format!("226 Transfer complete, file: {}\r\n", unique_name).as_bytes()).await?;
 
             let uploaded_size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(total_written);
             self.file_logger.lock().unwrap().log_upload(
@@ -713,7 +712,7 @@ impl FtpSession {
                 "UPLOAD",
             );
         } else {
-            self.stream.write_all(b"451 Transfer failed\r\n")?;
+            self.stream.write_all(b"451 Transfer failed\r\n").await?;
         }
 
         Ok(())

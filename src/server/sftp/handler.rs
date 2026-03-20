@@ -3,8 +3,6 @@ use russh::*;
 use russh::keys::*;
 use russh::server::Msg;
 use russh::ChannelId;
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -349,19 +347,14 @@ impl russh::server::Handler for SftpHandler {
                 &format!("SFTP subsystem initialized for user: {:?}, home_dir: {}", username, home_dir),
             );
             
-            self.sftp_state = Some(Arc::new(Mutex::new(SftpState {
+            self.sftp_state = Some(Arc::new(Mutex::new(SftpState::new(
                 home_dir,
                 username,
-                user_manager: Arc::clone(&self.user_manager),
-                logger: Arc::clone(&self.logger),
-                file_logger: Arc::clone(&self.file_logger),
-                handles: HashMap::new(),
-                next_handle_id: 0,
-                sftp_version: 3,
-                buffer: Vec::new(),
-                locked_files: HashSet::new(),
-                client_ip: self.client_ip.clone(),
-            })));
+                Arc::clone(&self.user_manager),
+                Arc::clone(&self.logger),
+                Arc::clone(&self.file_logger),
+                self.client_ip.clone(),
+            ))));
         } else {
             self.logger.lock().unwrap().warning(
                 "SFTP",

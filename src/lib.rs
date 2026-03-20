@@ -1,19 +1,17 @@
 pub mod core;
 pub mod server;
+pub mod service;
 pub mod communication;
 pub mod ui;
-pub mod service;
 
 use std::sync::{Arc, Mutex};
 
-pub use crate::core::config::Config;
-pub use crate::core::logger::Logger;
-pub use crate::core::file_logger::FileLogger;
-pub use crate::core::users::{User, UserManager, Permissions};
-pub use crate::core::server_manager::ServerManager;
-pub use crate::server::ftp::FtpServer;
-pub use crate::server::sftp::SftpServer;
-pub use crate::service::ServiceManager;
+use crate::core::config::Config;
+use crate::core::logger::Logger;
+use crate::core::file_logger::FileLogger;
+use crate::core::users::UserManager;
+use crate::core::server_manager::ServerManager;
+use crate::service::ServiceManager;
 
 pub struct AppState {
     pub config: Arc<Mutex<Config>>,
@@ -53,8 +51,8 @@ impl AppState {
         })
     }
     
-    pub fn stop_all(&self) {
-        self.server_manager.stop_ftp(&self.logger);
-        self.server_manager.stop_sftp(&self.logger);
+    pub async fn stop_all(&self) {
+        self.server_manager.stop_ftp(&self.logger).await;
+        self.server_manager.stop_sftp(&self.logger).await;
     }
 }

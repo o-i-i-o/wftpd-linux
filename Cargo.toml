@@ -1,6 +1,6 @@
 [package]
 name = "wftpg"
-version = "2.3.44"
+version = "2.3.46"
 edition = "2024"
 authors = ["WFTPG Developer"]
 description = "SFTP+FTP GUI Management Tool for ARM Linux (纯 Rust + GTK3 实现)"
@@ -26,6 +26,8 @@ rsa = { version = "0.9", features = ["pem"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 russh = "0.57.1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "fs", "signal" ] }
+tokio-rustls = "0.26.4"
+rustls = "0.23.37"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 async-trait = "0.1"
 bytes = "1"
@@ -33,7 +35,7 @@ fs2 = "0.4"
 libc = "0.2"
 ctrlc = "3"
 socket2 = "0.6"
-nix = { version = "0.31", features = ["user"] }
+nix = { version = "0.31", features = ["user", "fs"] }
 
 [profile.release]
 opt-level = 3

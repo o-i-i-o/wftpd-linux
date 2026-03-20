@@ -1,17 +1,18 @@
 use anyhow::Result;
 use std::collections::HashMap;
-use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 
 pub type PassiveListenerMap = Arc<Mutex<HashMap<u16, Arc<Mutex<Option<TcpListener>>>>>>;
 
-pub fn find_available_passive_port(
+pub async fn find_available_passive_port(
     passive_listeners: &PassiveListenerMap,
     port_min: u16,
     port_max: u16,
 ) -> Result<u16> {
-    let listeners = passive_listeners.lock().unwrap();
+    let listeners = passive_listeners.lock().await;
 
     for port in port_min..=port_max {
         if !listeners.contains_key(&port) {
@@ -26,14 +27,14 @@ pub fn find_available_passive_port(
     )
 }
 
-pub fn get_data_connection(
+pub async fn get_data_connection(
     passive_mode: bool,
     data_port: Option<u16>,
     data_addr: &Option<String>,
     remote_ip: &str,
     passive_listeners: &PassiveListenerMap,
     data_timeout_secs: u64,
-) -> Result<TcpStream> {
+) -> Result<tokio::net::TcpStream> {
     let port = match data_port {
         Some(p) => p,
         None => anyhow::bail!("No data port specified"),
@@ -41,16 +42,19 @@ pub fn get_data_connection(
 
     let stream = if passive_mode {
         let listener_arc = {
-            let listeners = passive_listeners.lock().unwrap();
+            let listeners = passive_listeners.lock().await;
             listeners.get(&port).cloned()
         };
 
         if let Some(listener_arc) = listener_arc {
-            let mut listener_guard = listener_arc.lock().unwrap();
+            let mut listener_guard = listener_arc.lock().await;
             if let Some(listener) = listener_guard.take() {
-                listener.set_nonblocking(false)?;
-                listener.accept().map(|(s, _)| s)
-                    .map_err(|e| anyhow::anyhow!("Failed to accept passive connection: {}", e))
+                let accept_timeout = Duration::from_secs(data_timeout_secs);
+                match timeout(accept_timeout, listener.accept()).await {
+                    Ok(Ok((stream, _))) => stream,
+                    Ok(Err(e)) => anyhow::bail!("Failed to accept passive connection: {}", e),
+                    Err(_) => anyhow::bail!("Timeout waiting for passive connection"),
+                }
             } else {
                 anyhow::bail!("No passive listener")
             }
@@ -58,27 +62,30 @@ pub fn get_data_connection(
             anyhow::bail!("No passive listener")
         }
     } else if let Some(addr) = data_addr {
-        TcpStream::connect(addr)
-            .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", addr, e))
+        let connect_timeout = Duration::from_secs(data_timeout_secs);
+        match timeout(connect_timeout, tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(e)) => anyhow::bail!("Failed to connect to {}: {}", addr, e),
+            Err(_) => anyhow::bail!("Timeout connecting to {}", addr),
+        }
     } else {
-        TcpStream::connect(format!("{}:{}", remote_ip, port))
-            .map_err(|e| anyhow::anyhow!("Failed to connect to {}:{}: {}", remote_ip, port, e))
-    }?;
-
-    if data_timeout_secs > 0 {
-        let timeout = Some(Duration::from_secs(data_timeout_secs));
-        stream.set_read_timeout(timeout)?;
-        stream.set_write_timeout(timeout)?;
-    }
+        let connect_addr = format!("{}:{}", remote_ip, port);
+        let connect_timeout = Duration::from_secs(data_timeout_secs);
+        match timeout(connect_timeout, tokio::net::TcpStream::connect(&connect_addr)).await {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(e)) => anyhow::bail!("Failed to connect to {}: {}", connect_addr, e),
+            Err(_) => anyhow::bail!("Timeout connecting to {}", connect_addr),
+        }
+    };
 
     Ok(stream)
 }
 
-pub fn create_passive_listener(
+ pub async fn create_passive_listener(
     bind_ip: &str,
     passive_port: u16,
 ) -> Result<TcpListener> {
-    let listener = TcpListener::bind(format!("{}:{}", bind_ip, passive_port))?;
-    listener.set_nonblocking(true)?;
+    let bind_addr = format!("{}:{}", bind_ip, passive_port);
+    let listener = TcpListener::bind(&bind_addr).await?;
     Ok(listener)
 }

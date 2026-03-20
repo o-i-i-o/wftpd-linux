@@ -1,11 +1,11 @@
 use anyhow::Result;
-use std::io::Write;
 use std::path::Path;
+use tokio::io::AsyncWriteExt;
 
 use super::super::handler::FtpSession;
 
 impl FtpSession {
-    pub fn cmd_user(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_user(&mut self, arg: Option<&str>) -> Result<()> {
         if let Some(username) = arg {
             if username.to_lowercase() == "anonymous" {
                 let (allow_anonymous, anonymous_home) = {
@@ -14,7 +14,7 @@ impl FtpSession {
                 };
                 
                 if !allow_anonymous {
-                    self.stream.write_all(b"530 Anonymous access not allowed\r\n")?;
+                    self.stream.write_all(b"530 Anonymous access not allowed\r\n").await?;
                     return Ok(());
                 }
                 
@@ -29,7 +29,7 @@ impl FtpSession {
                                 Some("anonymous"),
                                 "LOGIN_FAIL",
                             );
-                            self.stream.write_all(b"530 Login failed: anonymous home directory does not exist\r\n")?;
+                            self.stream.write_all(b"530 Login failed: anonymous home directory does not exist\r\n").await?;
                             return Ok(());
                         }
                         if !home_path.is_dir() {
@@ -40,7 +40,7 @@ impl FtpSession {
                                 Some("anonymous"),
                                 "LOGIN_FAIL",
                             );
-                            self.stream.write_all(b"530 Login failed: anonymous home path is not a directory\r\n")?;
+                            self.stream.write_all(b"530 Login failed: anonymous home path is not a directory\r\n").await?;
                             return Ok(());
                         }
                         
@@ -54,7 +54,7 @@ impl FtpSession {
                                     Some("anonymous"),
                                     "LOGIN_FAIL",
                                 );
-                                self.stream.write_all(b"530 Login failed: cannot access anonymous home directory\r\n")?;
+                                self.stream.write_all(b"530 Login failed: cannot access anonymous home directory\r\n").await?;
                                 return Ok(());
                             }
                         };
@@ -63,7 +63,7 @@ impl FtpSession {
                         self.cwd = home_canon.to_string_lossy().to_string();
                         self.home_dir = home_canon.to_string_lossy().to_string();
                         self.authenticated = true;
-                        self.stream.write_all(b"230 Anonymous login successful\r\n")?;
+                        self.stream.write_all(b"230 Anonymous login successful\r\n").await?;
                         self.logger.lock().unwrap().client_action(
                             "FTP",
                             "Anonymous user logged in",
@@ -80,37 +80,52 @@ impl FtpSession {
                             Some("anonymous"),
                             "LOGIN_FAIL",
                         );
-                        self.stream.write_all(b"530 Anonymous login failed: anonymous home directory not configured\r\n")?;
+                        self.stream.write_all(b"530 Anonymous login failed: anonymous home directory not configured\r\n").await?;
                     }
                 }
             } else {
                 self.current_user = Some(username.to_string());
                 self.authenticated = false;
-                self.stream.write_all(b"331 User name okay, need password\r\n")?;
+                self.stream.write_all(b"331 User name okay, need password\r\n").await?;
             }
         } else {
-            self.stream.write_all(b"501 Syntax error in parameters or arguments\r\n")?;
+            self.stream.write_all(b"501 Syntax error in parameters or arguments\r\n").await?;
         }
         Ok(())
     }
 
-    pub fn cmd_pass(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_pass(&mut self, arg: Option<&str>) -> Result<()> {
         if let Some(ref username) = self.current_user {
             if username.to_lowercase() == "anonymous" {
-                self.stream.write_all(b"230 Already logged in as anonymous\r\n")?;
+                self.stream.write_all(b"230 Already logged in as anonymous\r\n").await?;
                 return Ok(());
             }
             
             let password = arg.unwrap_or("");
-            let mut users = self.user_manager.lock().unwrap();
-
-            if users.get_user(username).is_none() {
+            
+            let (_user_data, should_reload) = {
+                let users = self.user_manager.lock().unwrap();
+                (users.get_user(username).cloned(), users.get_user(username).is_none())
+            };
+            
+            if should_reload {
+                let mut users = self.user_manager.lock().unwrap();
                 let _ = users.reload(&std::path::PathBuf::from("/etc/wftpg/users.json"));
             }
-
-            match users.authenticate(username, password) {
+            
+            let auth_result = {
+                let mut users = self.user_manager.lock().unwrap();
+                users.authenticate(username, password)
+            };
+            
+            match auth_result {
                 Ok(true) => {
-                    if let Some(user) = users.get_user(username) {
+                    let user_info = {
+                        let users = self.user_manager.lock().unwrap();
+                        users.get_user(username).cloned()
+                    };
+                    
+                    if let Some(user) = user_info {
                         if user.home_dir.trim().is_empty() {
                             self.logger.lock().unwrap().client_action(
                                 "FTP",
@@ -119,7 +134,7 @@ impl FtpSession {
                                 Some(username),
                                 "LOGIN_FAIL",
                             );
-                            self.stream.write_all(b"530 Login failed: home directory not configured\r\n")?;
+                            self.stream.write_all(b"530 Login failed: home directory not configured\r\n").await?;
                             self.authenticated = false;
                             return Ok(());
                         }
@@ -133,7 +148,7 @@ impl FtpSession {
                                 Some(username),
                                 "LOGIN_FAIL",
                             );
-                            self.stream.write_all(b"530 Login failed: home directory does not exist\r\n")?;
+                            self.stream.write_all(b"530 Login failed: home directory does not exist\r\n").await?;
                             self.authenticated = false;
                             return Ok(());
                         }
@@ -145,7 +160,7 @@ impl FtpSession {
                                 Some(username),
                                 "LOGIN_FAIL",
                             );
-                            self.stream.write_all(b"530 Login failed: home path is not a directory\r\n")?;
+                            self.stream.write_all(b"530 Login failed: home path is not a directory\r\n").await?;
                             self.authenticated = false;
                             return Ok(());
                         }
@@ -159,7 +174,7 @@ impl FtpSession {
                                     Some(username),
                                     "LOGIN_FAIL",
                                 );
-                                self.stream.write_all(b"530 Login failed: cannot access home directory\r\n")?;
+                                self.stream.write_all(b"530 Login failed: cannot access home directory\r\n").await?;
                                 self.authenticated = false;
                                 return Ok(());
                             }
@@ -167,7 +182,7 @@ impl FtpSession {
                         self.cwd = home_canon.to_string_lossy().to_string();
                         self.home_dir = home_canon.to_string_lossy().to_string();
                         self.authenticated = true;
-                        self.stream.write_all(b"230 User logged in\r\n")?;
+                        self.stream.write_all(b"230 User logged in\r\n").await?;
                         self.logger.lock().unwrap().client_action(
                             "FTP",
                             &format!("User {} logged in", username),
@@ -181,7 +196,7 @@ impl FtpSession {
                             "FTP",
                             &format!("User {} authenticated but not found in user list", username),
                         );
-                        self.stream.write_all(b"530 Login failed: user data not found\r\n")?;
+                        self.stream.write_all(b"530 Login failed: user data not found\r\n").await?;
                     }
                 }
                 Ok(false) => {
@@ -193,7 +208,7 @@ impl FtpSession {
                         Some(username),
                         "AUTH_FAIL",
                     );
-                    self.stream.write_all(b"530 Not logged in, user cannot be authenticated\r\n")?;
+                    self.stream.write_all(b"530 Not logged in, user cannot be authenticated\r\n").await?;
                 }
                 Err(e) => {
                     self.authenticated = false;
@@ -204,11 +219,11 @@ impl FtpSession {
                         Some(username),
                         "AUTH_ERROR",
                     );
-                    self.stream.write_all(b"530 Not logged in\r\n")?;
+                    self.stream.write_all(b"530 Not logged in\r\n").await?;
                 }
             }
         } else {
-            self.stream.write_all(b"530 Please login with USER and PASS\r\n")?;
+            self.stream.write_all(b"530 Please login with USER and PASS\r\n").await?;
         }
         Ok(())
     }

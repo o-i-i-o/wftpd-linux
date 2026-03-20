@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::core::config::Config;
 use crate::core::users::UserManager;
@@ -8,8 +8,15 @@ use crate::core::file_logger::FileLogger;
 use crate::core::server_manager::ServerManager;
 
 pub fn run_service() -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        run_service_async().await
+    })
+}
+
+async fn run_service_async() -> Result<()> {
     let config_path = Config::get_config_path();
-    let config = Arc::new(Mutex::new(Config::load(&config_path)?));
+    let config = Arc::new(std::sync::Mutex::new(Config::load(&config_path)?));
     
     {
         let cfg = config.lock().unwrap();
@@ -20,12 +27,12 @@ pub fn run_service() -> Result<()> {
     }
     
     let users_path = Config::get_users_path();
-    let user_manager = Arc::new(Mutex::new(UserManager::load(&users_path)?));
+    let user_manager = Arc::new(std::sync::Mutex::new(UserManager::load(&users_path)?));
     
     let log_dir = config.lock().unwrap().logging.log_dir.clone();
-    let logger = Arc::new(Mutex::new(Logger::new(&log_dir, 10 * 1024 * 1024, 10)));
+    let logger = Arc::new(std::sync::Mutex::new(Logger::new(&log_dir, 10 * 1024 * 1024, 10)));
     
-    let file_logger = Arc::new(Mutex::new(FileLogger::new(&log_dir, 10 * 1024 * 1024)));
+    let file_logger = Arc::new(std::sync::Mutex::new(FileLogger::new(&log_dir, 10 * 1024 * 1024)));
     
     let server_manager = ServerManager::new();
     
@@ -34,52 +41,47 @@ pub fn run_service() -> Result<()> {
         log.info("SERVICE", "WFTPG service starting");
     }
     
-    let cfg = config.lock().unwrap();
-    if cfg.ftp.enabled {
-        drop(cfg);
-        if let Err(e) = server_manager.start_ftp(
+    let (ftp_enabled, sftp_enabled) = {
+        let cfg = config.lock().unwrap();
+        (cfg.ftp.enabled, cfg.sftp.enabled)
+    };
+    
+    if ftp_enabled
+        && let Err(e) = server_manager.start_ftp(
             Arc::clone(&config),
             Arc::clone(&user_manager),
             Arc::clone(&logger),
             Arc::clone(&file_logger),
-        ) {
+        ).await {
             let mut log = logger.lock().unwrap();
             log.error("SERVICE", &format!("Failed to start FTP server: {}", e));
         }
-    }
     
-    let cfg = config.lock().unwrap();
-    if cfg.sftp.enabled {
-        drop(cfg);
-        if let Err(e) = server_manager.start_sftp(
+    if sftp_enabled
+        && let Err(e) = server_manager.start_sftp(
             Arc::clone(&config),
             Arc::clone(&user_manager),
             Arc::clone(&logger),
             Arc::clone(&file_logger),
-        ) {
+        ).await {
             let mut log = logger.lock().unwrap();
             log.error("SERVICE", &format!("Failed to start SFTP server: {}", e));
         }
-    }
     
     {
         let mut log = logger.lock().unwrap();
         log.info("SERVICE", "WFTPG service started successfully");
     }
     
-    tokio::runtime::Runtime::new()?
-        .block_on(async {
-            tokio::signal::ctrl_c().await?;
-            Ok::<(), anyhow::Error>(())
-        })?;
+    tokio::signal::ctrl_c().await?;
     
     {
         let mut log = logger.lock().unwrap();
         log.info("SERVICE", "WFTPG service shutting down");
     }
     
-    server_manager.stop_ftp(&logger);
-    server_manager.stop_sftp(&logger);
+    server_manager.stop_ftp(&logger).await;
+    server_manager.stop_sftp(&logger).await;
     
     {
         let mut log = logger.lock().unwrap();

@@ -1,26 +1,26 @@
 use anyhow::Result;
-use std::io::Write;
 use std::path::Path;
+use tokio::io::AsyncWriteExt;
 
 use super::super::handler::FtpSession;
 use super::super::utils::{get_file_mtime_raw, safe_resolve_path};
 
 impl FtpSession {
-    pub fn cmd_dele(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_dele(&mut self, arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
-        {
+        let can_delete = {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
+            user.is_none_or(|u| u.permissions.can_delete)
+        };
 
-            if let Some(user) = user
-                && !user.permissions.can_delete {
-                    self.stream.write_all(b"550 Permission denied\r\n")?;
-                    return Ok(());
-                }
+        if !can_delete {
+            self.stream.write_all(b"550 Permission denied\r\n").await?;
+            return Ok(());
         }
 
         if let Some(filename) = arg {
@@ -28,18 +28,18 @@ impl FtpSession {
                 Ok(p) => p,
                 Err(e) => {
                     let error_msg = format!("550 Path resolution failed: {}\r\n", e);
-                    self.stream.write_all(error_msg.as_bytes())?;
+                    self.stream.write_all(error_msg.as_bytes()).await?;
                     return Ok(());
                 }
             };
             let home_path = Path::new(&self.home_dir);
             if !file_path.starts_with(home_path) {
-                self.stream.write_all(b"550 Permission denied\r\n")?;
+                self.stream.write_all(b"550 Permission denied\r\n").await?;
                 return Ok(());
             }
             match std::fs::remove_file(&file_path) {
                 Ok(_) => {
-                    self.stream.write_all(b"250 File deleted\r\n")?;
+                    self.stream.write_all(b"250 File deleted\r\n").await?;
                     self.file_logger.lock().unwrap().log_delete(
                         self.current_user.as_deref().unwrap_or("anonymous"),
                         &self.remote_ip,
@@ -56,28 +56,28 @@ impl FtpSession {
                 }
                 Err(e) => {
                     let error_msg = format!("550 Delete operation failed: {}\r\n", e);
-                    self.stream.write_all(error_msg.as_bytes())?;
+                    self.stream.write_all(error_msg.as_bytes()).await?;
                 }
             }
         }
         Ok(())
     }
 
-    pub fn cmd_rnfr(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_rnfr(&mut self, arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
-        {
+        let can_rename = {
             let users = self.user_manager.lock().unwrap();
             let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
+            user.is_none_or(|u| u.permissions.can_rename)
+        };
 
-            if let Some(user) = user
-                && !user.permissions.can_rename {
-                    self.stream.write_all(b"550 Permission denied\r\n")?;
-                    return Ok(());
-                }
+        if !can_rename {
+            self.stream.write_all(b"550 Permission denied\r\n").await?;
+            return Ok(());
         }
 
         if let Some(from_name) = arg {
@@ -85,24 +85,24 @@ impl FtpSession {
                 Ok(p) => p,
                 Err(e) => {
                     let error_msg = format!("550 Path resolution failed: {}\r\n", e);
-                    self.stream.write_all(error_msg.as_bytes())?;
+                    self.stream.write_all(error_msg.as_bytes()).await?;
                     return Ok(());
                 }
             };
             let home_path = Path::new(&self.home_dir);
             if from_path.exists() && from_path.starts_with(home_path) {
                 self.rename_from = Some(from_path.to_string_lossy().to_string());
-                self.stream.write_all(b"350 File exists, ready for destination name\r\n")?;
+                self.stream.write_all(b"350 File exists, ready for destination name\r\n").await?;
             } else {
-                self.stream.write_all(b"550 File not found\r\n")?;
+                self.stream.write_all(b"550 File not found\r\n").await?;
             }
         }
         Ok(())
     }
 
-    pub fn cmd_rnto(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_rnto(&mut self, arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             self.rename_from = None;
             return Ok(());
         }
@@ -113,14 +113,14 @@ impl FtpSession {
                     Ok(p) => p,
                     Err(e) => {
                         let error_msg = format!("550 Path resolution failed: {}\r\n", e);
-                        self.stream.write_all(error_msg.as_bytes())?;
+                        self.stream.write_all(error_msg.as_bytes()).await?;
                         self.rename_from = None;
                         return Ok(());
                     }
                 };
                 let home_path = Path::new(&self.home_dir);
                 if !to_path.starts_with(home_path) {
-                    self.stream.write_all(b"550 Permission denied\r\n")?;
+                    self.stream.write_all(b"550 Permission denied\r\n").await?;
                     self.rename_from = None;
                     return Ok(());
                 }
@@ -128,19 +128,19 @@ impl FtpSession {
                 let from_path_buf = Path::new(from_path);
                 let cwd_path = Path::new(&self.cwd);
                 if from_path_buf == cwd_path {
-                    self.stream.write_all(b"550 Cannot rename current working directory\r\n")?;
+                    self.stream.write_all(b"550 Cannot rename current working directory\r\n").await?;
                     self.rename_from = None;
                     return Ok(());
                 }
                 
                 if cwd_path.starts_with(from_path_buf) && cwd_path != from_path_buf {
-                    self.stream.write_all(b"550 Cannot rename parent of current working directory\r\n")?;
+                    self.stream.write_all(b"550 Cannot rename parent of current working directory\r\n").await?;
                     self.rename_from = None;
                     return Ok(());
                 }
                 
                 if std::fs::rename(from_path, &to_path).is_ok() {
-                    self.stream.write_all(b"250 Rename successful\r\n")?;
+                    self.stream.write_all(b"250 Rename successful\r\n").await?;
                     self.file_logger.lock().unwrap().log_rename(
                         self.current_user.as_deref().unwrap_or("anonymous"),
                         &self.remote_ip,
@@ -156,19 +156,19 @@ impl FtpSession {
                         "RENAME",
                     );
                 } else {
-                    self.stream.write_all(b"550 Rename failed\r\n")?;
+                    self.stream.write_all(b"550 Rename failed\r\n").await?;
                 }
             }
         } else {
-            self.stream.write_all(b"503 Bad sequence of commands\r\n")?;
+            self.stream.write_all(b"503 Bad sequence of commands\r\n").await?;
         }
         self.rename_from = None;
         Ok(())
     }
 
-    pub fn cmd_size(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_size(&mut self, arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
@@ -177,29 +177,29 @@ impl FtpSession {
                 Ok(p) => p,
                 Err(e) => {
                     let error_msg = format!("550 Path resolution failed: {}\r\n", e);
-                    self.stream.write_all(error_msg.as_bytes())?;
+                    self.stream.write_all(error_msg.as_bytes()).await?;
                     return Ok(());
                 }
             };
             let home_path = Path::new(&self.home_dir);
             if !file_path.starts_with(home_path) {
-                self.stream.write_all(b"550 Permission denied\r\n")?;
+                self.stream.write_all(b"550 Permission denied\r\n").await?;
                 return Ok(());
             }
             if let Ok(metadata) = std::fs::metadata(&file_path) {
-                self.stream.write_all(format!("213 {}\r\n", metadata.len()).as_bytes())?;
+                self.stream.write_all(format!("213 {}\r\n", metadata.len()).as_bytes()).await?;
             } else {
-                self.stream.write_all(b"550 File not found\r\n")?;
+                self.stream.write_all(b"550 File not found\r\n").await?;
             }
         } else {
-            self.stream.write_all(b"501 Syntax error: SIZE requires parameter\r\n")?;
+            self.stream.write_all(b"501 Syntax error: SIZE requires parameter\r\n").await?;
         }
         Ok(())
     }
 
-    pub fn cmd_mdtm(&mut self, arg: Option<&str>) -> Result<()> {
+    pub async fn cmd_mdtm(&mut self, arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
-            self.stream.write_all(b"530 Not logged in\r\n")?;
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
             return Ok(());
         }
 
@@ -208,23 +208,23 @@ impl FtpSession {
                 Ok(p) => p,
                 Err(e) => {
                     let error_msg = format!("550 Path resolution failed: {}\r\n", e);
-                    self.stream.write_all(error_msg.as_bytes())?;
+                    self.stream.write_all(error_msg.as_bytes()).await?;
                     return Ok(());
                 }
             };
             let home_path = Path::new(&self.home_dir);
             if !file_path.starts_with(home_path) {
-                self.stream.write_all(b"550 Permission denied\r\n")?;
+                self.stream.write_all(b"550 Permission denied\r\n").await?;
                 return Ok(());
             }
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 let mtime = get_file_mtime_raw(&metadata);
-                self.stream.write_all(format!("213 {}\r\n", mtime).as_bytes())?;
+                self.stream.write_all(format!("213 {}\r\n", mtime).as_bytes()).await?;
             } else {
-                self.stream.write_all(b"550 File not found\r\n")?;
+                self.stream.write_all(b"550 File not found\r\n").await?;
             }
         } else {
-            self.stream.write_all(b"501 Syntax error: MDTM requires parameter\r\n")?;
+            self.stream.write_all(b"501 Syntax error: MDTM requires parameter\r\n").await?;
         }
         Ok(())
     }

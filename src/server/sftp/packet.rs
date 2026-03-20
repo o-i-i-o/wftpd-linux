@@ -23,36 +23,12 @@ pub fn parse_u32(data: &[u8], offset: usize) -> u32 {
     u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
 }
 
-pub fn parse_u64(data: &[u8], offset: usize) -> u64 {
-    if offset + 8 > data.len() {
-        return 0;
-    }
-    u64::from_be_bytes([
-        data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
-        data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
-    ])
-}
-
-pub fn parse_string(data: &[u8], offset: usize) -> Result<String> {
-    if offset + 4 > data.len() {
-        return Ok(String::new());
-    }
-    let len = parse_u32(data, offset) as usize;
-    if offset + 4 + len > data.len() {
-        return Ok(String::new());
-    }
-    Ok(String::from_utf8_lossy(&data[offset + 4..offset + 4 + len]).to_string())
-}
-
-
-#[allow(dead_code)]
 pub fn parse_u32_checked(data: &[u8], offset: usize) -> Result<u32> {
     if offset + 4 > data.len() {
         anyhow::bail!("Insufficient data for u32 at offset {}", offset);
     }
     Ok(u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]))
 }
-
 
 #[allow(dead_code)]
 pub fn parse_u64_checked(data: &[u8], offset: usize) -> Result<u64> {
@@ -65,6 +41,16 @@ pub fn parse_u64_checked(data: &[u8], offset: usize) -> Result<u64> {
     ]))
 }
 
+pub fn parse_string(data: &[u8], offset: usize) -> Result<String> {
+    if offset + 4 > data.len() {
+        return Ok(String::new());
+    }
+    let len = parse_u32(data, offset) as usize;
+    if offset + 4 + len > data.len() {
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&data[offset + 4..offset + 4 + len]).to_string())
+}
 
 #[allow(dead_code)]
 pub fn parse_string_checked(data: &[u8], offset: usize) -> Result<(String, usize)> {
@@ -139,7 +125,6 @@ pub fn build_attrs(is_dir: bool, size: u64) -> Vec<u8> {
     attrs.extend_from_slice(&mtime.to_be_bytes());
     attrs
 }
-
 
 #[allow(dead_code)]
 pub fn build_attrs_from_metadata(metadata: &std::fs::Metadata) -> Vec<u8> {

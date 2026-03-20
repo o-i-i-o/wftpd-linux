@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::os::unix::fs::MetadataExt;
 
 use super::packet::*;
 use super::packet::SSH_FX_OK;
@@ -45,13 +46,21 @@ const SSH_FXP_EXTENDED: u8 = 200;
 
 pub struct SftpFileHandle {
     pub path: PathBuf,
-    pub file: std::fs::File,
+    pub file: tokio::fs::File,
     pub locked: bool,
     pub existed: bool,
     pub written_bytes: u64,
     pub is_dir: bool,
-    pub dir_entries: Vec<(String, bool, u64)>,
+    pub dir_entries: Vec<DirEntryInfo>,
     pub dir_index: usize,
+}
+
+pub struct DirEntryInfo {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub mtime: i64,
+    pub mode: u32,
 }
 
 pub struct SftpState {
@@ -74,7 +83,11 @@ impl Drop for SftpState {
         let locked_handles: Vec<(PathBuf, std::fs::File)> = self.handles.drain()
             .filter_map(|(_, handle)| {
                 if handle.locked {
-                    Some((handle.path, handle.file))
+                    if let Ok(file) = handle.file.try_into_std() {
+                        Some((handle.path, file))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -109,6 +122,43 @@ impl Drop for SftpState {
                 }
             });
     }
+}
+
+fn io_error_to_sftp_status(e: &std::io::Error) -> (u32, &'static str) {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
+        std::io::ErrorKind::PermissionDenied => (SSH_FX_PERMISSION_DENIED, "Permission denied"),
+        std::io::ErrorKind::AlreadyExists => (SSH_FX_FAILURE, "File already exists"),
+        std::io::ErrorKind::IsADirectory => (SSH_FX_FAILURE, "Is a directory"),
+        std::io::ErrorKind::NotADirectory => (SSH_FX_FAILURE, "Not a directory"),
+        _ => (SSH_FX_FAILURE, "Operation failed"),
+    }
+}
+
+fn format_longname(name: &str, is_dir: bool, size: u64, mtime: i64, mode: u32) -> String {
+    let perms = if is_dir {
+        "drwxr-xr-x"
+    } else {
+        let user_r = if mode & 0o400 != 0 { 'r' } else { '-' };
+        let user_w = if mode & 0o200 != 0 { 'w' } else { '-' };
+        let user_x = if mode & 0o100 != 0 { 'x' } else { '-' };
+        let group_r = if mode & 0o040 != 0 { 'r' } else { '-' };
+        let group_w = if mode & 0o020 != 0 { 'w' } else { '-' };
+        let group_x = if mode & 0o010 != 0 { 'x' } else { '-' };
+        let other_r = if mode & 0o004 != 0 { 'r' } else { '-' };
+        let other_w = if mode & 0o002 != 0 { 'w' } else { '-' };
+        let other_x = if mode & 0o001 != 0 { 'x' } else { '-' };
+        &format!("-{}{}{}{}{}{}{}{}{}", 
+            user_r, user_w, user_x,
+            group_r, group_w, group_x,
+            other_r, other_w, other_x)
+    };
+    
+    let datetime = chrono::DateTime::from_timestamp(mtime, 0)
+        .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+    let time_str = datetime.format("%b %d %H:%M").to_string();
+    
+    format!("{} 1 user user {:>10} {} {}", perms, size, time_str, name)
 }
 
 impl SftpState {
@@ -310,33 +360,44 @@ impl SftpState {
         };
         self.log_path_info("OPENDIR", &full_path);
 
-        if !full_path.exists() {
-            if let Ok(mut log) = self.logger.lock() {
-                log.warning("SFTP", &format!("OPENDIR: Directory not found: {}", full_path.display()));
+        let dir_result = tokio::fs::read_dir(&full_path).await;
+        
+        match dir_result {
+            Ok(mut dir) => {
+                let mut entries = Vec::new();
+                while let Ok(Some(entry)) = dir.next_entry().await {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let metadata = entry.metadata().await.ok();
+                    let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let mtime = metadata.as_ref().map(|m| m.mtime()).unwrap_or(0);
+                    let mode = metadata.as_ref().map(|m| m.mode()).unwrap_or(0o644);
+                    entries.push(DirEntryInfo { name, is_dir, size, mtime, mode });
+                }
+                
+                let handle = self.generate_handle();
+                let null_file = tokio::fs::File::from(std::fs::File::open("/dev/null")?);
+                self.handles.insert(handle.clone(), SftpFileHandle {
+                    path: full_path,
+                    file: null_file,
+                    locked: false,
+                    existed: true,
+                    written_bytes: 0,
+                    is_dir: true,
+                    dir_entries: entries,
+                    dir_index: 0,
+                });
+
+                Ok(build_handle_packet(id, &handle))
             }
-            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such directory", ""));
-        }
-
-        if !full_path.is_dir() {
-            if let Ok(mut log) = self.logger.lock() {
-                log.warning("SFTP", &format!("OPENDIR: Path is not a directory: {}", full_path.display()));
+            Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
+                if let Ok(mut log) = self.logger.lock() {
+                    log.warning("SFTP", &format!("OPENDIR: Failed for {}: {}", full_path.display(), e));
+                }
+                Ok(build_status_packet(id, status, msg, ""))
             }
-            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Not a directory", ""));
         }
-
-        let handle = self.generate_handle();
-        self.handles.insert(handle.clone(), SftpFileHandle {
-            path: full_path,
-            file: std::fs::File::open("/dev/null")?,
-            locked: false,
-            existed: true,
-            written_bytes: 0,
-            is_dir: true,
-            dir_entries: Vec::new(),
-            dir_index: 0,
-        });
-
-        Ok(build_handle_packet(id, &handle))
     }
 
     async fn handle_close(&mut self, data: &[u8]) -> Result<Vec<u8>> {
@@ -345,7 +406,7 @@ impl SftpState {
 
         if let Some(handle) = self.handles.remove(&handle_str)
             && !handle.is_dir && handle.written_bytes > 0 {
-                let file_size = std::fs::metadata(&handle.path).map(|m| m.len()).unwrap_or(handle.written_bytes);
+                let file_size = tokio::fs::metadata(&handle.path).await.map(|m| m.len()).unwrap_or(handle.written_bytes);
                 
                 if handle.existed {
                     if let Ok(mut fl) = self.file_logger.lock() {
@@ -390,48 +451,27 @@ impl SftpState {
         let handle = self.handles.get_mut(&handle_str);
         match handle {
             Some(h) if h.is_dir => {
-                if h.dir_entries.is_empty() {
-                    let mut read_entries = Vec::new();
-                    if let Ok(mut dir) = std::fs::read_dir(&h.path) {
-                        for entry in dir.by_ref() {
-                            let entry = match entry {
-                                Ok(e) => e,
-                                Err(_) => continue,
-                            };
-                            let name = entry.file_name().to_string_lossy().to_string();
-                            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                            let size = entry.metadata().map(|m| m.len()).unwrap_or(1);
-                            read_entries.push((name, is_dir, size));
-                        }
-                    }
-                    h.dir_entries = read_entries;
-                    h.dir_index = 0;
-                }
-
                 if h.dir_index >= h.dir_entries.len() {
                     return Ok(build_status_packet(id, SSH_FX_EOF, "End of directory", ""));
                 }
 
                 let count = (h.dir_entries.len() - h.dir_index).min(100);
-                let result_entries: Vec<(String, bool, u64)> = h.dir_entries[h.dir_index..h.dir_index + count].to_vec();
+                let result_entries: Vec<&DirEntryInfo> = h.dir_entries[h.dir_index..h.dir_index + count].iter().collect();
                 h.dir_index += count;
 
                 let mut payload = vec![104];
                 payload.extend_from_slice(&id.to_be_bytes());
                 payload.extend_from_slice(&(result_entries.len() as u32).to_be_bytes());
 
-                for (name, is_dir, size) in result_entries {
-                    payload.extend_from_slice(&(name.len() as u32).to_be_bytes());
-                    payload.extend_from_slice(name.as_bytes());
+                for entry in result_entries {
+                    payload.extend_from_slice(&(entry.name.len() as u32).to_be_bytes());
+                    payload.extend_from_slice(entry.name.as_bytes());
                     
-                    let long_name = format!("{} 1 user user {:>10} Jan 01 00:00 {}", 
-                        if is_dir { "drwxr-xr-x" } else { "-rw-r--r--" },
-                        size, name
-                    );
+                    let long_name = format_longname(&entry.name, entry.is_dir, entry.size, entry.mtime, entry.mode);
                     payload.extend_from_slice(&(long_name.len() as u32).to_be_bytes());
                     payload.extend_from_slice(long_name.as_bytes());
                     
-                    payload.extend_from_slice(&build_attrs(is_dir, size));
+                    payload.extend_from_slice(&build_attrs(entry.is_dir, entry.size));
                 }
 
                 Ok(build_packet(&payload))
@@ -459,9 +499,9 @@ impl SftpState {
         let handle = self.handles.get_mut(&handle_str);
         match handle {
             Some(h) if !h.is_dir => {
-                use std::io::{Read, Seek};
+                use tokio::io::{AsyncReadExt, AsyncSeekExt};
                 
-                if let Err(e) = h.file.seek(std::io::SeekFrom::Start(offset)) {
+                if let Err(e) = h.file.seek(std::io::SeekFrom::Start(offset)).await {
                     if let Ok(mut log) = self.logger.lock() {
                         log.warning("SFTP", &format!("Failed to seek to offset {}: {}", offset, e));
                     }
@@ -470,13 +510,14 @@ impl SftpState {
                 
                 let read_len = len.min(32768);
                 let mut buffer = vec![0u8; read_len];
-                let n = match h.file.read(&mut buffer) {
+                let n = match h.file.read(&mut buffer).await {
                     Ok(n) => n,
                     Err(e) => {
                         if let Ok(mut log) = self.logger.lock() {
                             log.warning("SFTP", &format!("Failed to read from {:?}: {}", h.path, e));
                         }
-                        return Ok(build_status_packet(id, SSH_FX_FAILURE, "Read failed", ""));
+                        let (status, msg) = io_error_to_sftp_status(&e);
+                        return Ok(build_status_packet(id, status, msg, ""));
                     }
                 };
 
@@ -544,9 +585,12 @@ impl SftpState {
         let handle = self.handles.get_mut(&handle_str);
         match handle {
             Some(h) if !h.is_dir => {
-                use std::io::{Seek, Write};
-                let _ = h.file.seek(std::io::SeekFrom::Start(offset));
-                h.file.write_all(write_data)?;
+                use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+                let _ = h.file.seek(std::io::SeekFrom::Start(offset)).await;
+                if let Err(e) = h.file.write_all(write_data).await {
+                    let (status, msg) = io_error_to_sftp_status(&e);
+                    return Ok(build_status_packet(id, status, msg, ""));
+                }
 
                 h.written_bytes += data_len as u64;
 
@@ -571,7 +615,7 @@ impl SftpState {
             }
         };
 
-        match std::fs::remove_file(&full_path) {
+        match tokio::fs::remove_file(&full_path).await {
             Ok(_) => {
                 if let Ok(mut fl) = self.file_logger.lock() {
                     fl.log_delete(
@@ -593,7 +637,8 @@ impl SftpState {
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
-                Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Failed to remove file: {}", e), ""))
+                let (status, msg) = io_error_to_sftp_status(&e);
+                Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
             }
         }
     }
@@ -613,12 +658,12 @@ impl SftpState {
             }
         };
 
-        match std::fs::create_dir_all(&full_path) {
+        match tokio::fs::create_dir_all(&full_path).await {
             Ok(_) => {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(0o755));
+                    let _ = tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(0o755)).await;
                 }
 
                 if let Ok(mut fl) = self.file_logger.lock() {
@@ -641,8 +686,9 @@ impl SftpState {
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
-                let error_msg = format!("Failed to create directory: {} (path: {})", e, full_path.display());
-                Ok(build_status_packet(id, SSH_FX_FAILURE, &error_msg, ""))
+                let (status, msg) = io_error_to_sftp_status(&e);
+                let error_msg = format!("{}: {} (path: {})", msg, e, full_path.display());
+                Ok(build_status_packet(id, status, &error_msg, ""))
             }
         }
     }
@@ -662,27 +708,31 @@ impl SftpState {
             }
         };
 
-        if std::fs::remove_dir_all(&full_path).is_ok() {
-            if let Ok(mut fl) = self.file_logger.lock() {
-                fl.log_rmdir(
-                    self.username.as_deref().unwrap_or("anonymous"),
-                    &self.client_ip,
-                    &full_path.to_string_lossy(),
-                    "SFTP",
-                );
+        match tokio::fs::remove_dir_all(&full_path).await {
+            Ok(_) => {
+                if let Ok(mut fl) = self.file_logger.lock() {
+                    fl.log_rmdir(
+                        self.username.as_deref().unwrap_or("anonymous"),
+                        &self.client_ip,
+                        &full_path.to_string_lossy(),
+                        "SFTP",
+                    );
+                }
+                if let Ok(mut log) = self.logger.lock() {
+                    log.client_action(
+                        "SFTP",
+                        &format!("Removed directory: {}", path),
+                        &self.client_ip,
+                        self.username.as_deref(),
+                        "RMDIR",
+                    );
+                }
+                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
-            if let Ok(mut log) = self.logger.lock() {
-                log.client_action(
-                    "SFTP",
-                    &format!("Removed directory: {}", path),
-                    &self.client_ip,
-                    self.username.as_deref(),
-                    "RMDIR",
-                );
+            Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
+                Ok(build_status_packet(id, status, msg, ""))
             }
-            Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
-        } else {
-            Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to remove directory", ""))
         }
     }
 
@@ -739,13 +789,6 @@ impl SftpState {
         
         self.log_path_info("RENAME_OLD", &old_full);
         
-        if !old_full.exists() {
-            if let Ok(mut log) = self.logger.lock() {
-                log.warning("SFTP", &format!("[RENAME] Old file not found: {}", old_full.display()));
-            }
-            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""));
-        }
-        
         let new_full = match self.resolve_path(&new_path) {
             Ok(p) => p,
             Err(e) => {
@@ -762,7 +805,7 @@ impl SftpState {
             log.debug("SFTP", &format!("[RENAME] Attempting rename: '{}' -> '{}'", old_full.display(), new_full.display()));
         }
 
-        let result = match std::fs::rename(&old_full, &new_full) {
+        let result = match tokio::fs::rename(&old_full, &new_full).await {
             Ok(_) => {
                 if let Ok(mut fl) = self.file_logger.lock() {
                     fl.log_rename(
@@ -788,10 +831,11 @@ impl SftpState {
                 build_status_packet(id, SSH_FX_OK, "OK", "")
             }
             Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
                 if let Ok(mut log) = self.logger.lock() {
                     log.warning("SFTP", &format!("[RENAME] Failed: {}", e));
                 }
-                build_status_packet(id, SSH_FX_FAILURE, &format!("Failed to rename: {}", e), "")
+                build_status_packet(id, status, &format!("{}: {}", msg, e), "")
             }
         };
         
@@ -818,7 +862,7 @@ impl SftpState {
         };
         self.log_path_info("STAT", &full_path);
 
-        match std::fs::metadata(&full_path) {
+        match tokio::fs::metadata(&full_path).await {
             Ok(metadata) => {
                 let mut payload = vec![105];
                 payload.extend_from_slice(&id.to_be_bytes());
@@ -826,10 +870,11 @@ impl SftpState {
                 Ok(build_packet(&payload))
             }
             Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
                 if let Ok(mut log) = self.logger.lock() {
                     log.warning("SFTP", &format!("STAT: Failed to get metadata for {}: {}", full_path.display(), e));
                 }
-                Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""))
+                Ok(build_status_packet(id, status, msg, ""))
             }
         }
     }
@@ -865,7 +910,7 @@ impl SftpState {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(permissions));
+                let _ = tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(permissions)).await;
             }
         }
 
@@ -895,7 +940,7 @@ impl SftpState {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(&h.path, std::fs::Permissions::from_mode(permissions));
+                        let _ = tokio::fs::set_permissions(&h.path, std::fs::Permissions::from_mode(permissions)).await;
                     }
                 }
 
@@ -916,14 +961,17 @@ impl SftpState {
         let handle = self.handles.get(&handle_str);
         match handle {
             Some(h) if !h.is_dir => {
-                match std::fs::metadata(&h.path) {
+                match tokio::fs::metadata(&h.path).await {
                     Ok(metadata) => {
                         let mut payload = vec![105];
                         payload.extend_from_slice(&id.to_be_bytes());
                         payload.extend_from_slice(&build_attrs(metadata.is_dir(), metadata.len()));
                         Ok(build_packet(&payload))
                     }
-                    Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
+                    Err(e) => {
+                        let (status, msg) = io_error_to_sftp_status(&e);
+                        Ok(build_status_packet(id, status, msg, ""))
+                    }
                 }
             }
             _ => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
@@ -945,14 +993,13 @@ impl SftpState {
             }
         };
 
-        let resolved = if full_path.exists() {
-            full_path.canonicalize().unwrap_or(full_path)
-        } else {
-            full_path
+        let resolved = match tokio::fs::canonicalize(&full_path).await {
+            Ok(p) => p,
+            Err(_) => full_path,
         };
 
         let home = PathBuf::from(&self.home_dir);
-        let home_canon = home.canonicalize().unwrap_or(home);
+        let home_canon = tokio::fs::canonicalize(&home).await.unwrap_or(home);
         
         let path_str = if resolved.starts_with(&home_canon) {
             let relative = resolved.strip_prefix(&home_canon).unwrap_or(&resolved);
@@ -965,12 +1012,16 @@ impl SftpState {
             resolved.to_string_lossy().to_string()
         };
 
+        let metadata = tokio::fs::metadata(&resolved).await.ok();
+        let mtime = metadata.as_ref().map(|m| m.mtime()).unwrap_or(0);
+        let mode = metadata.as_ref().map(|m| m.mode()).unwrap_or(0o755);
+
         let mut payload = vec![104];
         payload.extend_from_slice(&id.to_be_bytes());
         payload.extend_from_slice(&1u32.to_be_bytes());
         payload.extend_from_slice(&(path_str.len() as u32).to_be_bytes());
         payload.extend_from_slice(path_str.as_bytes());
-        let longname = format!("drwxr-xr-x  1 user user  0 Jan 01 00:00 {}", path_str);
+        let longname = format_longname(&path_str, true, 0, mtime, mode);
         payload.extend_from_slice(&(longname.len() as u32).to_be_bytes());
         payload.extend_from_slice(longname.as_bytes());
         payload.extend_from_slice(&build_attrs(true, 0));
@@ -1070,41 +1121,35 @@ impl SftpState {
             }
         };
         self.log_path_info("OPEN", &full_path);
-        
-        let file_existed = full_path.exists();
-
-        if need_excl && need_creat && file_existed {
-            return Ok(build_status_packet(id, SSH_FX_FAILURE, "File already exists", ""));
-        }
-        
-        if need_read && !need_write && !file_existed {
-            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, &format!("File not found: {}", full_path.display()), ""));
-        }
 
         let file_result = if need_write {
-            let mut opts = std::fs::OpenOptions::new();
+            let mut opts = tokio::fs::OpenOptions::new();
             opts.read(need_read).write(true);
             
-            if need_trunc && need_creat {
+            if need_excl && need_creat {
+                opts.create_new(true);
+            } else if need_trunc && need_creat {
                 opts.create(true).truncate(true);
             } else if need_append {
                 opts.create(need_creat).append(true);
             } else if need_creat {
-                opts.create(true).truncate(false);
+                opts.create(true);
             }
             
-            opts.open(&full_path)
+            opts.open(&full_path).await
         } else {
-            std::fs::File::open(&full_path)
+            tokio::fs::File::open(&full_path).await
         };
 
         match file_result {
             Ok(file) => {
+                let file_existed = !need_excl || !need_creat;
+                
                 if !file_existed {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(0o644));
+                        let _ = tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(0o644)).await;
                     }
                 }
 
@@ -1122,8 +1167,9 @@ impl SftpState {
                 Ok(build_handle_packet(id, &handle))
             }
             Err(e) => {
-                let error_msg = format!("Failed to open file: {} (path: {})", e, full_path.display());
-                Ok(build_status_packet(id, SSH_FX_FAILURE, &error_msg, ""))
+                let (status, msg) = io_error_to_sftp_status(&e);
+                let error_msg = format!("{}: {} (path: {})", msg, e, full_path.display());
+                Ok(build_status_packet(id, status, &error_msg, ""))
             }
         }
     }
@@ -1147,17 +1193,13 @@ impl SftpState {
         };
         
         if let Ok(mut log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[READLINK] resolved_path='{}', exists={}", full_path.display(), full_path.exists()));
+            log.debug("SFTP", &format!("[READLINK] resolved_path='{}'", full_path.display()));
         }
 
-        if !full_path.exists() {
-            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""));
-        }
-
-        match std::fs::symlink_metadata(&full_path) {
+        match tokio::fs::symlink_metadata(&full_path).await {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() {
-                    match std::fs::read_link(&full_path) {
+                    match tokio::fs::read_link(&full_path).await {
                         Ok(target) => {
                             let target_str = target.to_string_lossy().to_string();
                             if let Ok(mut log) = self.logger.lock() {
@@ -1177,7 +1219,8 @@ impl SftpState {
                             if let Ok(mut log) = self.logger.lock() {
                                 log.warning("SFTP", &format!("[READLINK] Failed to read link: {}", e));
                             }
-                            Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Failed to read link: {}", e), ""))
+                            let (status, msg) = io_error_to_sftp_status(&e);
+                            Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
                         }
                     }
                 } else {
@@ -1188,10 +1231,11 @@ impl SftpState {
                 }
             }
             Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
                 if let Ok(mut log) = self.logger.lock() {
                     log.warning("SFTP", &format!("READLINK: symlink_metadata failed for {}: {}", full_path.display(), e));
                 }
-                Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""))
+                Ok(build_status_packet(id, status, msg, ""))
             }
         }
     }
@@ -1213,7 +1257,7 @@ impl SftpState {
             }
         };
         let home = PathBuf::from(&self.home_dir);
-        let home_canon = home.canonicalize().unwrap_or(home);
+        let home_canon = tokio::fs::canonicalize(&home).await.unwrap_or(home);
         
         let full_target = if target.starts_with('/') {
             let resolved = match safe_resolve_path(&self.home_dir, &target) {
@@ -1257,31 +1301,35 @@ impl SftpState {
             resolved
         };
 
-        if std::os::unix::fs::symlink(&full_target, &full_link).is_ok() {
-            if let Ok(mut fl) = self.file_logger.lock() {
-                fl.log(crate::core::file_logger::FileLogInfo {
-                    username: self.username.as_deref().unwrap_or("anonymous"),
-                    client_ip: &self.client_ip,
-                    operation: "SYMLINK",
-                    file_path: &format!("{} -> {}", full_link.to_string_lossy(), full_target.to_string_lossy()),
-                    file_size: 0,
-                    protocol: "SFTP",
-                    success: true,
-                    message: "符号链接创建成功",
-                });
+        match std::os::unix::fs::symlink(&full_target, &full_link) {
+            Ok(_) => {
+                if let Ok(mut fl) = self.file_logger.lock() {
+                    fl.log(crate::core::file_logger::FileLogInfo {
+                        username: self.username.as_deref().unwrap_or("anonymous"),
+                        client_ip: &self.client_ip,
+                        operation: "SYMLINK",
+                        file_path: &format!("{} -> {}", full_link.to_string_lossy(), full_target.to_string_lossy()),
+                        file_size: 0,
+                        protocol: "SFTP",
+                        success: true,
+                        message: "符号链接创建成功",
+                    });
+                }
+                if let Ok(mut log) = self.logger.lock() {
+                    log.client_action(
+                        "SFTP",
+                        &format!("Created symlink: {} -> {}", link_path, target),
+                        &self.client_ip,
+                        self.username.as_deref(),
+                        "SYMLINK",
+                    );
+                }
+                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
-            if let Ok(mut log) = self.logger.lock() {
-                log.client_action(
-                    "SFTP",
-                    &format!("Created symlink: {} -> {}", link_path, target),
-                    &self.client_ip,
-                    self.username.as_deref(),
-                    "SYMLINK",
-                );
+            Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
+                Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
             }
-            Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
-        } else {
-            Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to create symlink", ""))
         }
     }
 
@@ -1300,7 +1348,14 @@ impl SftpState {
                     return Ok(build_status_packet(id, SSH_FX_OK, "Already locked", ""));
                 }
 
-                match fs2::FileExt::lock_exclusive(&h.file) {
+                let std_file = match h.file.try_clone().await {
+                    Ok(f) => f.into_std().await,
+                    Err(_) => {
+                        return Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to clone file handle", ""));
+                    }
+                };
+
+                match fs2::FileExt::lock_exclusive(&std_file) {
                     Ok(()) => {
                         h.locked = true;
                         self.locked_files.insert(h.path.clone());
@@ -1333,7 +1388,14 @@ impl SftpState {
                     return Ok(build_status_packet(id, SSH_FX_OK, "Not locked", ""));
                 }
 
-                match fs2::FileExt::unlock(&h.file) {
+                let std_file = match h.file.try_clone().await {
+                    Ok(f) => f.into_std().await,
+                    Err(_) => {
+                        return Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to clone file handle", ""));
+                    }
+                };
+
+                match fs2::FileExt::unlock(&std_file) {
                     Ok(()) => {
                         h.locked = false;
                         self.locked_files.remove(&h.path);

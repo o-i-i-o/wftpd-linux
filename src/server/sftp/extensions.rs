@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::path::Path;
 
 use super::state::SftpState;
 use super::packet::*;
@@ -9,19 +10,63 @@ use super::packet::SSH_FX_FAILURE;
 use super::packet::SSH_FX_OP_UNSUPPORTED;
 use crate::core::file_logger::FileLogInfo;
 
+fn io_error_to_sftp_status(e: &std::io::Error) -> (u32, &'static str) {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
+        std::io::ErrorKind::PermissionDenied => (SSH_FX_PERMISSION_DENIED, "Permission denied"),
+        std::io::ErrorKind::AlreadyExists => (SSH_FX_FAILURE, "File already exists"),
+        std::io::ErrorKind::IsADirectory => (SSH_FX_FAILURE, "Is a directory"),
+        std::io::ErrorKind::NotADirectory => (SSH_FX_FAILURE, "Not a directory"),
+        _ => {
+            let raw_os_error = e.raw_os_error().unwrap_or(0);
+            match raw_os_error {
+                libc::EXDEV => (SSH_FX_FAILURE, "Cross-device link not supported"),
+                libc::ENOSPC => (SSH_FX_FAILURE, "No space left on device"),
+                libc::EROFS => (SSH_FX_PERMISSION_DENIED, "Read-only file system"),
+                libc::EACCES => (SSH_FX_PERMISSION_DENIED, "Permission denied"),
+                libc::ENOENT => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
+                libc::ENOTDIR => (SSH_FX_FAILURE, "Not a directory"),
+                libc::EISDIR => (SSH_FX_FAILURE, "Is a directory"),
+                libc::EEXIST => (SSH_FX_FAILURE, "File already exists"),
+                libc::EMLINK => (SSH_FX_FAILURE, "Too many links"),
+                _ => (SSH_FX_FAILURE, "Operation failed"),
+            }
+        }
+    }
+}
+
+fn log_io_error(logger: &std::sync::Mutex<crate::core::logger::Logger>, operation: &str, path: &Path, error: &std::io::Error) {
+    if let Ok(mut log) = logger.try_lock() {
+        log.warning("SFTP", &format!("[{}] Failed for {}: {}", operation, path.display(), error));
+    }
+}
+
 impl SftpState {
     pub async fn handle_extended(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let id = parse_u32(data, 1);
-        
-        if let Ok(mut log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[EXTENDED] Received packet, len={}, id={}", data.len(), id));
+        if data.len() < 9 {
+            return Ok(build_status_packet(0, SSH_FX_FAILURE, "Invalid extended packet: too short", ""));
         }
         
-        let (ext_name, ext_len) = parse_string_checked(data, 5)?;
-        let ext_total_len = 4 + ext_len;
+        let id = parse_u32(data, 1);
         
-        if let Ok(mut log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[EXTENDED] extension='{}', ext_len={}, ext_total_len={}", ext_name, ext_len, ext_total_len));
+        let ext_name_len_pos = 5;
+        if ext_name_len_pos + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid extended packet: extension name length overflow", ""));
+        }
+        
+        let (ext_name, ext_len) = match parse_string_checked(data, ext_name_len_pos) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid extension name: {}", e), ""));
+            }
+        };
+        
+        let ext_total_len = 4usize.checked_add(ext_len)
+            .ok_or_else(|| anyhow::anyhow!("Extension length overflow"))?;
+        
+        let remaining_data = data.len().saturating_sub(5 + ext_total_len);
+        if remaining_data < 4 && ext_name != "limits@openssh.com" {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid extended packet: missing data", ""));
         }
 
         match ext_name.as_str() {
@@ -33,9 +78,6 @@ impl SftpState {
             "hardlink@openssh.com" => self.handle_hardlink(id, data, ext_total_len).await,
             "posix-rename@openssh.com" => self.handle_posix_rename(id, data, ext_total_len).await,
             _ => {
-                if let Ok(mut log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("[EXTENDED] Unsupported extension: {}", ext_name));
-                }
                 Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, &format!("Unsupported extension: {}", ext_name), ""))
             }
         }
@@ -59,7 +101,26 @@ impl SftpState {
     }
 
     async fn handle_statvfs(&self, id: u32, data: &[u8], ext_offset: usize) -> Result<Vec<u8>> {
-        let (path, _) = parse_string_checked(data, 5 + ext_offset)?;
+        let parse_offset = 5usize.checked_add(ext_offset)
+            .ok_or_else(|| anyhow::anyhow!("Offset overflow"))?;
+        
+        if parse_offset + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid statvfs packet: missing path length", ""));
+        }
+        
+        let (path, path_len) = match parse_string_checked(data, parse_offset) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid path: {}", e), ""));
+            }
+        };
+        
+        let expected_end = parse_offset.checked_add(4 + path_len);
+        if let Some(end) = expected_end
+            && end > data.len() {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid statvfs packet: path data truncated", ""));
+            }
+        
         let full_path = match self.resolve_path(&path) {
             Ok(p) => p,
             Err(e) => {
@@ -69,19 +130,27 @@ impl SftpState {
 
         #[cfg(unix)]
         {
-            match tokio::fs::metadata(full_path.parent().unwrap_or(&full_path)).await {
-                Ok(_metadata) => {
-                    let bsize: u64 = 4096;
-                    let frsize: u64 = 4096;
-                    let blocks: u64 = 1000000;
-                    let bfree: u64 = 500000;
-                    let bavail: u64 = 500000;
-                    let files: u64 = 100000;
-                    let ffree: u64 = 50000;
-                    let favail: u64 = 50000;
-                    let fsid: u64 = 1;
-                    let flag: u64 = 0;
-                    let namemax: u64 = 255;
+            let stat_path = full_path.parent().unwrap_or(&full_path);
+            
+            use nix::sys::statvfs::statvfs;
+            match statvfs(stat_path) {
+                Ok(stats) => {
+                    let bsize: u64 = stats.block_size();
+                    let frsize: u64 = stats.fragment_size();
+                    let blocks: u64 = stats.blocks();
+                    let bfree: u64 = stats.blocks_free();
+                    let bavail: u64 = stats.blocks_available();
+                    let files: u64 = stats.files();
+                    let ffree: u64 = stats.files_free();
+                    let favail: u64 = stats.files_available();
+                    let fsid: u64 = stats.filesystem_id();
+                    let namemax: u64 = stats.name_max();
+
+                    let mut flag: u64 = 0;
+                    use nix::sys::statvfs::FsFlags;
+                    if stats.flags().contains(FsFlags::ST_RDONLY) {
+                        flag |= 1;
+                    }
 
                     let mut payload = vec![201];
                     payload.extend_from_slice(&id.to_be_bytes());
@@ -98,18 +167,46 @@ impl SftpState {
                     payload.extend_from_slice(&namemax.to_be_bytes());
                     Ok(build_packet(&payload))
                 }
-                Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
+                Err(e) => {
+                    let (status, msg) = match e {
+                        nix::errno::Errno::ENOENT => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
+                        nix::errno::Errno::EACCES => (SSH_FX_PERMISSION_DENIED, "Permission denied"),
+                        nix::errno::Errno::ENOTDIR => (SSH_FX_FAILURE, "Not a directory"),
+                        _ => (SSH_FX_FAILURE, "Failed to get filesystem stats"),
+                    };
+                    Ok(build_status_packet(id, status, msg, ""))
+                }
             }
         }
 
         #[cfg(not(unix))]
         {
+            let _ = full_path;
             Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "statvfs not supported on this platform", ""))
         }
     }
 
     async fn handle_md5sum(&self, id: u32, data: &[u8], ext_offset: usize) -> Result<Vec<u8>> {
-        let path = parse_string(data, 5 + ext_offset)?;
+        let parse_offset = 5usize.checked_add(ext_offset)
+            .ok_or_else(|| anyhow::anyhow!("Offset overflow"))?;
+        
+        if parse_offset + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid md5sum packet: missing path length", ""));
+        }
+        
+        let (path, path_len) = match parse_string_checked(data, parse_offset) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid path: {}", e), ""));
+            }
+        };
+        
+        let expected_end = parse_offset.checked_add(4 + path_len);
+        if let Some(end) = expected_end
+            && end > data.len() {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid md5sum packet: path data truncated", ""));
+            }
+        
         let full_path = match self.resolve_path(&path) {
             Ok(p) => p,
             Err(e) => {
@@ -131,7 +228,10 @@ impl SftpState {
                     match file.read(&mut buffer).await {
                         Ok(0) => break,
                         Ok(n) => hasher.update(&buffer[..n]),
-                        Err(_) => return Ok(build_status_packet(id, SSH_FX_FAILURE, "Read error", "")),
+                        Err(e) => {
+                            let (status, msg) = io_error_to_sftp_status(&e);
+                            return Ok(build_status_packet(id, status, msg, ""));
+                        }
                     }
                 }
                 let hash = hasher.finalize();
@@ -143,12 +243,34 @@ impl SftpState {
                 payload.extend_from_slice(hash_hex.as_bytes());
                 Ok(build_packet(&payload))
             }
-            Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
+            Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
+                Ok(build_status_packet(id, status, msg, ""))
+            }
         }
     }
 
     async fn handle_sha256sum(&self, id: u32, data: &[u8], ext_offset: usize) -> Result<Vec<u8>> {
-        let path = parse_string(data, 5 + ext_offset)?;
+        let parse_offset = 5usize.checked_add(ext_offset)
+            .ok_or_else(|| anyhow::anyhow!("Offset overflow"))?;
+        
+        if parse_offset + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid sha256sum packet: missing path length", ""));
+        }
+        
+        let (path, path_len) = match parse_string_checked(data, parse_offset) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid path: {}", e), ""));
+            }
+        };
+        
+        let expected_end = parse_offset.checked_add(4 + path_len);
+        if let Some(end) = expected_end
+            && end > data.len() {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid sha256sum packet: path data truncated", ""));
+            }
+        
         let full_path = match self.resolve_path(&path) {
             Ok(p) => p,
             Err(e) => {
@@ -170,7 +292,10 @@ impl SftpState {
                     match file.read(&mut buffer).await {
                         Ok(0) => break,
                         Ok(n) => hasher.update(&buffer[..n]),
-                        Err(_) => return Ok(build_status_packet(id, SSH_FX_FAILURE, "Read error", "")),
+                        Err(e) => {
+                            let (status, msg) = io_error_to_sftp_status(&e);
+                            return Ok(build_status_packet(id, status, msg, ""));
+                        }
                     }
                 }
                 let hash = hasher.finalize();
@@ -182,14 +307,51 @@ impl SftpState {
                 payload.extend_from_slice(hash_hex.as_bytes());
                 Ok(build_packet(&payload))
             }
-            Err(_) => Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", "")),
+            Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
+                Ok(build_status_packet(id, status, msg, ""))
+            }
         }
     }
 
     async fn handle_copy_file(&mut self, id: u32, data: &[u8], ext_offset: usize) -> Result<Vec<u8>> {
-        let (src_path, src_len) = parse_string_checked(data, 5 + ext_offset)?;
-        let dst_pos = 5 + ext_offset + 4 + src_len;
-        let (dst_path, _) = parse_string_checked(data, dst_pos)?;
+        let parse_offset = 5usize.checked_add(ext_offset)
+            .ok_or_else(|| anyhow::anyhow!("Offset overflow"))?;
+        
+        if parse_offset + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid copy-file packet: missing source path length", ""));
+        }
+        
+        let (src_path, src_len) = match parse_string_checked(data, parse_offset) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid source path: {}", e), ""));
+            }
+        };
+        
+        let src_end = parse_offset.checked_add(4 + src_len)
+            .ok_or_else(|| anyhow::anyhow!("Source path end overflow"))?;
+        if src_end > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid copy-file packet: source path data truncated", ""));
+        }
+        
+        let dst_pos = src_end;
+        if dst_pos + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid copy-file packet: missing destination path length", ""));
+        }
+        
+        let (dst_path, dst_len) = match parse_string_checked(data, dst_pos) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid destination path: {}", e), ""));
+            }
+        };
+        
+        let dst_end = dst_pos.checked_add(4 + dst_len)
+            .ok_or_else(|| anyhow::anyhow!("Destination path end overflow"))?;
+        if dst_end > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid copy-file packet: destination path data truncated", ""));
+        }
 
         if !self.check_permission(|p| p.can_read && p.can_write) {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
@@ -198,45 +360,87 @@ impl SftpState {
         let src_full = match self.resolve_path(&src_path) {
             Ok(p) => p,
             Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Source path resolution failed: {}", e), ""));
             }
         };
         let dst_full = match self.resolve_path(&dst_path) {
             Ok(p) => p,
             Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Destination path resolution failed: {}", e), ""));
             }
         };
 
         match tokio::fs::copy(&src_full, &dst_full).await {
             Ok(size) => {
-                self.file_logger.lock().unwrap().log(FileLogInfo {
-                    username: self.username.as_deref().unwrap_or("anonymous"),
-                    client_ip: &self.client_ip,
-                    operation: "COPY",
-                    file_path: &format!("{} -> {}", src_full.to_string_lossy(), dst_full.to_string_lossy()),
-                    file_size: size,
-                    protocol: "SFTP",
-                    success: true,
-                    message: "文件复制成功",
-                });
-                self.logger.lock().unwrap().client_action(
-                    "SFTP",
-                    &format!("Copied: {} -> {}", src_path, dst_path),
-                    &self.client_ip,
-                    self.username.as_deref(),
-                    "COPY",
-                );
+                if let Ok(mut fl) = self.file_logger.try_lock() {
+                    fl.log(FileLogInfo {
+                        username: self.username.as_deref().unwrap_or("anonymous"),
+                        client_ip: &self.client_ip,
+                        operation: "COPY",
+                        file_path: &format!("{} -> {}", src_full.to_string_lossy(), dst_full.to_string_lossy()),
+                        file_size: size,
+                        protocol: "SFTP",
+                        success: true,
+                        message: "文件复制成功",
+                    });
+                }
+                if let Ok(mut log) = self.logger.try_lock() {
+                    log.client_action(
+                        "SFTP",
+                        &format!("Copied: {} -> {}", src_path, dst_path),
+                        &self.client_ip,
+                        self.username.as_deref(),
+                        "COPY",
+                    );
+                }
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
-            Err(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to copy file", "")),
+            Err(e) => {
+                log_io_error(&self.logger, "COPY", &src_full, &e);
+                let (status, msg) = io_error_to_sftp_status(&e);
+                Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
+            }
         }
     }
 
     async fn handle_hardlink(&mut self, id: u32, data: &[u8], ext_offset: usize) -> Result<Vec<u8>> {
-        let (src_path, src_len) = parse_string_checked(data, 5 + ext_offset)?;
-        let dst_pos = 5 + ext_offset + 4 + src_len;
-        let (dst_path, _) = parse_string_checked(data, dst_pos)?;
+        let parse_offset = 5usize.checked_add(ext_offset)
+            .ok_or_else(|| anyhow::anyhow!("Offset overflow"))?;
+        
+        if parse_offset + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid hardlink packet: missing source path length", ""));
+        }
+        
+        let (src_path, src_len) = match parse_string_checked(data, parse_offset) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid source path: {}", e), ""));
+            }
+        };
+        
+        let src_end = parse_offset.checked_add(4 + src_len)
+            .ok_or_else(|| anyhow::anyhow!("Source path end overflow"))?;
+        if src_end > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid hardlink packet: source path data truncated", ""));
+        }
+        
+        let dst_pos = src_end;
+        if dst_pos + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid hardlink packet: missing destination path length", ""));
+        }
+        
+        let (dst_path, dst_len) = match parse_string_checked(data, dst_pos) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid destination path: {}", e), ""));
+            }
+        };
+        
+        let dst_end = dst_pos.checked_add(4 + dst_len)
+            .ok_or_else(|| anyhow::anyhow!("Destination path end overflow"))?;
+        if dst_end > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid hardlink packet: destination path data truncated", ""));
+        }
 
         if !self.check_permission(|p| p.can_write) {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
@@ -245,13 +449,13 @@ impl SftpState {
         let src_full = match self.resolve_path(&src_path) {
             Ok(p) => p,
             Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Source path resolution failed: {}", e), ""));
             }
         };
         let dst_full = match self.resolve_path(&dst_path) {
             Ok(p) => p,
             Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Destination path resolution failed: {}", e), ""));
             }
         };
 
@@ -259,118 +463,105 @@ impl SftpState {
         {
             match tokio::fs::hard_link(&src_full, &dst_full).await {
                 Ok(_) => {
-                    self.file_logger.lock().unwrap().log(FileLogInfo {
-                        username: self.username.as_deref().unwrap_or("anonymous"),
-                        client_ip: &self.client_ip,
-                        operation: "HARDLINK",
-                        file_path: &format!("{} -> {}", src_full.to_string_lossy(), dst_full.to_string_lossy()),
-                        file_size: 0,
-                        protocol: "SFTP",
-                        success: true,
-                        message: "硬链接创建成功",
-                    });
-                    self.logger.lock().unwrap().client_action(
-                        "SFTP",
-                        &format!("Hardlink: {} -> {}", src_path, dst_path),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "HARDLINK",
-                    );
+                    if let Ok(mut fl) = self.file_logger.try_lock() {
+                        fl.log(FileLogInfo {
+                            username: self.username.as_deref().unwrap_or("anonymous"),
+                            client_ip: &self.client_ip,
+                            operation: "HARDLINK",
+                            file_path: &format!("{} -> {}", src_full.to_string_lossy(), dst_full.to_string_lossy()),
+                            file_size: 0,
+                            protocol: "SFTP",
+                            success: true,
+                            message: "硬链接创建成功",
+                        });
+                    }
+                    if let Ok(mut log) = self.logger.try_lock() {
+                        log.client_action(
+                            "SFTP",
+                            &format!("Hardlink: {} -> {}", src_path, dst_path),
+                            &self.client_ip,
+                            self.username.as_deref(),
+                            "HARDLINK",
+                        );
+                    }
                     Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
                 }
-                Err(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to create hardlink", "")),
+                Err(e) => {
+                    log_io_error(&self.logger, "HARDLINK", &src_full, &e);
+                    let (status, msg) = io_error_to_sftp_status(&e);
+                    Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
+                }
             }
         }
 
         #[cfg(not(unix))]
         {
+            let _ = (src_full, dst_full);
             Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "Hardlinks not supported on this platform", ""))
         }
     }
 
     async fn handle_posix_rename(&mut self, id: u32, data: &[u8], ext_offset: usize) -> Result<Vec<u8>> {
-        let parse_offset = 5 + ext_offset;
-        
-        if let Ok(mut log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[POSIX-RENAME] data len={}, ext_offset={}, parse_offset={}", data.len(), ext_offset, parse_offset));
-        }
+        let parse_offset = 5usize.checked_add(ext_offset)
+            .ok_or_else(|| anyhow::anyhow!("Offset overflow"))?;
         
         if parse_offset + 4 > data.len() {
-            if let Ok(mut log) = self.logger.lock() {
-                log.warning("SFTP", &format!("[POSIX-RENAME] Insufficient data for old_path length at offset {}", parse_offset));
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid posix-rename packet: missing old path length", ""));
+        }
+        
+        let (old_path, old_len) = match parse_string_checked(data, parse_offset) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid old path: {}", e), ""));
             }
-            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
+        };
+        
+        let old_end = parse_offset.checked_add(4 + old_len)
+            .ok_or_else(|| anyhow::anyhow!("Old path end overflow"))?;
+        if old_end > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid posix-rename packet: old path data truncated", ""));
         }
         
-        let (old_path, old_len) = parse_string_checked(data, parse_offset)?;
-        let new_path_pos = parse_offset + 4 + old_len;
-        
-        if let Ok(mut log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[POSIX-RENAME] old_path='{}', old_len={}, new_path_pos={}", old_path, old_len, new_path_pos));
-        }
+        let new_path_pos = old_end;
         
         if new_path_pos + 4 > data.len() {
-            if let Ok(mut log) = self.logger.lock() {
-                log.warning("SFTP", &format!("[POSIX-RENAME] Insufficient data for new_path length at offset {}", new_path_pos));
-            }
-            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid posix-rename packet: missing new path length", ""));
         }
         
-        let (new_path, _) = parse_string_checked(data, new_path_pos)?;
-
-        if let Ok(mut log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[POSIX-RENAME] new_path='{}'", new_path));
+        let (new_path, new_len) = match parse_string_checked(data, new_path_pos) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid new path: {}", e), ""));
+            }
+        };
+        
+        let new_end = new_path_pos.checked_add(4 + new_len)
+            .ok_or_else(|| anyhow::anyhow!("New path end overflow"))?;
+        if new_end > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid posix-rename packet: new path data truncated", ""));
         }
 
         if !self.check_permission(|p| p.can_rename) {
-            if let Ok(mut log) = self.logger.lock() {
-                log.warning("SFTP", "[POSIX-RENAME] Permission denied");
-            }
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let old_full = match self.resolve_path(&old_path) {
             Ok(p) => p,
             Err(e) => {
-                if let Ok(mut log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("[POSIX-RENAME] Old path resolution failed: {}", e));
-                }
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Old path resolution failed: {}", e), ""));
             }
         };
-        
-        if let Ok(mut log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[POSIX-RENAME_OLD] path='{}', exists={}", old_full.display(), old_full.exists()));
-        }
-        
-        if !old_full.exists() {
-            if let Ok(mut log) = self.logger.lock() {
-                log.warning("SFTP", &format!("[POSIX-RENAME] Old file not found: {}", old_full.display()));
-            }
-            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""));
-        }
-        
+
         let new_full = match self.resolve_path(&new_path) {
             Ok(p) => p,
             Err(e) => {
-                if let Ok(mut log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("[POSIX-RENAME] New path resolution failed: {}", e));
-                }
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("New path resolution failed: {}", e), ""));
             }
         };
-        
-        if let Ok(mut log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[POSIX-RENAME_NEW] path='{}'", new_full.display()));
-        }
-
-        if let Ok(mut log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[POSIX-RENAME] Attempting rename: '{}' -> '{}'", old_full.display(), new_full.display()));
-        }
 
         match tokio::fs::rename(&old_full, &new_full).await {
             Ok(_) => {
-                if let Ok(mut fl) = self.file_logger.lock() {
+                if let Ok(mut fl) = self.file_logger.try_lock() {
                     fl.log_rename(
                         self.username.as_deref().unwrap_or("anonymous"),
                         &self.client_ip,
@@ -379,7 +570,7 @@ impl SftpState {
                         "SFTP",
                     );
                 }
-                if let Ok(mut log) = self.logger.lock() {
+                if let Ok(mut log) = self.logger.try_lock() {
                     log.client_action(
                         "SFTP",
                         &format!("Renamed (posix): {} -> {}", old_path, new_path),
@@ -388,16 +579,12 @@ impl SftpState {
                         "RENAME",
                     );
                 }
-                if let Ok(mut log) = self.logger.lock() {
-                    log.debug("SFTP", "[POSIX-RENAME] Success, returning SSH_FX_OK");
-                }
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
-                if let Ok(mut log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("[POSIX-RENAME] Failed: {}", e));
-                }
-                Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Failed to rename: {}", e), ""))
+                log_io_error(&self.logger, "POSIX-RENAME", &old_full, &e);
+                let (status, msg) = io_error_to_sftp_status(&e);
+                Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
             }
         }
     }

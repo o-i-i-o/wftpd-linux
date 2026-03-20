@@ -85,6 +85,20 @@ fn canonicalize_home(home_dir: &str) -> WftpgResult<PathBuf> {
     }
 }
 
+async fn canonicalize_home_async(home_dir: &str) -> WftpgResult<PathBuf> {
+    let home = PathBuf::from(home_dir);
+    
+    match tokio::fs::canonicalize(&home).await {
+        Ok(canon) => Ok(canon),
+        Err(e) => {
+            log::error!("无法规范化主目录 {:?}: {}", home, e);
+            Err(WftpgError::PathResolveError(
+                format!("主目录不存在或无法访问: {:?}", home)
+            ))
+        }
+    }
+}
+
 fn apply_path_components_safe(
     base: PathBuf,
     home_canon: &Path,
@@ -154,6 +168,82 @@ fn apply_path_components_safe(
     }
 }
 
+async fn apply_path_components_safe_async(
+    base: PathBuf,
+    home_canon: &Path,
+    clean_path: &str,
+    original_path: &str,
+) -> WftpgResult<PathBuf> {
+    let mut safe_path = base;
+    
+    for component in Path::new(clean_path).components() {
+        match component {
+            std::path::Component::Normal(name) => {
+                safe_path.push(name);
+            }
+            std::path::Component::ParentDir => {
+                if safe_path != home_canon && safe_path.starts_with(home_canon) {
+                    if !safe_path.pop() {
+                        log::warn!("路径遍历攻击: {:?} 中包含过多的父目录", original_path);
+                        return Err(WftpgError::PathResolveError(
+                            "路径中包含过多的父目录".to_string()
+                        ));
+                    }
+                } else {
+                    log::warn!("路径遍历攻击被阻止: {:?} 中无法访问主目录之上的目录", original_path);
+                    return Err(WftpgError::PathResolveError(
+                        "无法访问主目录之上的目录".to_string()
+                    ));
+                }
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::RootDir => {
+                if clean_path.starts_with('/') {
+                    safe_path = home_canon.to_path_buf();
+                }
+            }
+            std::path::Component::Prefix(_) => {}
+        }
+    }
+    
+    if safe_path.starts_with(home_canon) {
+        match tokio::fs::try_exists(&safe_path).await {
+            Ok(true) => {
+                match tokio::fs::canonicalize(&safe_path).await {
+                    Ok(canon) => {
+                        if canon.starts_with(home_canon) {
+                            Ok(canon)
+                        } else {
+                            log::warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", canon, home_canon);
+                            Err(WftpgError::PathResolveError(
+                                "路径逃逸了主目录".to_string()
+                            ))
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("无法规范化路径 {:?}: {}", safe_path, e);
+                        Err(WftpgError::PathResolveError(
+                            "无法访问路径".to_string()
+                        ))
+                    }
+                }
+            }
+            Ok(false) => Ok(safe_path),
+            Err(e) => {
+                log::warn!("无法检查路径是否存在 {:?}: {}", safe_path, e);
+                Err(WftpgError::PathResolveError(
+                    "无法访问路径".to_string()
+                ))
+            }
+        }
+    } else {
+        log::warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", safe_path, home_canon);
+        Err(WftpgError::PathResolveError(
+            "路径逃逸了主目录".to_string()
+        ))
+    }
+}
+
 fn resolve_nonexistent_path(resolved: &Path, home_canon: &Path, original_path: &str) -> WftpgResult<PathBuf> {
     let clean_path = original_path.trim();
     
@@ -168,6 +258,23 @@ fn resolve_nonexistent_path(resolved: &Path, home_canon: &Path, original_path: &
         }
     } else {
         apply_path_components_safe(home_canon.to_path_buf(), home_canon, clean_path, original_path)
+    }
+}
+
+async fn resolve_nonexistent_path_async(resolved: &Path, home_canon: &Path, original_path: &str) -> WftpgResult<PathBuf> {
+    let clean_path = original_path.trim();
+    
+    if Path::new(clean_path).is_absolute() {
+        if resolved.starts_with(home_canon) {
+            Ok(resolved.to_path_buf())
+        } else {
+            log::warn!("绝对路径位于主目录之外: {:?}", resolved);
+            Err(WftpgError::PathResolveError(
+                "绝对路径位于主目录之外".to_string()
+            ))
+        }
+    } else {
+        apply_path_components_safe_async(home_canon.to_path_buf(), home_canon, clean_path, original_path).await
     }
 }
 
@@ -216,6 +323,55 @@ pub fn safe_resolve_path(home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
         }
         Err(_) => {
             resolve_nonexistent_path(&resolved, &home_canon, path)
+        }
+    }
+}
+
+pub async fn safe_resolve_path_async(home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
+    check_path_length(path)?;
+
+    let home_canon = canonicalize_home_async(home_dir).await?;
+    
+    let clean_path = path.trim();
+
+    if clean_path.is_empty() || clean_path == "." || clean_path == "./" {
+        return Ok(home_canon);
+    }
+
+    let clean_path = if let Some(stripped) = clean_path.strip_prefix("./") {
+        stripped
+    } else {
+        clean_path
+    };
+
+    if clean_path.is_empty() {
+        return Ok(home_canon);
+    }
+
+    let resolved = if Path::new(clean_path).is_absolute() {
+        let relative = clean_path.trim_start_matches('/');
+        if relative.is_empty() {
+            home_canon.clone()
+        } else {
+            home_canon.join(relative)
+        }
+    } else {
+        home_canon.join(clean_path)
+    };
+
+    match tokio::fs::canonicalize(&resolved).await {
+        Ok(canon) => {
+            if canon.starts_with(&home_canon) {
+                Ok(canon)
+            } else {
+                log::warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
+                Err(WftpgError::PathResolveError(
+                    "路径位于主目录之外".to_string()
+                ))
+            }
+        }
+        Err(_) => {
+            resolve_nonexistent_path_async(&resolved, &home_canon, path).await
         }
     }
 }
@@ -269,6 +425,55 @@ pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Wftp
     }
 }
 
+pub async fn safe_resolve_path_with_cwd_async(cwd: &str, home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
+    check_path_length(path)?;
+
+    let home_canon = canonicalize_home_async(home_dir).await?;
+    
+    let clean_path = path.trim();
+    
+    if clean_path.is_empty() || clean_path == "." || clean_path == "./" {
+        return resolve_cwd_async(cwd, &home_canon).await;
+    }
+    
+    let clean_path = if let Some(stripped) = clean_path.strip_prefix("./") {
+        stripped
+    } else {
+        clean_path
+    };
+
+    if clean_path.is_empty() {
+        return resolve_cwd_async(cwd, &home_canon).await;
+    }
+    
+    let resolved = if Path::new(clean_path).is_absolute() {
+        let relative = clean_path.trim_start_matches('/');
+        if relative.is_empty() {
+            home_canon.clone()
+        } else {
+            home_canon.join(relative)
+        }
+    } else {
+        Path::new(cwd).join(clean_path)
+    };
+    
+    match tokio::fs::canonicalize(&resolved).await {
+        Ok(canon) => {
+            if canon.starts_with(&home_canon) {
+                Ok(canon)
+            } else {
+                log::warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
+                Err(WftpgError::PathResolveError(
+                    "路径位于主目录之外".to_string()
+                ))
+            }
+        }
+        Err(_) => {
+            resolve_nonexistent_path_with_cwd_async(&resolved, &home_canon, cwd, path).await
+        }
+    }
+}
+
 fn resolve_nonexistent_path_with_cwd(resolved: &Path, home_canon: &Path, cwd: &str, original_path: &str) -> WftpgResult<PathBuf> {
     let clean_path = original_path.trim();
     
@@ -287,6 +492,24 @@ fn resolve_nonexistent_path_with_cwd(resolved: &Path, home_canon: &Path, cwd: &s
     }
 }
 
+async fn resolve_nonexistent_path_with_cwd_async(resolved: &Path, home_canon: &Path, cwd: &str, original_path: &str) -> WftpgResult<PathBuf> {
+    let clean_path = original_path.trim();
+    
+    if Path::new(clean_path).is_absolute() {
+        if resolved.starts_with(home_canon) {
+            Ok(resolved.to_path_buf())
+        } else {
+            log::warn!("绝对路径位于主目录之外: {:?}", resolved);
+            Err(WftpgError::PathResolveError(
+                "绝对路径位于主目录之外".to_string()
+            ))
+        }
+    } else {
+        let cwd_canon = resolve_cwd_async(cwd, home_canon).await?;
+        apply_path_components_safe_async(cwd_canon, home_canon, clean_path, original_path).await
+    }
+}
+
 fn resolve_cwd(cwd: &str, home_canon: &Path) -> WftpgResult<PathBuf> {
     if cwd.is_empty() {
         return Ok(home_canon.to_path_buf());
@@ -294,6 +517,32 @@ fn resolve_cwd(cwd: &str, home_canon: &Path) -> WftpgResult<PathBuf> {
     
     let cwd_path = PathBuf::from(cwd);
     match cwd_path.canonicalize() {
+        Ok(canon) => {
+            if canon.starts_with(home_canon) {
+                Ok(canon)
+            } else {
+                log::warn!("当前工作目录位于主目录之外: {:?}", cwd_path);
+                Err(WftpgError::PathResolveError(
+                    "当前工作目录位于主目录之外".to_string()
+                ))
+            }
+        }
+        Err(e) => {
+            log::warn!("当前工作目录不存在或无法访问 {:?}: {}", cwd_path, e);
+            Err(WftpgError::PathResolveError(
+                "当前工作目录不存在或无法访问".to_string()
+            ))
+        }
+    }
+}
+
+async fn resolve_cwd_async(cwd: &str, home_canon: &Path) -> WftpgResult<PathBuf> {
+    if cwd.is_empty() {
+        return Ok(home_canon.to_path_buf());
+    }
+    
+    let cwd_path = PathBuf::from(cwd);
+    match tokio::fs::canonicalize(&cwd_path).await {
         Ok(canon) => {
             if canon.starts_with(home_canon) {
                 Ok(canon)
@@ -482,4 +731,75 @@ pub fn safe_open_file_at(home_dir: &str, relative_path: &str) -> WftpgResult<std
     }
     
     Ok(std::fs::File::from(current_fd))
+}
+
+#[cfg(unix)]
+pub async fn safe_open_file_at_async(home_dir: &str, relative_path: &str) -> WftpgResult<tokio::fs::File> {
+    use nix::fcntl::{openat, OFlag, AT_FDCWD};
+    use nix::sys::stat::Mode;
+    use std::os::fd::AsFd;
+    
+    let home_canon = canonicalize_home_async(home_dir).await?;
+    
+    let dirfd = openat(
+        AT_FDCWD,
+        &home_canon,
+        OFlag::O_DIRECTORY | OFlag::O_RDONLY,
+        Mode::empty()
+    ).map_err(|e| {
+        log::error!("无法打开主目录 {:?}: {}", home_canon, e);
+        WftpgError::PathResolveError("无法打开主目录".to_string())
+    })?;
+    
+    let components: Vec<&str> = relative_path.trim_matches('/').split('/').collect();
+    let mut current_fd = dirfd;
+    let mut fds_to_close: Vec<_> = Vec::new();
+    
+    for (i, component) in components.iter().enumerate() {
+        if *component == ".." {
+            log::warn!("路径遍历攻击被阻止: 相对路径中包含 '..'");
+            for fd in fds_to_close {
+                nix::unistd::close(fd).ok();
+            }
+            nix::unistd::close(current_fd).ok();
+            return Err(WftpgError::PathResolveError(
+                "路径中不允许包含父目录引用".to_string()
+            ));
+        }
+        
+        if *component == "." || component.is_empty() {
+            continue;
+        }
+        
+        let is_last = i == components.len() - 1;
+        let flags = if is_last {
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW
+        } else {
+            OFlag::O_DIRECTORY | OFlag::O_RDONLY | OFlag::O_NOFOLLOW
+        };
+        
+        match openat(current_fd.as_fd(), *component, flags, Mode::empty()) {
+            Ok(fd) => {
+                fds_to_close.push(current_fd);
+                current_fd = fd;
+            }
+            Err(e) => {
+                log::warn!("无法打开路径组件 '{}': {}", component, e);
+                for fd in fds_to_close {
+                    nix::unistd::close(fd).ok();
+                }
+                nix::unistd::close(current_fd).ok();
+                return Err(WftpgError::PathResolveError(
+                    format!("无法访问路径组件: {}", component)
+                ));
+            }
+        }
+    }
+    
+    for fd in fds_to_close {
+        nix::unistd::close(fd).ok();
+    }
+    
+    let std_file = std::fs::File::from(current_fd);
+    Ok(tokio::fs::File::from_std(std_file))
 }

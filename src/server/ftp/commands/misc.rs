@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::sync::atomic::Ordering;
-use tokio::io::AsyncWriteExt;
 
 use super::super::handler::FtpSession;
 

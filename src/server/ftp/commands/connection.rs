@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 
 use super::super::data_connection::{create_passive_listener, find_available_passive_port};
 use super::super::handler::FtpSession;

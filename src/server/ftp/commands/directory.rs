@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::path::Path;
-use tokio::io::AsyncWriteExt;
 
 use super::super::handler::FtpSession;
 use super::super::utils::{build_mlst_facts, safe_resolve_path, escape_mlst_filename};

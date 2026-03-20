@@ -149,7 +149,12 @@ pub fn safe_resolve_path(home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
     }
 
     let resolved = if Path::new(clean_path).is_absolute() {
-        PathBuf::from(clean_path)
+        let relative = clean_path.trim_start_matches('/');
+        if relative.is_empty() {
+            home_canon.clone()
+        } else {
+            home_canon.join(relative)
+        }
     } else {
         home_canon.join(clean_path)
     };
@@ -183,7 +188,12 @@ pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Wftp
     }
     
     let resolved = if Path::new(clean_path).is_absolute() {
-        PathBuf::from(clean_path)
+        let relative = clean_path.trim_start_matches('/');
+        if relative.is_empty() {
+            home_canon.clone()
+        } else {
+            home_canon.join(relative)
+        }
     } else {
         Path::new(cwd).join(clean_path)
     };

@@ -1,5 +1,4 @@
 use anyhow::Result;
-use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
 use super::super::handler::{FtpSession, FtpStream};
@@ -26,7 +25,7 @@ impl FtpSession {
                     self.tls_server_config.as_ref().unwrap().clone()
                 );
 
-                let stream = std::ptr::read(&self.stream);
+                let stream = unsafe { std::ptr::read(&self.stream) };
                 let raw_stream = match stream {
                     FtpStream::Plain(s) => s,
                     FtpStream::Tls(_) => {

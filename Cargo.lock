@@ -1406,15 +1406,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "home"
-version = "0.5.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
-dependencies = [
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "hybrid-array"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2383,9 +2374,9 @@ dependencies = [
 
 [[package]]
 name = "russh"
-version = "0.57.1"
+version = "0.58.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afe62631a04a1f4d71a14b99505483b95ff97c503b67d876c042fce659186956"
+checksum = "30f6ce4f5d5105b934cfb4b8b3028aab4d5dcdff863cb8dda9edd06d39b8c4e8"
 dependencies = [
  "aes",
  "aws-lc-rs",
@@ -2410,7 +2401,6 @@ dependencies = [
  "getrandom 0.2.17",
  "hex-literal",
  "hmac",
- "home",
  "inout",
  "internal-russh-forked-ssh-key",
  "libcrux-ml-kem",
@@ -2437,7 +2427,7 @@ dependencies = [
  "spki 0.7.3",
  "ssh-encoding",
  "subtle",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "typenum",
  "zeroize",
@@ -2445,15 +2435,14 @@ dependencies = [
 
 [[package]]
 name = "russh-cryptovec"
-version = "0.52.0"
+version = "0.58.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fb0ed583ff0f6b4aa44c7867dd7108df01b30571ee9423e250b4cc939f8c6cf"
+checksum = "cc109749696a6853cf2c3fba3537635264f3519a78a9f43c6b08c91edc024384"
 dependencies = [
- "libc",
  "log",
  "nix 0.29.0",
  "ssh-encoding",
- "winapi",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2503,6 +2492,15 @@ dependencies = [
  "rustls-webpki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rustls-pemfile"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
@@ -3322,7 +3320,7 @@ dependencies = [
 
 [[package]]
 name = "wftpg"
-version = "2.3.46"
+version = "2.3.47"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3344,6 +3342,7 @@ dependencies = [
  "rsa 0.9.10",
  "russh",
  "rustls",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3484,6 +3483,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets",
 ]

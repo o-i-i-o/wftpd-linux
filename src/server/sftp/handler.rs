@@ -402,7 +402,7 @@ impl russh::server::Handler for SftpHandler {
                 
                 if let Ok(resp) = response
                     && !resp.is_empty() {
-                        let _ = session.data(channel, CryptoVec::from_slice(&resp));
+                        let _ = session.data(channel, resp);
                     }
             }
         Ok(())

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::path::Path;
-use tokio::io::AsyncWriteExt;
 
 use super::super::handler::FtpSession;
 use super::super::utils::{get_file_mtime_raw, safe_resolve_path};

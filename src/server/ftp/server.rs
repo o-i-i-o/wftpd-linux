@@ -178,17 +178,17 @@ impl FtpServer {
                                 );
 
                                 tokio::spawn(async move {
-                                    match FtpSession::new(
-                                        stream,
+                                    let session_config = crate::server::ftp::handler::FtpSessionConfig {
                                         config,
                                         user_manager,
-                                        logger_for_session,
+                                        logger: logger_for_session,
                                         file_logger,
                                         passive_listeners,
                                         rate_limiter,
                                         tls_config,
                                         tls_server_config,
-                                    ) {
+                                    };
+                                    match FtpSession::new(stream, session_config) {
                                         Ok(mut session) => {
                                             if let Err(e) = session.run().await {
                                                 logger_for_error.lock().unwrap().error(

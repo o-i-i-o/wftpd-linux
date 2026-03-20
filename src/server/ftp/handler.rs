@@ -16,17 +16,14 @@ use crate::core::users::UserManager;
 use super::data_connection::PassiveListenerMap;
 use super::rate_limit::RateLimiter;
 use super::tls::TlsConfig;
+use super::utils::real_to_virtual_path;
 
+#[derive(Default)]
 pub enum FtpStream {
     Plain(TcpStream),
     Tls(Box<TlsStream<TcpStream>>),
+    #[default]
     Taken,
-}
-
-impl Default for FtpStream {
-    fn default() -> Self {
-        FtpStream::Taken
-    }
 }
 
 impl FtpStream {
@@ -63,6 +60,17 @@ impl FtpStream {
     }
 }
 
+pub struct FtpSessionConfig {
+    pub config: Arc<std::sync::Mutex<Config>>,
+    pub user_manager: Arc<std::sync::Mutex<UserManager>>,
+    pub logger: Arc<std::sync::Mutex<Logger>>,
+    pub file_logger: Arc<std::sync::Mutex<FileLogger>>,
+    pub passive_listeners: PassiveListenerMap,
+    pub rate_limiter: Arc<RateLimiter>,
+    pub tls_config: Option<TlsConfig>,
+    pub tls_server_config: Option<Arc<ServerConfig>>,
+}
+
 pub struct FtpSession {
     pub stream: FtpStream,
     pub config: Arc<std::sync::Mutex<Config>>,
@@ -93,17 +101,7 @@ pub struct FtpSession {
 }
 
 impl FtpSession {
-    pub fn new(
-        stream: TcpStream,
-        config: Arc<std::sync::Mutex<Config>>,
-        user_manager: Arc<std::sync::Mutex<UserManager>>,
-        logger: Arc<std::sync::Mutex<Logger>>,
-        file_logger: Arc<std::sync::Mutex<FileLogger>>,
-        passive_listeners: PassiveListenerMap,
-        rate_limiter: Arc<RateLimiter>,
-        tls_config: Option<TlsConfig>,
-        tls_server_config: Option<Arc<ServerConfig>>,
-    ) -> Result<Self> {
+    pub fn new(stream: TcpStream, session_config: FtpSessionConfig) -> Result<Self> {
         let remote_addr = stream.peer_addr()?;
         let remote_ip = remote_addr.ip().to_string();
         
@@ -113,14 +111,14 @@ impl FtpSession {
 
         Ok(Self {
             stream: FtpStream::Plain(stream),
-            config,
-            user_manager,
-            logger,
-            file_logger,
-            passive_listeners,
-            rate_limiter,
-            tls_config,
-            tls_server_config,
+            config: session_config.config,
+            user_manager: session_config.user_manager,
+            logger: session_config.logger,
+            file_logger: session_config.file_logger,
+            passive_listeners: session_config.passive_listeners,
+            rate_limiter: session_config.rate_limiter,
+            tls_config: session_config.tls_config,
+            tls_server_config: session_config.tls_server_config,
             remote_ip,
             local_ip,
             current_user: None,
@@ -243,7 +241,10 @@ impl FtpSession {
             "STRU" => self.cmd_stru(arg).await?,
             "ALLO" => self.stream.write_all(b"200 ALLO command successful\r\n").await?,
             "OPTS" => self.cmd_opts(arg).await?,
-            "PWD" | "XPWD" => self.stream.write_all(format!("257 \"{}\"\r\n", self.cwd).as_bytes()).await?,
+            "PWD" | "XPWD" => {
+                let virtual_path = real_to_virtual_path(&self.cwd, &self.home_dir);
+                self.stream.write_all(format!("257 \"{}\"\r\n", virtual_path).as_bytes()).await?
+            }
             "CWD" => self.cmd_cwd(arg).await?,
             "CDUP" | "XCUP" => self.cmd_cdup().await?,
             "TYPE" => self.cmd_type(arg).await?,
@@ -315,10 +316,10 @@ impl FtpSession {
         Ok(())
     }
 
-    pub fn cleanup_data_connection(&mut self) {
+    pub async fn cleanup_data_connection(&mut self) {
         if self.passive_mode
             && let Some(port) = self.data_port {
-                let mut listeners = self.passive_listeners.blocking_lock();
+                let mut listeners = self.passive_listeners.lock().await;
                 listeners.remove(&port);
             }
     }

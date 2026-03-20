@@ -230,6 +230,10 @@ impl SftpState {
         }
 
         let msg_type = data[0];
+        
+        if let Ok(mut log) = self.logger.lock() {
+            log.debug("SFTP", &format!("[PACKET] type={}, len={}, id={}", msg_type, data.len(), parse_u32(data, 1)));
+        }
 
         match msg_type {
             SSH_FXP_INIT => self.handle_init(data).await,
@@ -269,6 +273,24 @@ impl SftpState {
 
         let mut payload = vec![2];
         payload.extend_from_slice(&self.sftp_version.to_be_bytes());
+        
+        let extensions = [
+            ("posix-rename@openssh.com", "1"),
+            ("statvfs@openssh.com", "2"),
+            ("fstatvfs@openssh.com", "2"),
+            ("hardlink@openssh.com", "1"),
+            ("fsync@openssh.com", "1"),
+            ("md5sum@openssh.com", "1"),
+            ("sha256sum@openssh.com", "1"),
+        ];
+        
+        for (name, version_str) in extensions {
+            payload.extend_from_slice(&(name.len() as u32).to_be_bytes());
+            payload.extend_from_slice(name.as_bytes());
+            payload.extend_from_slice(&(version_str.len() as u32).to_be_bytes());
+            payload.extend_from_slice(version_str.as_bytes());
+        }
+        
         Ok(build_packet(&payload))
     }
 
@@ -667,64 +689,117 @@ impl SftpState {
     async fn handle_rename(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let id = parse_u32_checked(data, 1)?;
         
+        if let Ok(mut log) = self.logger.lock() {
+            log.debug("SFTP", &format!("[RENAME] Starting, packet len={}, id={}", data.len(), id));
+        }
+        
         if data.len() < 9 {
+            if let Ok(mut log) = self.logger.lock() {
+                log.warning("SFTP", &format!("[RENAME] Invalid packet: len={}", data.len()));
+            }
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
         }
         
         let (old_path, old_len) = parse_string_checked(data, 5)?;
         let new_path_pos = 5 + old_len;
         
+        if let Ok(mut log) = self.logger.lock() {
+            log.debug("SFTP", &format!("[RENAME] old_path='{}', old_len={}, new_path_pos={}", old_path, old_len, new_path_pos));
+        }
+        
         if data.len() < new_path_pos + 4 {
+            if let Ok(mut log) = self.logger.lock() {
+                log.warning("SFTP", &format!("[RENAME] Invalid packet: len={}, new_path_pos={}", data.len(), new_path_pos));
+            }
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
         }
         
-        let (new_path, _) = parse_string_checked(data, new_path_pos)?;
+        let (new_path, new_len) = parse_string_checked(data, new_path_pos)?;
+
+        if let Ok(mut log) = self.logger.lock() {
+            log.debug("SFTP", &format!("[RENAME] new_path='{}', new_len={}", new_path, new_len));
+        }
 
         if !self.check_permission_cached(|p| p.can_rename) {
+            if let Ok(mut log) = self.logger.lock() {
+                log.warning("SFTP", "[RENAME] Permission denied");
+            }
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let old_full = match self.resolve_path(&old_path) {
             Ok(p) => p,
             Err(e) => {
+                if let Ok(mut log) = self.logger.lock() {
+                    log.warning("SFTP", &format!("[RENAME] Old path resolution failed: {}", e));
+                }
                 return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
             }
         };
         
+        self.log_path_info("RENAME_OLD", &old_full);
+        
         if !old_full.exists() {
+            if let Ok(mut log) = self.logger.lock() {
+                log.warning("SFTP", &format!("[RENAME] Old file not found: {}", old_full.display()));
+            }
             return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""));
         }
         
         let new_full = match self.resolve_path(&new_path) {
             Ok(p) => p,
             Err(e) => {
+                if let Ok(mut log) = self.logger.lock() {
+                    log.warning("SFTP", &format!("[RENAME] New path resolution failed: {}", e));
+                }
                 return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
             }
         };
+        
+        self.log_path_info("RENAME_NEW", &new_full);
 
-        if std::fs::rename(&old_full, &new_full).is_ok() {
-            if let Ok(mut fl) = self.file_logger.lock() {
-                fl.log_rename(
-                    self.username.as_deref().unwrap_or("anonymous"),
-                    &self.client_ip,
-                    &old_full.to_string_lossy(),
-                    &new_full.to_string_lossy(),
-                    "SFTP",
-                );
-            }
-            if let Ok(mut log) = self.logger.lock() {
-                log.client_action(
-                    "SFTP",
-                    &format!("Renamed: {} -> {}", old_path, new_path),
-                    &self.client_ip,
-                    self.username.as_deref(),
-                    "RENAME",
-                );
-            }
-            Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
-        } else {
-            Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to rename", ""))
+        if let Ok(mut log) = self.logger.lock() {
+            log.debug("SFTP", &format!("[RENAME] Attempting rename: '{}' -> '{}'", old_full.display(), new_full.display()));
         }
+
+        let result = match std::fs::rename(&old_full, &new_full) {
+            Ok(_) => {
+                if let Ok(mut fl) = self.file_logger.lock() {
+                    fl.log_rename(
+                        self.username.as_deref().unwrap_or("anonymous"),
+                        &self.client_ip,
+                        &old_full.to_string_lossy(),
+                        &new_full.to_string_lossy(),
+                        "SFTP",
+                    );
+                }
+                if let Ok(mut log) = self.logger.lock() {
+                    log.client_action(
+                        "SFTP",
+                        &format!("Renamed: {} -> {}", old_path, new_path),
+                        &self.client_ip,
+                        self.username.as_deref(),
+                        "RENAME",
+                    );
+                }
+                if let Ok(mut log) = self.logger.lock() {
+                    log.debug("SFTP", "[RENAME] Success, returning SSH_FX_OK");
+                }
+                build_status_packet(id, SSH_FX_OK, "OK", "")
+            }
+            Err(e) => {
+                if let Ok(mut log) = self.logger.lock() {
+                    log.warning("SFTP", &format!("[RENAME] Failed: {}", e));
+                }
+                build_status_packet(id, SSH_FX_FAILURE, &format!("Failed to rename: {}", e), "")
+            }
+        };
+        
+        if let Ok(mut log) = self.logger.lock() {
+            log.debug("SFTP", &format!("[RENAME] Returning response, len={}", result.len()));
+        }
+        
+        Ok(result)
     }
 
     async fn handle_stat(&mut self, data: &[u8]) -> Result<Vec<u8>> {
@@ -879,16 +954,15 @@ impl SftpState {
         let home = PathBuf::from(&self.home_dir);
         let home_canon = home.canonicalize().unwrap_or(home);
         
-        let relative_path = if resolved.starts_with(&home_canon) {
-            resolved.strip_prefix(&home_canon).unwrap_or(&resolved).to_path_buf()
+        let path_str = if resolved.starts_with(&home_canon) {
+            let relative = resolved.strip_prefix(&home_canon).unwrap_or(&resolved);
+            if relative.as_os_str().is_empty() {
+                "/".to_string()
+            } else {
+                format!("/{}", relative.to_string_lossy())
+            }
         } else {
-            resolved
-        };
-        
-        let path_str = if relative_path.as_os_str().is_empty() {
-            ".".to_string()
-        } else {
-            relative_path.to_string_lossy().to_string()
+            resolved.to_string_lossy().to_string()
         };
 
         let mut payload = vec![104];
@@ -1056,35 +1130,62 @@ impl SftpState {
 
     async fn handle_readlink(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let id = parse_u32_checked(data, 1)?;
-        let (path, _) = parse_string_checked(data, 5)?;
+        let (path, path_len) = parse_string_checked(data, 5)?;
+        
+        if let Ok(mut log) = self.logger.lock() {
+            log.debug("SFTP", &format!("[READLINK] id={}, path='{}', path_len={}", id, path, path_len));
+        }
 
         let full_path = match self.resolve_path(&path) {
             Ok(p) => p,
             Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                if let Ok(mut log) = self.logger.lock() {
+                    log.warning("SFTP", &format!("[READLINK] Path resolution failed: {}", e));
+                }
+                return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""));
             }
         };
+        
+        if let Ok(mut log) = self.logger.lock() {
+            log.debug("SFTP", &format!("[READLINK] resolved_path='{}', exists={}", full_path.display(), full_path.exists()));
+        }
+
+        if !full_path.exists() {
+            return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""));
+        }
 
         match std::fs::symlink_metadata(&full_path) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink()
-                    && let Ok(target) = std::fs::read_link(&full_path) {
-                        let target_str = target.to_string_lossy().to_string();
-                        let mut payload = vec![104];
-                        payload.extend_from_slice(&id.to_be_bytes());
-                        payload.extend_from_slice(&1u32.to_be_bytes());
-                        payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
-                        payload.extend_from_slice(target_str.as_bytes());
-                        payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
-                        payload.extend_from_slice(target_str.as_bytes());
-                        payload.extend_from_slice(&build_attrs(false, 0));
-                        return Ok(build_packet(&payload));
+                if metadata.file_type().is_symlink() {
+                    match std::fs::read_link(&full_path) {
+                        Ok(target) => {
+                            let target_str = target.to_string_lossy().to_string();
+                            if let Ok(mut log) = self.logger.lock() {
+                                log.debug("SFTP", &format!("[READLINK] symlink target='{}'", target_str));
+                            }
+                            let mut payload = vec![104];
+                            payload.extend_from_slice(&id.to_be_bytes());
+                            payload.extend_from_slice(&1u32.to_be_bytes());
+                            payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
+                            payload.extend_from_slice(target_str.as_bytes());
+                            payload.extend_from_slice(&(target_str.len() as u32).to_be_bytes());
+                            payload.extend_from_slice(target_str.as_bytes());
+                            payload.extend_from_slice(&build_attrs(false, 0));
+                            Ok(build_packet(&payload))
+                        }
+                        Err(e) => {
+                            if let Ok(mut log) = self.logger.lock() {
+                                log.warning("SFTP", &format!("[READLINK] Failed to read link: {}", e));
+                            }
+                            Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Failed to read link: {}", e), ""))
+                        }
                     }
-                let mut payload = vec![104];
-                payload.extend_from_slice(&id.to_be_bytes());
-                payload.extend_from_slice(&0u32.to_be_bytes());
-                payload.extend_from_slice(&build_attrs(metadata.is_dir(), metadata.len()));
-                Ok(build_packet(&payload))
+                } else {
+                    if let Ok(mut log) = self.logger.lock() {
+                        log.debug("SFTP", "[READLINK] Not a symlink, returning SSH_FX_FAILURE");
+                    }
+                    Ok(build_status_packet(id, SSH_FX_FAILURE, "Not a symbolic link", ""))
+                }
             }
             Err(e) => {
                 if let Ok(mut log) = self.logger.lock() {

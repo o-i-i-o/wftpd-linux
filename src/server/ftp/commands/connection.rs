@@ -23,7 +23,7 @@ impl FtpSession {
         let (port_min, port_max, bind_ip, masquerade_ip) = {
             let cfg = self.config.lock().unwrap();
             let ports = cfg.ftp.passive_ports;
-            (ports.0, ports.1, cfg.server.bind_ip.clone(), cfg.ftp.masquerade_ip.clone())
+            (ports.0, ports.1, cfg.ftp.bind_ip.clone(), cfg.ftp.masquerade_ip.clone())
         };
 
         let passive_port = find_available_passive_port(&self.passive_listeners, port_min, port_max).await?;
@@ -67,13 +67,12 @@ impl FtpSession {
 
     pub async fn cmd_epsv(&mut self) -> Result<()> {
         self.passive_mode = true;
-        let (port_min, port_max) = {
+        let (port_min, port_max, bind_ip) = {
             let cfg = self.config.lock().unwrap();
-            cfg.ftp.passive_ports
+            (cfg.ftp.passive_ports.0, cfg.ftp.passive_ports.1, cfg.ftp.bind_ip.clone())
         };
 
         let passive_port = find_available_passive_port(&self.passive_listeners, port_min, port_max).await?;
-        let bind_ip = self.config.lock().unwrap().server.bind_ip.clone();
         let passive_listener = create_passive_listener(&bind_ip, passive_port).await?;
 
         {

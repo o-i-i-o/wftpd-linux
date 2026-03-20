@@ -7,6 +7,7 @@ use crate::core::file_logger::FileLogger;
 use crate::server::ftp::FtpServer;
 use crate::server::sftp::SftpServer;
 
+#[derive(Clone)]
 pub struct ServerManager {
     ftp_server: Arc<Mutex<Option<FtpServer>>>,
     sftp_server: Arc<Mutex<Option<SftpServer>>>,

@@ -67,7 +67,7 @@ pub fn parse_string_checked(data: &[u8], offset: usize) -> Result<(String, usize
         .unwrap_or_else(|_| {
             String::from_utf8_lossy(raw).into_owned()
         });
-    Ok((s, 4 + len))
+    Ok((s, len))
 }
 
 pub fn build_packet(payload: &[u8]) -> Vec<u8> {

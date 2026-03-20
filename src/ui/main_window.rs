@@ -34,9 +34,18 @@ pub fn build_ui(app: &Application) {
 
     let state_clone = Arc::clone(&state);
     window.connect_delete_event(move |_, _| {
-        if let Ok(s) = state_clone.lock() {
-            s.stop_all();
-        }
+        let state_for_stop = Arc::clone(&state_clone);
+        gtk::glib::MainContext::default().spawn_local(async move {
+            let (server_manager, logger) = {
+                if let Ok(s) = state_for_stop.lock() {
+                    (s.server_manager.clone(), Arc::clone(&s.logger))
+                } else {
+                    return;
+                }
+            };
+            server_manager.stop_ftp(&logger).await;
+            server_manager.stop_sftp(&logger).await;
+        });
         gtk::glib::Propagation::Proceed
     });
 

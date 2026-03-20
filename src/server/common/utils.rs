@@ -4,6 +4,50 @@ use crate::core::error::{WftpgError, WftpgResult};
 
 const MAX_PATH_LENGTH: usize = 4096;
 
+pub fn real_to_virtual_path(real_path: &str, home_dir: &str) -> String {
+    let home_canon = match Path::new(home_dir).canonicalize() {
+        Ok(c) => c,
+        Err(_) => Path::new(home_dir).to_path_buf(),
+    };
+    
+    let real_path_buf = Path::new(real_path);
+    
+    if real_path_buf == home_canon {
+        return "/".to_string();
+    }
+    
+    if let Ok(relative) = real_path_buf.strip_prefix(&home_canon) {
+        let relative_str = relative.to_string_lossy();
+        if relative_str.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", relative_str.replace('\\', "/"))
+        }
+    } else {
+        real_path.replace('\\', "/")
+    }
+}
+
+pub fn virtual_to_real_path(virtual_path: &str, home_dir: &str) -> String {
+    let home_canon = match Path::new(home_dir).canonicalize() {
+        Ok(c) => c.to_string_lossy().to_string(),
+        Err(_) => home_dir.to_string(),
+    };
+    
+    let clean_virtual = virtual_path.trim();
+    
+    if clean_virtual.is_empty() || clean_virtual == "/" {
+        return home_canon;
+    }
+    
+    if clean_virtual.starts_with('/') {
+        let relative = clean_virtual.trim_start_matches('/');
+        format!("{}/{}", home_canon.trim_end_matches('/'), relative)
+    } else {
+        format!("{}/{}", home_canon.trim_end_matches('/'), clean_virtual)
+    }
+}
+
 pub fn is_safe_username(username: &str) -> bool {
     if username.is_empty() || username.len() > 64 {
         return false;
@@ -184,6 +228,16 @@ pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Wftp
     let clean_path = path.trim();
     
     if clean_path.is_empty() || clean_path == "." || clean_path == "./" {
+        return resolve_cwd(cwd, &home_canon);
+    }
+    
+    let clean_path = if let Some(stripped) = clean_path.strip_prefix("./") {
+        stripped
+    } else {
+        clean_path
+    };
+
+    if clean_path.is_empty() {
         return resolve_cwd(cwd, &home_canon);
     }
     

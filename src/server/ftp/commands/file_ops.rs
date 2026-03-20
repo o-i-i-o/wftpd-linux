@@ -80,21 +80,56 @@ impl FtpSession {
         }
 
         if let Some(from_name) = arg {
+            self.logger.lock().unwrap().debug(
+                "FTP",
+                &format!("RNFR: input='{}', cwd='{}', home='{}'", from_name, self.cwd, self.home_dir),
+            );
+            
             let from_path = match safe_resolve_path(&self.cwd, &self.home_dir, from_name) {
                 Ok(p) => p,
                 Err(e) => {
                     let error_msg = format!("550 Path resolution failed: {}\r\n", e);
                     self.stream.write_all(error_msg.as_bytes()).await?;
+                    self.logger.lock().unwrap().warning(
+                        "FTP",
+                        &format!("RNFR path resolution failed: {}", e),
+                    );
                     return Ok(());
                 }
             };
+            
+            self.logger.lock().unwrap().debug(
+                "FTP",
+                &format!("RNFR: resolved path='{}', exists={}", from_path.display(), from_path.exists()),
+            );
+            
             let home_path = Path::new(&self.home_dir);
-            if from_path.exists() && from_path.starts_with(home_path) {
+            let home_canon = match home_path.canonicalize() {
+                Ok(c) => c,
+                Err(_) => home_path.to_path_buf(),
+            };
+            
+            if from_path.exists() && from_path.starts_with(&home_canon) {
                 self.rename_from = Some(from_path.to_string_lossy().to_string());
                 self.stream.write_all(b"350 File exists, ready for destination name\r\n").await?;
+                self.logger.lock().unwrap().debug(
+                    "FTP",
+                    &format!("RNFR: stored path for rename: {}", from_path.display()),
+                );
             } else {
+                let reason = if !from_path.exists() {
+                    "file does not exist"
+                } else {
+                    "path outside home directory"
+                };
+                self.logger.lock().unwrap().warning(
+                    "FTP",
+                    &format!("RNFR failed for '{}': {}", from_path.display(), reason),
+                );
                 self.stream.write_all(b"550 File not found\r\n").await?;
             }
+        } else {
+            self.stream.write_all(b"501 Syntax error: RNFR requires parameter\r\n").await?;
         }
         Ok(())
     }
@@ -108,18 +143,43 @@ impl FtpSession {
 
         if let Some(ref from_path) = self.rename_from {
             if let Some(to_name) = arg {
+                self.logger.lock().unwrap().debug(
+                    "FTP",
+                    &format!("RNTO: input='{}', from_path='{}', cwd='{}', home='{}'", 
+                        to_name, from_path, self.cwd, self.home_dir),
+                );
+                
                 let to_path = match safe_resolve_path(&self.cwd, &self.home_dir, to_name) {
                     Ok(p) => p,
                     Err(e) => {
                         let error_msg = format!("550 Path resolution failed: {}\r\n", e);
                         self.stream.write_all(error_msg.as_bytes()).await?;
+                        self.logger.lock().unwrap().warning(
+                            "FTP",
+                            &format!("RNTO path resolution failed: {}", e),
+                        );
                         self.rename_from = None;
                         return Ok(());
                     }
                 };
+                
+                self.logger.lock().unwrap().debug(
+                    "FTP",
+                    &format!("RNTO: resolved to_path='{}'", to_path.display()),
+                );
+                
                 let home_path = Path::new(&self.home_dir);
-                if !to_path.starts_with(home_path) {
+                let home_canon = match home_path.canonicalize() {
+                    Ok(c) => c,
+                    Err(_) => home_path.to_path_buf(),
+                };
+                
+                if !to_path.starts_with(&home_canon) {
                     self.stream.write_all(b"550 Permission denied\r\n").await?;
+                    self.logger.lock().unwrap().warning(
+                        "FTP",
+                        &format!("RNTO: destination path '{}' outside home directory", to_path.display()),
+                    );
                     self.rename_from = None;
                     return Ok(());
                 }
@@ -138,25 +198,35 @@ impl FtpSession {
                     return Ok(());
                 }
                 
-                if std::fs::rename(from_path, &to_path).is_ok() {
-                    self.stream.write_all(b"250 Rename successful\r\n").await?;
-                    self.file_logger.lock().unwrap().log_rename(
-                        self.current_user.as_deref().unwrap_or("anonymous"),
-                        &self.remote_ip,
-                        from_path,
-                        &to_path.to_string_lossy(),
-                        "FTP",
-                    );
-                    self.logger.lock().unwrap().client_action(
-                        "FTP",
-                        &format!("Renamed: {} -> {}", from_path, to_path.display()),
-                        &self.remote_ip,
-                        self.current_user.as_deref(),
-                        "RENAME",
-                    );
-                } else {
-                    self.stream.write_all(b"550 Rename failed\r\n").await?;
+                match std::fs::rename(from_path, &to_path) {
+                    Ok(_) => {
+                        self.stream.write_all(b"250 Rename successful\r\n").await?;
+                        self.file_logger.lock().unwrap().log_rename(
+                            self.current_user.as_deref().unwrap_or("anonymous"),
+                            &self.remote_ip,
+                            from_path,
+                            &to_path.to_string_lossy(),
+                            "FTP",
+                        );
+                        self.logger.lock().unwrap().client_action(
+                            "FTP",
+                            &format!("Renamed: {} -> {}", from_path, to_path.display()),
+                            &self.remote_ip,
+                            self.current_user.as_deref(),
+                            "RENAME",
+                        );
+                    }
+                    Err(e) => {
+                        let error_msg = format!("550 Rename failed: {}\r\n", e);
+                        self.stream.write_all(error_msg.as_bytes()).await?;
+                        self.logger.lock().unwrap().error(
+                            "FTP",
+                            &format!("RNTO: rename failed from '{}' to '{}': {}", from_path, to_path.display(), e),
+                        );
+                    }
                 }
+            } else {
+                self.stream.write_all(b"501 Syntax error: RNTO requires parameter\r\n").await?;
             }
         } else {
             self.stream.write_all(b"503 Bad sequence of commands\r\n").await?;

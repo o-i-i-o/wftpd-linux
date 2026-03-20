@@ -6,23 +6,12 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TlsConfig {
     pub enabled: bool,
     pub cert_path: String,
     pub key_path: String,
     pub require_tls: bool,
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cert_path: String::new(),
-            key_path: String::new(),
-            require_tls: false,
-        }
-    }
 }
 
 impl TlsConfig {

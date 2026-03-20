@@ -4,4 +4,6 @@ pub use crate::server::common::utils::{
     get_file_mtime_raw,
     build_mlst_facts,
     escape_mlst_filename,
+    real_to_virtual_path,
+    virtual_to_real_path,
 };

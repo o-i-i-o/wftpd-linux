@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::Path;
 
 use super::super::handler::FtpSession;
-use super::super::utils::{build_mlst_facts, safe_resolve_path, escape_mlst_filename};
+use super::super::utils::{build_mlst_facts, safe_resolve_path, escape_mlst_filename, real_to_virtual_path};
 
 impl FtpSession {
     pub async fn cmd_cwd(&mut self, arg: Option<&str>) -> Result<()> {
@@ -24,7 +24,8 @@ impl FtpSession {
 
             if new_path.exists() && new_path.is_dir() && new_path.starts_with(home_path) {
                 self.cwd = new_path.to_string_lossy().to_string();
-                self.stream.write_all(format!("250 \"{}\" is current directory\r\n", self.cwd).as_bytes()).await?;
+                let virtual_path = real_to_virtual_path(&self.cwd, &self.home_dir);
+                self.stream.write_all(format!("250 \"{}\" is current directory\r\n", virtual_path).as_bytes()).await?;
             } else {
                 self.stream.write_all(b"550 Failed to change directory: Permission denied or directory not found\r\n").await?;
             }
@@ -74,12 +75,10 @@ impl FtpSession {
         if target_path.exists() && target_path.starts_with(home_path) {
             if let Ok(metadata) = target_path.metadata() {
                 let facts = build_mlst_facts(&metadata);
-                let name = target_path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| target_path.to_string_lossy().to_string());
-                let escaped_name = escape_mlst_filename(&name);
+                let virtual_path = real_to_virtual_path(&target_path.to_string_lossy(), &self.home_dir);
+                let escaped_name = escape_mlst_filename(&virtual_path);
                 self.stream.write_all(format!("250-Listing {}\r\n {}{}\r\n250 End\r\n", 
-                    target_path.display(), facts, escaped_name).as_bytes()).await?;
+                    virtual_path, facts, escaped_name).as_bytes()).await?;
             } else {
                 self.stream.write_all(b"550 Failed to get file info\r\n").await?;
             }
@@ -121,7 +120,8 @@ impl FtpSession {
                 return Ok(());
             }
             if std::fs::create_dir_all(&dir_path).is_ok() {
-                self.stream.write_all(format!("257 \"{}\" created\r\n", dir_path.display()).as_bytes()).await?;
+                let virtual_path = real_to_virtual_path(&dir_path.to_string_lossy(), &self.home_dir);
+                self.stream.write_all(format!("257 \"{}\" created\r\n", virtual_path).as_bytes()).await?;
                 self.file_logger.lock().unwrap().log_mkdir(
                     self.current_user.as_deref().unwrap_or("anonymous"),
                     &self.remote_ip,

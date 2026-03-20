@@ -71,7 +71,7 @@ impl FtpSession {
                         );
                     }
                 }
-                self.cleanup_data_connection();
+                self.cleanup_data_connection().await;
                 self.stream.write_all(b"226 Transfer complete\r\n").await?;
             }
             Err(e) => {
@@ -79,7 +79,7 @@ impl FtpSession {
                     "FTP",
                     &format!("Failed to get data connection: {}", e),
                 );
-                self.cleanup_data_connection();
+                self.cleanup_data_connection().await;
                 self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
             }
         }
@@ -130,7 +130,7 @@ impl FtpSession {
                         }
                     }
                 }
-                self.cleanup_data_connection();
+                self.cleanup_data_connection().await;
                 self.stream.write_all(b"226 Transfer complete\r\n").await?;
             }
             Err(e) => {
@@ -138,7 +138,7 @@ impl FtpSession {
                     "FTP",
                     &format!("Failed to get data connection: {}", e),
                 );
-                self.cleanup_data_connection();
+                self.cleanup_data_connection().await;
                 self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
             }
         }
@@ -256,7 +256,7 @@ impl FtpSession {
                     } else {
                         log::error!("RETR failed to open file: {}", file_path.display());
                     }
-                    self.cleanup_data_connection();
+                    self.cleanup_data_connection().await;
                     self.stream.write_all(b"226 Transfer complete\r\n").await?;
                 }
                 Err(e) => {
@@ -264,7 +264,7 @@ impl FtpSession {
                         "FTP",
                         &format!("Failed to get data connection: {}", e),
                     );
-                    self.cleanup_data_connection();
+                    self.cleanup_data_connection().await;
                     self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                     return Ok(());
                 }
@@ -425,14 +425,14 @@ impl FtpSession {
                             );
                         }
                     }
-                    self.cleanup_data_connection();
+                    self.cleanup_data_connection().await;
                 }
                 Err(e) => {
                     self.logger.lock().unwrap().warning(
                         "FTP",
                         &format!("Failed to get data connection: {}", e),
                     );
-                    self.cleanup_data_connection();
+                    self.cleanup_data_connection().await;
                     self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                     return Ok(());
                 }
@@ -551,7 +551,7 @@ impl FtpSession {
                             }
                         }
                     }
-                    self.cleanup_data_connection();
+                    self.cleanup_data_connection().await;
                     self.stream.write_all(b"226 Transfer complete\r\n").await?;
                 }
                 Err(e) => {
@@ -559,7 +559,7 @@ impl FtpSession {
                         "FTP",
                         &format!("Failed to get data connection: {}", e),
                     );
-                    self.cleanup_data_connection();
+                    self.cleanup_data_connection().await;
                     self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                     return Ok(());
                 }
@@ -679,14 +679,14 @@ impl FtpSession {
                         );
                     }
                 }
-                self.cleanup_data_connection();
+                self.cleanup_data_connection().await;
             }
             Err(e) => {
                 self.logger.lock().unwrap().warning(
                     "FTP",
                     &format!("Failed to get data connection: {}", e),
                 );
-                self.cleanup_data_connection();
+                self.cleanup_data_connection().await;
                 self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                 return Ok(());
             }

@@ -198,7 +198,7 @@ impl FtpSession {
                         self.stream.write_all(b"530 Login failed: user data not found\r\n").await?;
                     }
                 }
-                Ok(false) => {
+                Ok(false) | Err(_) => {
                     self.authenticated = false;
                     self.logger.lock().unwrap().client_action(
                         "FTP",
@@ -208,17 +208,6 @@ impl FtpSession {
                         "AUTH_FAIL",
                     );
                     self.stream.write_all(b"530 Not logged in, user cannot be authenticated\r\n").await?;
-                }
-                Err(e) => {
-                    self.authenticated = false;
-                    self.logger.lock().unwrap().client_action(
-                        "FTP",
-                        &format!("Authentication error for user {}: {}", username, e),
-                        &self.remote_ip,
-                        Some(username),
-                        "AUTH_ERROR",
-                    );
-                    self.stream.write_all(b"530 Not logged in\r\n").await?;
                 }
             }
         } else {

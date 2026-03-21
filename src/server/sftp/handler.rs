@@ -142,11 +142,9 @@ impl russh::server::Handler for SftpHandler {
                         Ok(true) => {
                             self.authenticated = true;
                             self.username = Some(user.to_string());
-                            
-                            users.get_user(user).map(|u| Ok(u.home_dir.clone()))
+                            users.get_user(user).map(|u| u.home_dir.clone())
                         }
-                        Ok(false) => Some(Err(false)),
-                        Err(_) => Some(Err(true)),
+                        Ok(false) | Err(_) => None,
                     }
                 }
                 Err(_) => {
@@ -160,7 +158,7 @@ impl russh::server::Handler for SftpHandler {
         };
         
         match auth_result {
-            Some(Ok(home_dir)) => {
+            Some(home_dir) => {
                 match self.validate_and_set_home_dir(user, &home_dir).await {
                     Ok(_) => {
                         self.log_client_action(
@@ -185,36 +183,12 @@ impl russh::server::Handler for SftpHandler {
                     }
                 }
             }
-            Some(Err(false)) => {
+            None => {
                 self.log_client_action(
                     "SFTP",
                     &format!("Failed login attempt for user {}", user),
                     Some(user),
                     "AUTH_FAIL",
-                );
-                Ok(server::Auth::Reject { 
-                    proceed_with_methods: None,
-                    partial_success: false,
-                })
-            }
-            Some(Err(true)) => {
-                self.log_client_action(
-                    "SFTP",
-                    &format!("Authentication error for user {}", user),
-                    Some(user),
-                    "AUTH_ERROR",
-                );
-                Ok(server::Auth::Reject { 
-                    proceed_with_methods: None,
-                    partial_success: false,
-                })
-            }
-            None => {
-                self.log_client_action(
-                    "SFTP",
-                    &format!("User {} not found after authentication", user),
-                    Some(user),
-                    "AUTH_ERROR",
                 );
                 Ok(server::Auth::Reject { 
                     proceed_with_methods: None,

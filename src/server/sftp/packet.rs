@@ -41,6 +41,7 @@ pub fn parse_u64_checked(data: &[u8], offset: usize) -> Result<u64> {
     ]))
 }
 
+#[allow(dead_code)]
 pub fn parse_string(data: &[u8], offset: usize) -> Result<String> {
     if offset + 4 > data.len() {
         return Ok(String::new());

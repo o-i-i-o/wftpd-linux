@@ -1,3 +1,3 @@
 pub mod linux;
 
-pub use linux::{IpcClient, Command, Response, ServerStatus, IpcResponse};
+pub use linux::{IpcClient, ServerStatus, IpcResponse};

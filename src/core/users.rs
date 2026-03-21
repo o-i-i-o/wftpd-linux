@@ -248,10 +248,12 @@ impl UserManager {
     }
 
     pub fn authenticate(&mut self, username: &str, password: &str) -> Result<bool> {
-        let user = self
-            .users
-            .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
+        let user = match self.users.get_mut(username) {
+            Some(u) => u,
+            None => {
+                return Ok(false);
+            }
+        };
 
         if !user.enabled {
             return Ok(false);

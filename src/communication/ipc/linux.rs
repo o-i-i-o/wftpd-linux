@@ -4,8 +4,6 @@ use std::path::Path;
 use std::process::Command as StdCommand;
 
 pub struct IpcClient;
-pub struct Command;
-pub struct Response;
 
 #[derive(Debug, Clone)]
 pub struct IpcResponse {

@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::fs::File;
 
@@ -187,13 +188,17 @@ impl FtpSession {
             let can_read = {
                 let users = self.user_manager.lock().unwrap();
                 let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
-                user.is_none_or(|u| u.permissions.can_read)
+                (
+                    user.is_none_or(|u| u.permissions.can_read),
+                    user.and_then(|u| u.permissions.speed_limit_kbps).unwrap_or(0),
+                )
             };
 
-            if !can_read {
+            if !can_read.0 {
                 self.stream.write_all(b"550 Permission denied\r\n").await?;
                 return Ok(());
             }
+            let user_speed_limit = can_read.1;
 
             let file_size = std::fs::metadata(&file_path)?.len();
             let remaining = if self.rest_offset > 0 && self.rest_offset < file_size {
@@ -228,6 +233,17 @@ impl FtpSession {
                         let mut buf = [0u8; 8192];
                         let mut transfer_success = true;
                         let mut total_read: u64 = 0;
+                        let global_speed_limit = self.config.lock().unwrap().ftp.max_speed_kbps;
+                        let effective_speed_limit = if user_speed_limit > 0 {
+                            Some(user_speed_limit)
+                        } else if global_speed_limit > 0 {
+                            Some(global_speed_limit)
+                        } else {
+                            None
+                        };
+                        let mut last_throttle_time = Instant::now();
+                        let mut bytes_since_throttle: u64 = 0;
+                        
                         loop {
                             if abort.load(Ordering::Relaxed) {
                                 transfer_success = false;
@@ -241,6 +257,21 @@ impl FtpSession {
                                         log::error!("RETR write error to data stream for file: {}", file_path.display());
                                         transfer_success = false;
                                         break;
+                                    }
+                                    
+                                    if let Some(limit_kbps) = effective_speed_limit {
+                                        bytes_since_throttle += n as u64;
+                                        let elapsed = last_throttle_time.elapsed();
+                                        if elapsed >= Duration::from_millis(100) {
+                                            let max_bytes = (limit_kbps * 1024) as f64 * elapsed.as_secs_f64();
+                                            if bytes_since_throttle > max_bytes as u64 {
+                                                let excess = bytes_since_throttle - max_bytes as u64;
+                                                let wait_secs = excess as f64 / (limit_kbps * 1024) as f64;
+                                                tokio::time::sleep(Duration::from_secs_f64(wait_secs)).await;
+                                            }
+                                            last_throttle_time = Instant::now();
+                                            bytes_since_throttle = 0;
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -302,10 +333,14 @@ impl FtpSession {
         }
 
         if let Some(filename) = arg {
-            let can_write = {
+            let (can_write, quota_mb, user_speed_limit) = {
                 let users = self.user_manager.lock().unwrap();
                 let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
-                user.is_none_or(|u| u.permissions.can_write)
+                (
+                    user.is_none_or(|u| u.permissions.can_write),
+                    user.and_then(|u| u.permissions.quota_mb).unwrap_or(0),
+                    user.and_then(|u| u.permissions.speed_limit_kbps).unwrap_or(0),
+                )
             };
 
             if !can_write {
@@ -339,6 +374,22 @@ impl FtpSession {
                 return Ok(());
             }
 
+            if quota_mb > 0 {
+                let current_usage = self.quota_cache.calculate_usage(&self.home_dir);
+                let quota_bytes = quota_mb * 1024 * 1024;
+                if current_usage >= quota_bytes {
+                    self.logger.lock().unwrap().warning(
+                        "FTP",
+                        &format!("Quota exceeded for user {}: {}MB / {}MB", 
+                            self.current_user.as_deref().unwrap_or("anonymous"),
+                            current_usage / 1024 / 1024,
+                            quota_mb),
+                    );
+                    self.stream.write_all(b"552 Quota exceeded, upload denied\r\n").await?;
+                    return Ok(());
+                }
+            }
+
             let file_existed = file_path.exists();
             self.stream.write_all(b"150 Opening BINARY mode data connection\r\n").await?;
 
@@ -354,6 +405,16 @@ impl FtpSession {
 
             let mut transfer_success = false;
             let mut total_written: u64 = 0;
+            let global_speed_limit = self.config.lock().unwrap().ftp.max_speed_kbps;
+            let effective_speed_limit = if user_speed_limit > 0 {
+                Some(user_speed_limit)
+            } else if global_speed_limit > 0 {
+                Some(global_speed_limit)
+            } else {
+                None
+            };
+            let mut last_throttle_time = Instant::now();
+            let mut bytes_since_throttle: u64 = 0;
 
             match data_result {
                 Ok(mut data_stream) => {
@@ -394,6 +455,21 @@ impl FtpSession {
                                             break;
                                         }
                                         total_written += n as u64;
+                                        
+                                        if let Some(limit_kbps) = effective_speed_limit {
+                                            bytes_since_throttle += n as u64;
+                                            let elapsed = last_throttle_time.elapsed();
+                                            if elapsed >= Duration::from_millis(100) {
+                                                let max_bytes = (limit_kbps * 1024) as f64 * elapsed.as_secs_f64();
+                                                if bytes_since_throttle > max_bytes as u64 {
+                                                    let excess = bytes_since_throttle - max_bytes as u64;
+                                                    let wait_secs = excess as f64 / (limit_kbps * 1024) as f64;
+                                                    tokio::time::sleep(Duration::from_secs_f64(wait_secs)).await;
+                                                }
+                                                last_throttle_time = Instant::now();
+                                                bytes_since_throttle = 0;
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         self.logger.lock().unwrap().error(
@@ -440,6 +516,7 @@ impl FtpSession {
 
             if transfer_success {
                 self.stream.write_all(b"226 Transfer complete\r\n").await?;
+                self.quota_cache.invalidate(&self.home_dir);
 
                 let uploaded_size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(total_written);
                 if file_existed {

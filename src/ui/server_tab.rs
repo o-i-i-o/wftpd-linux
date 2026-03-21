@@ -362,7 +362,8 @@ fn create_ftp_config_frame(
     config_box.set_margin_end(10);
 
     let (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, 
-         anon_home_entry, max_speed_spin, encoding_combo, anon_status_label, masquerade_ip_entry) = load_ftp_config(state);
+         anon_home_entry, max_speed_spin, encoding_combo, anon_status_label, masquerade_ip_entry, 
+         max_conn_spin, idle_timeout_spin) = load_ftp_config(state);
 
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&ftp_enabled_cb, false, false, 0);
@@ -447,6 +448,16 @@ fn create_ftp_config_frame(
     row5.pack_start(&encoding_combo, false, false, 0);
     config_box.pack_start(&row5, false, false, 0);
 
+    let row_conn = Box::new(Orientation::Horizontal, 5);
+    row_conn.pack_start(&Label::new(Some("最大连接数:")), false, false, 0);
+    row_conn.pack_start(&max_conn_spin, false, false, 0);
+    row_conn.pack_start(&Label::new(Some("空闲超时(秒):")), false, false, 0);
+    row_conn.pack_start(&idle_timeout_spin, false, false, 0);
+    let conn_hint = Label::new(None);
+    conn_hint.set_markup("<span foreground='gray' size='small'>(连接空闲超过此时长将自动断开)</span>");
+    row_conn.pack_start(&conn_hint, false, false, 0);
+    config_box.pack_start(&row_conn, false, false, 0);
+
     let anon_cb_for_signal = anon_cb.clone();
     let anon_home_for_signal = anon_home_entry.clone();
     let anon_status_for_signal = anon_status_label.clone();
@@ -465,13 +476,14 @@ fn create_ftp_config_frame(
         state, &save_btn, &ftp_enabled_cb, &anon_cb, &bind_ip_entry, &ftp_port_spin,
         &passive_start_spin, &passive_end_spin, &welcome_entry, 
         &anon_home_entry, &max_speed_spin, &encoding_combo, &anon_status_label, &masquerade_ip_entry,
+        &max_conn_spin, &idle_timeout_spin,
     );
 
     config_frame.add(&config_box);
     container.pack_start(&config_frame, false, false, 0);
 }
 
-fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton, Entry, SpinButton, SpinButton, SpinButton, Entry, Entry, SpinButton, ComboBoxText, Label, Entry) {
+fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton, Entry, SpinButton, SpinButton, SpinButton, Entry, Entry, SpinButton, ComboBoxText, Label, Entry, SpinButton, SpinButton) {
     let ftp_enabled_cb = CheckButton::with_label("启用FTP服务");
     let anon_cb = CheckButton::with_label("允许匿名访问");
     let bind_ip_entry = Entry::new();
@@ -492,6 +504,8 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
     let masquerade_ip_entry = Entry::new();
     masquerade_ip_entry.set_width_chars(15);
     masquerade_ip_entry.set_placeholder_text(Some("如: 192.168.1.100"));
+    let max_conn_spin = create_spin_button(1.0, 10000.0, 10.0);
+    let idle_timeout_spin = create_spin_button(60.0, 86400.0, 60.0);
 
     if let Ok(s) = state.try_lock()
         && let Ok(cfg) = s.config.try_lock() {
@@ -511,11 +525,13 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
             if let Some(ref masq_ip) = cfg.ftp.masquerade_ip {
                 masquerade_ip_entry.set_text(masq_ip);
             }
+            max_conn_spin.set_value(cfg.server.max_connections as f64);
+            idle_timeout_spin.set_value(cfg.server.idle_timeout as f64);
         }
 
     validate_anonymous_home(&anon_home_entry, &anon_status_label, anon_cb.is_active());
 
-    (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, anon_home_entry, max_speed_spin, encoding_combo, anon_status_label, masquerade_ip_entry)
+    (ftp_enabled_cb, anon_cb, bind_ip_entry, ftp_port_spin, passive_start_spin, passive_end_spin, welcome_entry, anon_home_entry, max_speed_spin, encoding_combo, anon_status_label, masquerade_ip_entry, max_conn_spin, idle_timeout_spin)
 }
 
 fn validate_anonymous_home(entry: &Entry, status_label: &Label, allow_anon: bool) {
@@ -568,6 +584,8 @@ fn setup_ftp_save_button(
     encoding_combo: &ComboBoxText,
     anon_status_label: &Label,
     masquerade_ip_entry: &Entry,
+    max_conn_spin: &SpinButton,
+    idle_timeout_spin: &SpinButton,
 ) {
     let state_clone = Arc::clone(state);
     let ftp_enabled_clone = ftp_enabled_cb.clone();
@@ -582,11 +600,14 @@ fn setup_ftp_save_button(
     let encoding_clone = encoding_combo.clone();
     let anon_status_clone = anon_status_label.clone();
     let masquerade_ip_clone = masquerade_ip_entry.clone();
+    let max_conn_clone = max_conn_spin.clone();
+    let idle_timeout_clone = idle_timeout_spin.clone();
     
     save_btn.connect_clicked(clone!(@strong state_clone, @strong ftp_enabled_clone, @strong anon_clone,
                @strong bind_ip_clone, @strong ftp_port_clone, @strong passive_start_clone, @strong passive_end_clone, 
                @strong welcome_clone, @strong anon_home_clone, @strong max_speed_clone, 
-               @strong encoding_clone, @strong anon_status_clone, @strong masquerade_ip_clone => move |_| {
+               @strong encoding_clone, @strong anon_status_clone, @strong masquerade_ip_clone,
+               @strong max_conn_clone, @strong idle_timeout_clone => move |_| {
         let enabled = ftp_enabled_clone.is_active();
         let anon = anon_clone.is_active();
         let bind_ip = bind_ip_clone.text().to_string();
@@ -599,6 +620,8 @@ fn setup_ftp_save_button(
         let encoding = encoding_clone.active_text().map(|s| s.to_string()).unwrap_or_else(|| "UTF-8".to_string());
         let masquerade_ip = masquerade_ip_clone.text().to_string();
         let masquerade_ip_opt = if masquerade_ip.trim().is_empty() { None } else { Some(masquerade_ip.trim().to_string()) };
+        let max_conn = max_conn_clone.value() as usize;
+        let idle_timeout = idle_timeout_clone.value() as u64;
         
         if anon {
             if anon_home.trim().is_empty() {
@@ -649,6 +672,8 @@ fn setup_ftp_save_button(
                     cfg.ftp.max_speed_kbps = max_speed;
                     cfg.ftp.encoding = encoding.clone();
                     cfg.ftp.masquerade_ip = masquerade_ip_opt;
+                    cfg.server.max_connections = max_conn;
+                    cfg.server.idle_timeout = idle_timeout;
                     toml::to_string_pretty(&*cfg).unwrap_or_default()
                 } else { return; }
             } else { return; }
@@ -664,13 +689,15 @@ fn setup_ftp_save_button(
                 if let Ok(s) = state_clone.try_lock()
                     && let Ok(mut log) = s.logger.try_lock() {
                         log.info("CONFIG", &format!(
-                            "FTP配置已保存: 启用={}, 绑定={}, 端口={}, 编码={}, 匿名={}, 对外IP={}",
+                            "FTP配置已保存: 启用={}, 绑定={}, 端口={}, 编码={}, 匿名={}, 对外IP={}, 最大连接={}, 空闲超时={}s",
                             if enabled { "是" } else { "否" },
                             bind_ip_clone.text(),
                             ftp_port,
                             encoding,
                             if anon { "是" } else { "否" },
-                            masquerade_ip_clone.text()
+                            masquerade_ip_clone.text(),
+                            max_conn,
+                            idle_timeout
                         ));
                     }
             }

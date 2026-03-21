@@ -5,6 +5,11 @@ use super::super::handler::FtpSession;
 
 impl FtpSession {
     pub async fn cmd_user(&mut self, arg: Option<&str>) -> Result<()> {
+        if self.is_login_banned() {
+            self.stream.write_all(b"530 Too many failed login attempts, please try again later\r\n").await?;
+            return Ok(());
+        }
+        
         if let Some(username) = arg {
             if username.to_lowercase() == "anonymous" {
                 let (allow_anonymous, anonymous_home) = {
@@ -62,6 +67,7 @@ impl FtpSession {
                         self.cwd = home_canon.to_string_lossy().to_string();
                         self.home_dir = home_canon.to_string_lossy().to_string();
                         self.authenticated = true;
+                        self.login_tracker.clear_attempts(&self.remote_ip);
                         self.stream.write_all(b"230 Anonymous login successful\r\n").await?;
                         self.logger.lock().unwrap().client_action(
                             "FTP",
@@ -94,6 +100,11 @@ impl FtpSession {
     }
 
     pub async fn cmd_pass(&mut self, arg: Option<&str>) -> Result<()> {
+        if self.is_login_banned() {
+            self.stream.write_all(b"530 Too many failed login attempts, please try again later\r\n").await?;
+            return Ok(());
+        }
+        
         if let Some(ref username) = self.current_user {
             if username.to_lowercase() == "anonymous" {
                 self.stream.write_all(b"230 Already logged in as anonymous\r\n").await?;
@@ -181,6 +192,7 @@ impl FtpSession {
                         self.cwd = home_canon.to_string_lossy().to_string();
                         self.home_dir = home_canon.to_string_lossy().to_string();
                         self.authenticated = true;
+                        self.login_tracker.clear_attempts(&self.remote_ip);
                         self.stream.write_all(b"230 User logged in\r\n").await?;
                         self.logger.lock().unwrap().client_action(
                             "FTP",
@@ -200,14 +212,23 @@ impl FtpSession {
                 }
                 Ok(false) | Err(_) => {
                     self.authenticated = false;
-                    self.logger.lock().unwrap().client_action(
-                        "FTP",
-                        &format!("Authentication failed for user {}", username),
-                        &self.remote_ip,
-                        Some(username),
-                        "AUTH_FAIL",
-                    );
-                    self.stream.write_all(b"530 Not logged in, user cannot be authenticated\r\n").await?;
+                    let remaining = self.login_tracker.get_remaining_attempts(&self.remote_ip);
+                    if !self.login_tracker.check_and_record_failure(&self.remote_ip) {
+                        self.logger.lock().unwrap().warning(
+                            "FTP",
+                            &format!("IP {} banned due to too many failed login attempts", self.remote_ip),
+                        );
+                        self.stream.write_all(b"530 Too many failed login attempts, you are temporarily banned\r\n").await?;
+                    } else {
+                        self.logger.lock().unwrap().client_action(
+                            "FTP",
+                            &format!("Authentication failed for user {} ({} attempts remaining)", username, remaining.saturating_sub(1)),
+                            &self.remote_ip,
+                            Some(username),
+                            "AUTH_FAIL",
+                        );
+                        self.stream.write_all(b"530 Not logged in, user cannot be authenticated\r\n").await?;
+                    }
                 }
             }
         } else {

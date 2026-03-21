@@ -3,14 +3,17 @@ use rustls::ServerConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use tokio::sync::Mutex;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::core::config::Config;
 use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
+use crate::server::common::login_tracker::LoginTracker;
+use crate::server::common::quota::QuotaCache;
 
-use super::handler::FtpSession;
+use super::handler::{FtpSession, FtpSessionConfig};
 use super::rate_limit::RateLimiter;
 use super::data_connection::PassiveListenerMap;
 use super::tls::TlsConfig;
@@ -26,6 +29,9 @@ pub struct FtpServer {
     rate_limiter: Arc<RateLimiter>,
     tls_config: Option<TlsConfig>,
     tls_server_config: Option<Arc<ServerConfig>>,
+    connection_semaphore: Arc<Semaphore>,
+    login_tracker: Arc<LoginTracker>,
+    quota_cache: Arc<QuotaCache>,
 }
 
 impl FtpServer {
@@ -37,9 +43,9 @@ impl FtpServer {
     ) -> Self {
         let rate_limiter = Arc::new(RateLimiter::new(10, 60, 100));
         
-        let (tls_config, tls_server_config) = {
+        let (tls_config, tls_server_config, max_connections, max_login_attempts, ban_duration) = {
             let cfg = config.lock().unwrap();
-            if cfg.security.require_ssl {
+            let tls = if cfg.security.require_ssl {
                 if let (Some(cert_path), Some(key_path)) = (&cfg.security.cert_path, &cfg.security.key_path) {
                     let tls_cfg = TlsConfig::new(true, cert_path.clone(), key_path.clone(), true);
                     let server_cfg = tls_cfg.load_server_config().ok();
@@ -49,8 +55,12 @@ impl FtpServer {
                 }
             } else {
                 (None, None)
-            }
+            };
+            (tls.0, tls.1, cfg.server.max_connections, cfg.security.max_login_attempts, cfg.security.ban_duration)
         };
+        
+        let login_tracker = Arc::new(LoginTracker::new(max_login_attempts, ban_duration));
+        let quota_cache = Arc::new(QuotaCache::new());
         
         FtpServer {
             config,
@@ -63,6 +73,9 @@ impl FtpServer {
             rate_limiter,
             tls_config,
             tls_server_config,
+            connection_semaphore: Arc::new(Semaphore::new(max_connections)),
+            login_tracker,
+            quota_cache,
         }
     }
 
@@ -75,6 +88,12 @@ impl FtpServer {
     ) -> Result<Self> {
         let rate_limiter = Arc::new(RateLimiter::new(10, 60, 100));
         let tls_server_config = tls_config.load_server_config()?;
+        let (max_connections, max_login_attempts, ban_duration) = {
+            let cfg = config.lock().unwrap();
+            (cfg.server.max_connections, cfg.security.max_login_attempts, cfg.security.ban_duration)
+        };
+        let login_tracker = Arc::new(LoginTracker::new(max_login_attempts, ban_duration));
+        let quota_cache = Arc::new(QuotaCache::new());
         
         Ok(FtpServer {
             config,
@@ -87,6 +106,9 @@ impl FtpServer {
             rate_limiter,
             tls_config: Some(tls_config),
             tls_server_config: Some(tls_server_config),
+            connection_semaphore: Arc::new(Semaphore::new(max_connections)),
+            login_tracker,
+            quota_cache,
         })
     }
 
@@ -137,6 +159,9 @@ impl FtpServer {
         let rate_limiter = Arc::clone(&self.rate_limiter);
         let tls_config = self.tls_config.clone();
         let tls_server_config = self.tls_server_config.clone();
+        let semaphore = Arc::clone(&self.connection_semaphore);
+        let login_tracker = Arc::clone(&self.login_tracker);
+        let quota_cache = Arc::clone(&self.quota_cache);
 
         tokio::spawn(async move {
             loop {
@@ -146,17 +171,21 @@ impl FtpServer {
                     }
                     accept_result = listener.accept() => {
                         match accept_result {
-                            Ok((stream, peer_addr)) => {
+                            Ok((mut stream, peer_addr)) => {
                                 let config = Arc::clone(&config);
                                 let user_manager = Arc::clone(&user_manager);
                                 let logger_for_session = Arc::clone(&logger);
                                 let logger_for_error = Arc::clone(&logger);
+                                let logger_for_reject = Arc::clone(&logger);
                                 let file_logger = Arc::clone(&file_logger);
                                 let passive_listeners = Arc::clone(&passive_listeners);
                                 let rate_limiter = Arc::clone(&rate_limiter);
                                 let tls_config = tls_config.clone();
                                 let tls_server_config = tls_server_config.clone();
                                 let client_ip = peer_addr.ip().to_string();
+                                let semaphore = Arc::clone(&semaphore);
+                                let login_tracker = Arc::clone(&login_tracker);
+                                let quota_cache = Arc::clone(&quota_cache);
                                 
                                 {
                                     let cfg = config.lock().unwrap();
@@ -169,6 +198,18 @@ impl FtpServer {
                                     }
                                 }
                                 
+                                let permit = match semaphore.clone().try_acquire_owned() {
+                                    Ok(p) => p,
+                                    Err(_) => {
+                                        logger_for_reject.lock().unwrap().warning(
+                                            "FTP",
+                                            &format!("Connection rejected from {}: max connections reached", client_ip),
+                                        );
+                                        let _ = stream.write_all(b"421 Service not available, too many connections\r\n").await;
+                                        continue;
+                                    }
+                                };
+                                
                                 logger.lock().unwrap().client_action(
                                     "FTP",
                                     &format!("Client connected from {}", client_ip),
@@ -178,7 +219,7 @@ impl FtpServer {
                                 );
 
                                 tokio::spawn(async move {
-                                    let session_config = crate::server::ftp::handler::FtpSessionConfig {
+                                    let session_config = FtpSessionConfig {
                                         config,
                                         user_manager,
                                         logger: logger_for_session,
@@ -187,6 +228,8 @@ impl FtpServer {
                                         rate_limiter,
                                         tls_config,
                                         tls_server_config,
+                                        login_tracker,
+                                        quota_cache,
                                     };
                                     match FtpSession::new(stream, session_config) {
                                         Ok(mut session) => {
@@ -204,6 +247,7 @@ impl FtpServer {
                                             );
                                         }
                                     }
+                                    drop(permit);
                                 });
                             }
                             Err(e) => {

@@ -12,6 +12,8 @@ use crate::core::config::Config;
 use crate::core::file_logger::FileLogger;
 use crate::core::logger::Logger;
 use crate::core::users::UserManager;
+use crate::server::common::login_tracker::LoginTracker;
+use crate::server::common::quota::QuotaCache;
 
 use super::data_connection::PassiveListenerMap;
 use super::rate_limit::RateLimiter;
@@ -69,6 +71,8 @@ pub struct FtpSessionConfig {
     pub rate_limiter: Arc<RateLimiter>,
     pub tls_config: Option<TlsConfig>,
     pub tls_server_config: Option<Arc<ServerConfig>>,
+    pub login_tracker: Arc<LoginTracker>,
+    pub quota_cache: Arc<QuotaCache>,
 }
 
 pub struct FtpSession {
@@ -81,6 +85,8 @@ pub struct FtpSession {
     pub rate_limiter: Arc<RateLimiter>,
     pub tls_config: Option<TlsConfig>,
     pub tls_server_config: Option<Arc<ServerConfig>>,
+    pub login_tracker: Arc<LoginTracker>,
+    pub quota_cache: Arc<QuotaCache>,
     pub remote_ip: String,
     pub local_ip: Option<String>,
     pub current_user: Option<String>,
@@ -119,6 +125,8 @@ impl FtpSession {
             rate_limiter: session_config.rate_limiter,
             tls_config: session_config.tls_config,
             tls_server_config: session_config.tls_server_config,
+            login_tracker: session_config.login_tracker,
+            quota_cache: session_config.quota_cache,
             remote_ip,
             local_ip,
             current_user: None,
@@ -180,13 +188,13 @@ impl FtpSession {
         let mut buffer = vec![0u8; 4096];
 
         loop {
-            let conn_timeout = {
+            let idle_timeout = {
                 let cfg = self.config.lock().unwrap();
-                cfg.server.connection_timeout
+                cfg.server.idle_timeout
             };
             
             let read_result = timeout(
-                Duration::from_secs(conn_timeout),
+                Duration::from_secs(idle_timeout),
                 self.stream.read(&mut buffer)
             ).await;
 
@@ -215,7 +223,7 @@ impl FtpSession {
                 Err(_) => {
                     self.logger.lock().unwrap().warning(
                         "FTP",
-                        &format!("Connection timeout from {}", self.remote_ip),
+                        &format!("Idle timeout from {} ({}s)", self.remote_ip, idle_timeout),
                     );
                     break;
                 }
@@ -335,5 +343,9 @@ impl FtpSession {
 
     pub fn is_tls_required(&self) -> bool {
         self.tls_config.as_ref().map(|c| c.require_tls).unwrap_or(false)
+    }
+
+    pub fn is_login_banned(&self) -> bool {
+        self.login_tracker.is_banned(&self.remote_ip)
     }
 }

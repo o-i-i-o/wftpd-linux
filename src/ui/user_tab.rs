@@ -316,6 +316,24 @@ fn show_user_dialog(
     quota_frame.add(&quota_box);
     box_.pack_start(&quota_frame, false, false, 0);
 
+    let speed_frame = Frame::new(Some("速度限制"));
+    let speed_box = Box::new(Orientation::Horizontal, 10);
+    speed_box.set_margin_top(5);
+    speed_box.set_margin_bottom(5);
+    speed_box.set_margin_start(5);
+    speed_box.set_margin_end(5);
+
+    let speed_limit_cb = CheckButton::with_label("启用限速");
+    let speed_limit_spin = create_spin_button(1.0, 102400.0, 100.0);
+    speed_box.pack_start(&speed_limit_cb, false, false, 0);
+    speed_box.pack_start(&Label::new(Some("速度限制(KB/s):")), false, false, 0);
+    speed_box.pack_start(&speed_limit_spin, false, false, 0);
+    let speed_hint = Label::new(None);
+    speed_hint.set_markup("<span foreground='gray' size='small'>(0=不限制)</span>");
+    speed_box.pack_start(&speed_hint, false, false, 0);
+    speed_frame.add(&speed_box);
+    box_.pack_start(&speed_frame, false, false, 0);
+
     if let Some(name) = username
         && let Ok(s) = state.try_lock()
             && let Ok(users) = s.user_manager.try_lock()
@@ -333,6 +351,11 @@ fn show_user_dialog(
                     if let Some(quota) = user.permissions.quota_mb {
                         quota_cb.set_active(true);
                         quota_spin.set_value(quota as f64);
+                    }
+                    
+                    if let Some(speed_limit) = user.permissions.speed_limit_kbps {
+                        speed_limit_cb.set_active(true);
+                        speed_limit_spin.set_value(speed_limit as f64);
                     }
                 }
 
@@ -354,12 +377,14 @@ fn show_user_dialog(
     let append_cb_clone = append_cb.clone();
     let quota_cb_clone = quota_cb.clone();
     let quota_spin_clone = quota_spin.clone();
+    let speed_limit_cb_clone = speed_limit_cb.clone();
+    let speed_limit_spin_clone = speed_limit_spin.clone();
     let edit_username = username.map(|s| s.to_string());
 
     dialog.connect_response(clone!(@strong state_clone, @strong store_clone, @strong username_entry_clone, @strong password_entry_clone, @strong home_entry_clone,
            @strong read_cb_clone, @strong write_cb_clone, @strong delete_cb_clone, @strong list_cb_clone,
            @strong mkdir_cb_clone, @strong rmdir_cb_clone, @strong rename_cb_clone, @strong append_cb_clone,
-           @strong quota_cb_clone, @strong quota_spin_clone, @strong edit_username => move |dlg, resp| {
+           @strong quota_cb_clone, @strong quota_spin_clone, @strong speed_limit_cb_clone, @strong speed_limit_spin_clone, @strong edit_username => move |dlg, resp| {
         if resp == ResponseType::Ok {
             let uname = username_entry_clone.text().to_string();
             let password = password_entry_clone.text().to_string();
@@ -383,7 +408,11 @@ fn show_user_dialog(
                 } else {
                     None
                 },
-                speed_limit_kbps: None,
+                speed_limit_kbps: if speed_limit_cb_clone.is_active() {
+                    Some(speed_limit_spin_clone.value() as u64)
+                } else {
+                    None
+                },
             };
 
             let state = Arc::clone(&state_clone);

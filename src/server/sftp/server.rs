@@ -110,13 +110,16 @@ impl SftpServer {
     }
 
     pub async fn start(&self) -> Result<()> {
-        let (bind_ip, sftp_port, host_key_path, _max_connections) = {
+        let (bind_ip, sftp_port, host_key_path, _max_connections, max_auth_attempts, auth_timeout, idle_timeout) = {
             match self.config.try_lock() {
                 Ok(cfg) => (
                     cfg.sftp.bind_ip.clone(),
                     cfg.server.sftp_port,
                     cfg.sftp.host_key_path.clone(),
                     cfg.server.max_connections,
+                    cfg.sftp.max_auth_attempts as usize,
+                    Duration::from_secs(cfg.sftp.auth_timeout),
+                    Duration::from_secs(cfg.server.idle_timeout),
                 ),
                 Err(_) => {
                     self.log_error("Failed to acquire config lock during startup");
@@ -135,6 +138,9 @@ impl SftpServer {
         let config = russh::server::Config {
             keys: vec![host_key],
             methods,
+            max_auth_attempts,
+            inactivity_timeout: Some(idle_timeout),
+            auth_rejection_time: auth_timeout,
             ..Default::default()
         };
         let config = Arc::new(config);

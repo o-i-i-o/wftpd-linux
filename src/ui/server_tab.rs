@@ -679,7 +679,7 @@ fn setup_ftp_save_button(
             } else { return; }
         };
         
-        match crate::communication::dbus::write_config(&config_str) {
+        match crate::communication::write_config(&config_str) {
             Ok(()) => {
                 if anon {
                     anon_status_clone.set_markup("<span foreground='green' size='small'>✓ 目录有效</span>");
@@ -829,7 +829,7 @@ fn setup_sftp_save_button(
             } else { return; }
         };
         
-        match crate::communication::dbus::write_config(&config_str) {
+        match crate::communication::write_config(&config_str) {
             Ok(()) => {
                 if let Ok(s) = state_clone.try_lock()
                     && let Ok(mut log) = s.logger.try_lock() {

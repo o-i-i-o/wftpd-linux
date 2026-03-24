@@ -153,10 +153,10 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
                 } else { return; }
             };
             
-            match crate::communication::dbus::write_users(&users_json) {
+            match crate::communication::write_users(&users_json) {
                 Ok(()) => {
                     let action = if new_enabled { "enabled" } else { "disabled" };
-                    let _ = crate::communication::dbus::write_audit_log(
+                    let _ = crate::communication::write_audit_log(
                         "gui-user",
                         "USER_TOGGLE",
                         &uname,
@@ -498,10 +498,10 @@ fn show_user_dialog(
                 } else { return; }
             };
             
-            match crate::communication::dbus::write_users(&users_json) {
+            match crate::communication::write_users(&users_json) {
                 Ok(()) => {
                     let action_type = if is_edit { "USER_MODIFY" } else { "USER_CREATE" };
-                    let _ = crate::communication::dbus::write_audit_log(
+                    let _ = crate::communication::write_audit_log(
                         "gui-user",
                         action_type,
                         &username,
@@ -564,9 +564,9 @@ fn show_confirm_dialog(
                 } else { return; }
             };
             
-            match crate::communication::dbus::write_users(&users_json) {
+            match crate::communication::write_users(&users_json) {
                 Ok(()) => {
-                    let _ = crate::communication::dbus::write_audit_log(
+                    let _ = crate::communication::write_audit_log(
                         "gui-user",
                         "USER_DELETE",
                         &username,

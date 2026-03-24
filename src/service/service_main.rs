@@ -6,6 +6,7 @@ use crate::core::users::UserManager;
 use crate::core::logger::Logger;
 use crate::core::file_logger::FileLogger;
 use crate::core::server_manager::ServerManager;
+use crate::communication::IpcServer;
 
 pub fn run_service() -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
@@ -73,20 +74,30 @@ async fn run_service_async() -> Result<()> {
         log.info("SERVICE", "WFTPG service started successfully");
     }
     
-    tokio::signal::ctrl_c().await?;
+    let ipc_server = IpcServer::new(
+        config,
+        user_manager,
+        server_manager,
+        logger,
+        file_logger,
+    );
     
-    {
-        let mut log = logger.lock().unwrap();
-        log.info("SERVICE", "WFTPG service shutting down");
+    let ipc_task = tokio::spawn(async move {
+        if let Err(e) = ipc_server.run().await {
+            log::error!("IPC server error: {}", e);
+        }
+    });
+    
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            log::info!("Received shutdown signal");
+        }
+        _ = ipc_task => {
+            log::info!("IPC server stopped");
+        }
     }
     
-    server_manager.stop_ftp(&logger).await;
-    server_manager.stop_sftp(&logger).await;
-    
-    {
-        let mut log = logger.lock().unwrap();
-        log.info("SERVICE", "WFTPG service stopped");
-    }
+    log::info!("WFTPG service shutting down");
     
     Ok(())
 }

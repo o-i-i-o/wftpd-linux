@@ -17,6 +17,8 @@ use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::users::Permissions;
 use crate::core::file_logger::FileLogger;
+use crate::server::common::quota::QuotaCache;
+use crate::server::common::speed_limiter::SpeedLimiter;
 use crate::server::common::utils::safe_resolve_path;
 
 const SSH_FXP_INIT: u8 = 1;
@@ -76,6 +78,8 @@ pub struct SftpState {
     pub locked_files: HashSet<PathBuf>,
     pub client_ip: String,
     cached_permissions: Option<Permissions>,
+    quota_cache: QuotaCache,
+    speed_limiter: Option<Arc<SpeedLimiter>>,
 }
 
 impl Drop for SftpState {
@@ -176,6 +180,11 @@ impl SftpState {
             })
         });
         
+        let speed_limiter = cached_permissions
+            .and_then(|permissions| permissions.speed_limit_kbps)
+            .filter(|limit| *limit > 0)
+            .map(|limit| Arc::new(SpeedLimiter::new(limit)));
+
         SftpState {
             home_dir,
             username,
@@ -189,6 +198,8 @@ impl SftpState {
             locked_files: HashSet::new(),
             client_ip,
             cached_permissions,
+            quota_cache: QuotaCache::new(),
+            speed_limiter,
         }
     }
 
@@ -270,6 +281,29 @@ impl SftpState {
         }
     }
 
+    pub(crate) fn check_quota_for_additional_bytes(&self, additional_bytes: u64) -> bool {
+        if additional_bytes == 0 {
+            return true;
+        }
+
+        let quota_mb = self.get_permissions()
+            .and_then(|permissions| permissions.quota_mb)
+            .filter(|limit| *limit > 0);
+
+        match quota_mb {
+            Some(limit) => {
+                let current_usage = self.quota_cache.calculate_usage(&self.home_dir);
+                let quota_bytes = limit.saturating_mul(1024 * 1024);
+                current_usage.saturating_add(additional_bytes) <= quota_bytes
+            }
+            None => true,
+        }
+    }
+
+    pub(crate) fn invalidate_quota_cache(&self) {
+        self.quota_cache.invalidate(&self.home_dir);
+    }
+
     async fn handle_sftp_packet(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         if data.is_empty() {
             return Ok(build_status_packet(0, SSH_FX_FAILURE, "Bad packet: empty data", ""));
@@ -325,11 +359,13 @@ impl SftpState {
         payload.extend_from_slice(&self.sftp_version.to_be_bytes());
         
         let extensions = [
+            ("limits@openssh.com", "1"),
             ("posix-rename@openssh.com", "1"),
             ("statvfs@openssh.com", "2"),
             ("fstatvfs@openssh.com", "2"),
             ("hardlink@openssh.com", "1"),
             ("fsync@openssh.com", "1"),
+            ("copy-file", "1"),
             ("md5sum@openssh.com", "1"),
             ("sha256sum@openssh.com", "1"),
         ];
@@ -496,8 +532,8 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let handle = self.handles.get_mut(&handle_str);
-        match handle {
+        let speed_limiter = self.speed_limiter.clone();
+        let (buffer, path) = match self.handles.get_mut(&handle_str) {
             Some(h) if !h.is_dir => {
                 use tokio::io::{AsyncReadExt, AsyncSeekExt};
                 
@@ -526,31 +562,36 @@ impl SftpState {
                 }
 
                 buffer.truncate(n);
-
-                if let Ok(mut log) = self.logger.lock() {
-                    log.client_action(
-                        "SFTP",
-                        &format!("Read {} bytes from {:?}", n, h.path),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "READ",
-                    );
-                }
-
-                if let Ok(mut fl) = self.file_logger.lock() {
-                    fl.log_download(
-                        self.username.as_deref().unwrap_or("anonymous"),
-                        &self.client_ip,
-                        &h.path.to_string_lossy(),
-                        n as u64,
-                        "SFTP",
-                    );
-                }
-
-                Ok(build_data_packet(id, &buffer))
+                (buffer, h.path.clone())
             }
-            _ => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
+            _ => return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
+        };
+
+        if let Some(limiter) = speed_limiter {
+            limiter.throttle(buffer.len()).await;
         }
+
+        if let Ok(mut log) = self.logger.lock() {
+            log.client_action(
+                "SFTP",
+                &format!("Read {} bytes from {:?}", buffer.len(), path),
+                &self.client_ip,
+                self.username.as_deref(),
+                "READ",
+            );
+        }
+
+        if let Ok(mut fl) = self.file_logger.lock() {
+            fl.log_download(
+                self.username.as_deref().unwrap_or("anonymous"),
+                &self.client_ip,
+                &path.to_string_lossy(),
+                buffer.len() as u64,
+                "SFTP",
+            );
+        }
+
+        Ok(build_data_packet(id, &buffer))
     }
 
     async fn handle_write(&mut self, data: &[u8]) -> Result<Vec<u8>> {
@@ -576,10 +617,27 @@ impl SftpState {
             if !self.check_permission_cached(|p| p.can_append) {
                 return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied (append)", ""));
             }
-        } else {
-            if !self.check_permission_cached(|p| p.can_write) {
-                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
-            }
+        } else if !self.check_permission_cached(|p| p.can_write) {
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
+        }
+
+        let target_path = match self.handles.get(&handle_str) {
+            Some(h) if !h.is_dir => h.path.clone(),
+            _ => return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
+        };
+
+        let current_len = tokio::fs::metadata(&target_path).await
+            .map(|metadata| metadata.len())
+            .unwrap_or(offset);
+        let requested_end = offset.saturating_add(data_len as u64);
+        let additional_bytes = requested_end.saturating_sub(current_len);
+
+        if !self.check_quota_for_additional_bytes(additional_bytes) {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Quota exceeded", ""));
+        }
+
+        if let Some(limiter) = self.speed_limiter.clone() {
+            limiter.throttle(write_data.len()).await;
         }
 
         let handle = self.handles.get_mut(&handle_str);
@@ -593,6 +651,9 @@ impl SftpState {
                 }
 
                 h.written_bytes += data_len as u64;
+                if additional_bytes > 0 {
+                    self.invalidate_quota_cache();
+                }
 
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
@@ -1415,5 +1476,300 @@ impl SftpState {
             }
             _ => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::core::file_logger::FileLogger;
+    use crate::core::logger::Logger;
+    use crate::core::users::{Permissions, UserManager};
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "wftpg-sftp-{}-{}-{}",
+                name,
+                std::process::id(),
+                unique
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn make_state(home: &Path, permissions: Permissions) -> SftpState {
+        let log_dir = home.join("logs");
+        fs::create_dir_all(&log_dir).unwrap();
+
+        let mut users = UserManager::new();
+        users.add_user(
+            "tester".to_string(),
+            "password",
+            home.to_string_lossy().into_owned(),
+            permissions,
+            false,
+        )
+        .unwrap();
+
+        SftpState::new(
+            home.to_string_lossy().into_owned(),
+            Some("tester".to_string()),
+            Arc::new(StdMutex::new(users)),
+            Arc::new(StdMutex::new(Logger::new(&log_dir.to_string_lossy(), 1024 * 1024, 3))),
+            Arc::new(StdMutex::new(FileLogger::new(&log_dir.to_string_lossy(), 1024 * 1024))),
+            "127.0.0.1".to_string(),
+        )
+    }
+
+    fn payload(packet: &[u8]) -> &[u8] {
+        assert!(packet.len() >= 4);
+        let len = u32::from_be_bytes(packet[0..4].try_into().unwrap()) as usize;
+        assert_eq!(packet.len(), len + 4);
+        &packet[4..]
+    }
+
+    fn parse_status(packet: &[u8]) -> (u32, String) {
+        let payload = payload(packet);
+        assert_eq!(payload[0], 101);
+        let status = parse_u32(payload, 5);
+        let msg_len = parse_u32(payload, 9) as usize;
+        let msg_start = 13;
+        let msg_end = msg_start + msg_len;
+        let message = String::from_utf8_lossy(&payload[msg_start..msg_end]).into_owned();
+        (status, message)
+    }
+
+    fn parse_handle(packet: &[u8]) -> String {
+        let payload = payload(packet);
+        assert_eq!(payload[0], 102);
+        let handle_len = parse_u32(payload, 5) as usize;
+        String::from_utf8_lossy(&payload[9..9 + handle_len]).into_owned()
+    }
+
+    fn build_string_field(value: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        buf.extend_from_slice(value.as_bytes());
+        buf
+    }
+
+    fn build_extended_packet(id: u32, extension: &str, extra: &[u8]) -> Vec<u8> {
+        let mut packet = vec![SSH_FXP_EXTENDED];
+        packet.extend_from_slice(&id.to_be_bytes());
+        packet.extend_from_slice(&(extension.len() as u32).to_be_bytes());
+        packet.extend_from_slice(extension.as_bytes());
+        packet.extend_from_slice(extra);
+        packet
+    }
+
+    fn build_write_packet(id: u32, handle: &str, offset: u64, data: &[u8]) -> Vec<u8> {
+        let mut packet = vec![SSH_FXP_WRITE];
+        packet.extend_from_slice(&id.to_be_bytes());
+        packet.extend_from_slice(&build_string_field(handle));
+        packet.extend_from_slice(&offset.to_be_bytes());
+        packet.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        packet.extend_from_slice(data);
+        packet
+    }
+
+    #[tokio::test]
+    async fn init_advertises_supported_extensions() {
+        let dir = TestDir::new("init-extensions");
+        let state = &mut make_state(dir.path(), Permissions::full());
+
+        let response = state.handle_init(&[SSH_FXP_INIT, 0, 0, 0, 3]).await.unwrap();
+        let payload = payload(&response);
+
+        assert_eq!(payload[0], 2);
+        assert_eq!(parse_u32(payload, 1), 3);
+
+        let mut offset = 5;
+        let mut extensions = Vec::new();
+        while offset < payload.len() {
+            let (name, consumed_name) = parse_string_checked(payload, offset).unwrap();
+            offset += 4 + consumed_name;
+            let (version, consumed_version) = parse_string_checked(payload, offset).unwrap();
+            offset += 4 + consumed_version;
+            extensions.push((name, version));
+        }
+
+        assert!(extensions.iter().any(|(name, _)| name == "limits@openssh.com"));
+        assert!(extensions.iter().any(|(name, _)| name == "copy-file"));
+        assert!(extensions.iter().any(|(name, _)| name == "fsync@openssh.com"));
+        assert!(extensions.iter().any(|(name, _)| name == "fstatvfs@openssh.com"));
+    }
+
+    #[tokio::test]
+    async fn write_rejects_when_quota_is_exceeded() {
+        let dir = TestDir::new("write-quota");
+        let filler = dir.path().join("filler.bin");
+        let mut filler_file = fs::File::create(&filler).unwrap();
+        filler_file.write_all(&vec![b'x'; 1_048_326]).unwrap();
+
+        let mut permissions = Permissions::full();
+        permissions.quota_mb = Some(1);
+        let state = &mut make_state(dir.path(), permissions);
+
+        let target_path = dir.path().join("target.bin");
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&target_path)
+            .await
+            .unwrap();
+
+        state.handles.insert(
+            "h00000001".to_string(),
+            SftpFileHandle {
+                path: target_path.clone(),
+                file,
+                locked: false,
+                existed: false,
+                written_bytes: 0,
+                is_dir: false,
+                dir_entries: Vec::new(),
+                dir_index: 0,
+            },
+        );
+
+        let packet = build_write_packet(1, "h00000001", 0, &[1u8; 512]);
+        let response = state.handle_write(&packet).await.unwrap();
+        let (status, message) = parse_status(&response);
+
+        assert_eq!(status, SSH_FX_FAILURE);
+        assert!(message.contains("Quota exceeded"));
+        assert_eq!(fs::metadata(&target_path).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn copy_file_respects_overwrite_flag() {
+        let dir = TestDir::new("copy-overwrite");
+        fs::write(dir.path().join("src.txt"), b"new-data").unwrap();
+        fs::write(dir.path().join("dst.txt"), b"old-data").unwrap();
+
+        let state = &mut make_state(dir.path(), Permissions::full());
+        let mut args = Vec::new();
+        args.extend_from_slice(&build_string_field("/src.txt"));
+        args.extend_from_slice(&build_string_field("/dst.txt"));
+        args.push(0);
+
+        let response = state
+            .handle_extended(&build_extended_packet(7, "copy-file", &args))
+            .await
+            .unwrap();
+        let (status, message) = parse_status(&response);
+
+        assert_eq!(status, SSH_FX_FAILURE);
+        assert!(message.contains("already exists"));
+        assert_eq!(fs::read(dir.path().join("dst.txt")).unwrap(), b"old-data");
+    }
+
+    #[tokio::test]
+    async fn copy_file_rejects_when_quota_is_exceeded() {
+        let dir = TestDir::new("copy-quota");
+        fs::write(dir.path().join("src.txt"), vec![b'a'; 200]).unwrap();
+        let mut filler = fs::File::create(dir.path().join("filler.bin")).unwrap();
+        filler.write_all(&vec![b'b'; 1_048_326]).unwrap();
+
+        let mut permissions = Permissions::full();
+        permissions.quota_mb = Some(1);
+        let state = &mut make_state(dir.path(), permissions);
+
+        let mut args = Vec::new();
+        args.extend_from_slice(&build_string_field("/src.txt"));
+        args.extend_from_slice(&build_string_field("/dst.txt"));
+        args.push(1);
+
+        let response = state
+            .handle_extended(&build_extended_packet(8, "copy-file", &args))
+            .await
+            .unwrap();
+        let (status, message) = parse_status(&response);
+
+        assert_eq!(status, SSH_FX_FAILURE);
+        assert!(message.contains("Quota exceeded"));
+        assert!(!dir.path().join("dst.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn fsync_and_fstatvfs_succeed_for_file_handle() {
+        let dir = TestDir::new("handle-extensions");
+        let file_path = dir.path().join("open.bin");
+        fs::write(&file_path, b"payload").unwrap();
+
+        let state = &mut make_state(dir.path(), Permissions::full());
+        let file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&file_path)
+            .await
+            .unwrap();
+
+        state.handles.insert(
+            "h00000002".to_string(),
+            SftpFileHandle {
+                path: file_path,
+                file,
+                locked: false,
+                existed: true,
+                written_bytes: 0,
+                is_dir: false,
+                dir_entries: Vec::new(),
+                dir_index: 0,
+            },
+        );
+
+        let fsync_response = state
+            .handle_extended(&build_extended_packet(9, "fsync@openssh.com", &build_string_field("h00000002")))
+            .await
+            .unwrap();
+        let (fsync_status, _) = parse_status(&fsync_response);
+        assert_eq!(fsync_status, SSH_FX_OK);
+
+        let fstatvfs_response = state
+            .handle_extended(&build_extended_packet(10, "fstatvfs@openssh.com", &build_string_field("h00000002")))
+            .await
+            .unwrap();
+        let fstatvfs_payload = payload(&fstatvfs_response);
+        assert_eq!(fstatvfs_payload[0], 201);
+        assert_eq!(parse_u32(fstatvfs_payload, 1), 10);
+    }
+
+    #[test]
+    fn speed_limiter_is_initialized_from_permissions() {
+        let dir = TestDir::new("speed-limit");
+        let mut permissions = Permissions::full();
+        permissions.speed_limit_kbps = Some(128);
+        let limited = make_state(dir.path(), permissions);
+        assert!(limited.speed_limiter.is_some());
+
+        let unlimited = make_state(dir.path(), Permissions::full());
+        assert!(unlimited.speed_limiter.is_none());
     }
 }

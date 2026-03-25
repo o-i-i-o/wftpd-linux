@@ -41,6 +41,41 @@ fn log_io_error(logger: &std::sync::Mutex<crate::core::logger::Logger>, operatio
     }
 }
 
+#[cfg(unix)]
+fn build_statvfs_reply(id: u32, stats: &nix::sys::statvfs::Statvfs) -> Vec<u8> {
+    let bsize: u64 = stats.block_size();
+    let frsize: u64 = stats.fragment_size();
+    let blocks: u64 = stats.blocks();
+    let bfree: u64 = stats.blocks_free();
+    let bavail: u64 = stats.blocks_available();
+    let files: u64 = stats.files();
+    let ffree: u64 = stats.files_free();
+    let favail: u64 = stats.files_available();
+    let fsid: u64 = stats.filesystem_id();
+    let namemax: u64 = stats.name_max();
+
+    let mut flag: u64 = 0;
+    use nix::sys::statvfs::FsFlags;
+    if stats.flags().contains(FsFlags::ST_RDONLY) {
+        flag |= 1;
+    }
+
+    let mut payload = vec![201];
+    payload.extend_from_slice(&id.to_be_bytes());
+    payload.extend_from_slice(&bsize.to_be_bytes());
+    payload.extend_from_slice(&frsize.to_be_bytes());
+    payload.extend_from_slice(&blocks.to_be_bytes());
+    payload.extend_from_slice(&bfree.to_be_bytes());
+    payload.extend_from_slice(&bavail.to_be_bytes());
+    payload.extend_from_slice(&files.to_be_bytes());
+    payload.extend_from_slice(&ffree.to_be_bytes());
+    payload.extend_from_slice(&favail.to_be_bytes());
+    payload.extend_from_slice(&fsid.to_be_bytes());
+    payload.extend_from_slice(&flag.to_be_bytes());
+    payload.extend_from_slice(&namemax.to_be_bytes());
+    build_packet(&payload)
+}
+
 impl SftpState {
     pub async fn handle_extended(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         if data.len() < 9 {
@@ -72,6 +107,8 @@ impl SftpState {
         match ext_name.as_str() {
             "limits@openssh.com" => self.handle_limits(id).await,
             "statvfs@openssh.com" => self.handle_statvfs(id, data, ext_total_len).await,
+            "fstatvfs@openssh.com" => self.handle_fstatvfs(id, data, ext_total_len).await,
+            "fsync@openssh.com" => self.handle_fsync(id, data, ext_total_len).await,
             "md5sum@openssh.com" | "md5-hash@openssh.com" => self.handle_md5sum(id, data, ext_total_len).await,
             "sha256sum@openssh.com" | "sha256-hash@openssh.com" => self.handle_sha256sum(id, data, ext_total_len).await,
             "copy-file" => self.handle_copy_file(id, data, ext_total_len).await,
@@ -121,52 +158,18 @@ impl SftpState {
                 return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid statvfs packet: path data truncated", ""));
             }
         
-        let full_path = match self.resolve_path(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
-            }
-        };
-
         #[cfg(unix)]
         {
-            let stat_path = full_path.parent().unwrap_or(&full_path);
-            
-            use nix::sys::statvfs::statvfs;
-            match statvfs(stat_path) {
-                Ok(stats) => {
-                    let bsize: u64 = stats.block_size();
-                    let frsize: u64 = stats.fragment_size();
-                    let blocks: u64 = stats.blocks();
-                    let bfree: u64 = stats.blocks_free();
-                    let bavail: u64 = stats.blocks_available();
-                    let files: u64 = stats.files();
-                    let ffree: u64 = stats.files_free();
-                    let favail: u64 = stats.files_available();
-                    let fsid: u64 = stats.filesystem_id();
-                    let namemax: u64 = stats.name_max();
-
-                    let mut flag: u64 = 0;
-                    use nix::sys::statvfs::FsFlags;
-                    if stats.flags().contains(FsFlags::ST_RDONLY) {
-                        flag |= 1;
-                    }
-
-                    let mut payload = vec![201];
-                    payload.extend_from_slice(&id.to_be_bytes());
-                    payload.extend_from_slice(&bsize.to_be_bytes());
-                    payload.extend_from_slice(&frsize.to_be_bytes());
-                    payload.extend_from_slice(&blocks.to_be_bytes());
-                    payload.extend_from_slice(&bfree.to_be_bytes());
-                    payload.extend_from_slice(&bavail.to_be_bytes());
-                    payload.extend_from_slice(&files.to_be_bytes());
-                    payload.extend_from_slice(&ffree.to_be_bytes());
-                    payload.extend_from_slice(&favail.to_be_bytes());
-                    payload.extend_from_slice(&fsid.to_be_bytes());
-                    payload.extend_from_slice(&flag.to_be_bytes());
-                    payload.extend_from_slice(&namemax.to_be_bytes());
-                    Ok(build_packet(&payload))
+            let full_path = match self.resolve_path(&path) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
                 }
+            };
+
+            use nix::sys::statvfs::statvfs;
+            match statvfs(&full_path) {
+                Ok(stats) => Ok(build_statvfs_reply(id, &stats)),
                 Err(e) => {
                     let (status, msg) = match e {
                         nix::errno::Errno::ENOENT => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
@@ -181,8 +184,95 @@ impl SftpState {
 
         #[cfg(not(unix))]
         {
-            let _ = full_path;
+            let _ = path;
             Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "statvfs not supported on this platform", ""))
+        }
+    }
+
+    async fn handle_fstatvfs(&self, id: u32, data: &[u8], ext_offset: usize) -> Result<Vec<u8>> {
+        let parse_offset = 5usize.checked_add(ext_offset)
+            .ok_or_else(|| anyhow::anyhow!("Offset overflow"))?;
+
+        if parse_offset + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid fstatvfs packet: missing handle length", ""));
+        }
+
+        let (handle_str, handle_len) = match parse_string_checked(data, parse_offset) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid handle: {}", e), ""));
+            }
+        };
+
+        let expected_end = parse_offset.checked_add(4 + handle_len);
+        if let Some(end) = expected_end
+            && end > data.len() {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid fstatvfs packet: handle data truncated", ""));
+            }
+
+        #[cfg(unix)]
+        {
+            use nix::sys::statvfs::fstatvfs;
+
+            match self.handles.get(&handle_str) {
+                Some(handle) if !handle.is_dir => {
+                    match fstatvfs(&handle.file) {
+                        Ok(stats) => Ok(build_statvfs_reply(id, &stats)),
+                        Err(e) => {
+                            let (status, msg) = match e {
+                                nix::errno::Errno::ENOENT => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
+                                nix::errno::Errno::EACCES => (SSH_FX_PERMISSION_DENIED, "Permission denied"),
+                                nix::errno::Errno::ENOTDIR => (SSH_FX_FAILURE, "Not a directory"),
+                                _ => (SSH_FX_FAILURE, "Failed to get filesystem stats"),
+                            };
+                            Ok(build_status_packet(id, status, msg, ""))
+                        }
+                    }
+                }
+                Some(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Handle does not reference a file", "")),
+                None => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = handle_str;
+            Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "fstatvfs not supported on this platform", ""))
+        }
+    }
+
+    async fn handle_fsync(&self, id: u32, data: &[u8], ext_offset: usize) -> Result<Vec<u8>> {
+        let parse_offset = 5usize.checked_add(ext_offset)
+            .ok_or_else(|| anyhow::anyhow!("Offset overflow"))?;
+
+        if parse_offset + 4 > data.len() {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid fsync packet: missing handle length", ""));
+        }
+
+        let (handle_str, handle_len) = match parse_string_checked(data, parse_offset) {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid handle: {}", e), ""));
+            }
+        };
+
+        let expected_end = parse_offset.checked_add(4 + handle_len);
+        if let Some(end) = expected_end
+            && end > data.len() {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid fsync packet: handle data truncated", ""));
+            }
+
+        match self.handles.get(&handle_str) {
+            Some(handle) if !handle.is_dir => match handle.file.sync_all().await {
+                Ok(_) => Ok(build_status_packet(id, SSH_FX_OK, "OK", "")),
+                Err(e) => {
+                    log_io_error(&self.logger, "FSYNC", &handle.path, &e);
+                    let (status, msg) = io_error_to_sftp_status(&e);
+                    Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
+                }
+            },
+            Some(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Handle does not reference a file", "")),
+            None => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
         }
     }
 
@@ -370,6 +460,68 @@ impl SftpState {
             }
         };
 
+        if src_full == dst_full {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Source and destination are the same file", ""));
+        }
+
+        let src_metadata = match tokio::fs::metadata(&src_full).await {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
+                return Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""));
+            }
+        };
+
+        if !src_metadata.is_file() {
+            let msg = if src_metadata.is_dir() {
+                "Source is a directory, not a file"
+            } else {
+                "Source is not a regular file"
+            };
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, msg, ""));
+        }
+
+        let dst_parent = match dst_full.parent() {
+            Some(parent) => parent,
+            None => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid destination path", ""));
+            }
+        };
+
+        match tokio::fs::try_exists(dst_parent).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "Destination directory does not exist", ""));
+            }
+            Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
+                return Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""));
+            }
+        }
+
+        let overwrite = data.get(dst_end).copied().unwrap_or(0) != 0;
+        let src_size = src_metadata.len();
+        let additional_bytes = match tokio::fs::metadata(&dst_full).await {
+            Ok(dst_metadata) => {
+                if dst_metadata.is_dir() {
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, "Destination is a directory", ""));
+                }
+                if !overwrite {
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, "Destination file already exists", ""));
+                }
+                src_size.saturating_sub(dst_metadata.len())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => src_size,
+            Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
+                return Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""));
+            }
+        };
+
+        if !self.check_quota_for_additional_bytes(additional_bytes) {
+            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Quota exceeded", ""));
+        }
+
         match tokio::fs::copy(&src_full, &dst_full).await {
             Ok(size) => {
                 if let Ok(mut fl) = self.file_logger.try_lock() {
@@ -384,6 +536,7 @@ impl SftpState {
                         message: "文件复制成功",
                     });
                 }
+                self.invalidate_quota_cache();
                 if let Ok(mut log) = self.logger.try_lock() {
                     log.client_action(
                         "SFTP",
@@ -446,21 +599,21 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let src_full = match self.resolve_path(&src_path) {
-            Ok(p) => p,
-            Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Source path resolution failed: {}", e), ""));
-            }
-        };
-        let dst_full = match self.resolve_path(&dst_path) {
-            Ok(p) => p,
-            Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Destination path resolution failed: {}", e), ""));
-            }
-        };
-
         #[cfg(unix)]
         {
+            let src_full = match self.resolve_path(&src_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Source path resolution failed: {}", e), ""));
+                }
+            };
+            let dst_full = match self.resolve_path(&dst_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Destination path resolution failed: {}", e), ""));
+                }
+            };
+
             match tokio::fs::hard_link(&src_full, &dst_full).await {
                 Ok(_) => {
                     if let Ok(mut fl) = self.file_logger.try_lock() {
@@ -496,7 +649,7 @@ impl SftpState {
 
         #[cfg(not(unix))]
         {
-            let _ = (src_full, dst_full);
+            let _ = (src_path, dst_path);
             Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "Hardlinks not supported on this platform", ""))
         }
     }

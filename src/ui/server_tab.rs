@@ -7,7 +7,7 @@ use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::path::Path;
 use crate::AppState;
-use crate::communication::ipc::IpcClient;
+use crate::communication::IpcClient;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);

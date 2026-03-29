@@ -181,12 +181,13 @@ pub fn read_config() -> Result<String> {
     })
 }
 
-pub fn write_config(content: &str) -> Result<()> {
+pub fn write_config(content: &str) -> Result<String> {
     let content = content.to_string();
     with_runtime(async move {
         let response = send_request(IpcCommand::SaveConfig { content }).await?;
         match response.result {
-            IpcResult::Success { .. } => Ok(()),
+            IpcResult::ConfigSaved { content, .. } => Ok(content),
+            IpcResult::Success { message } => Err(anyhow::anyhow!("Unexpected success response: {}", message)),
             IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
             _ => Err(anyhow::anyhow!("Unexpected response type")),
         }
@@ -204,12 +205,12 @@ pub fn read_users() -> Result<String> {
     })
 }
 
-pub fn write_users(content: &str) -> Result<()> {
+pub fn write_users(content: &str) -> Result<String> {
     let content = content.to_string();
     with_runtime(async move {
         let response = send_request(IpcCommand::SaveUsers { content }).await?;
         match response.result {
-            IpcResult::Success { .. } => Ok(()),
+            IpcResult::UsersSaved { content, .. } => Ok(content),
             IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
             _ => Err(anyhow::anyhow!("Unexpected response type")),
         }
@@ -228,6 +229,238 @@ pub fn write_audit_log(user: &str, action: &str, target: &str, details: &str) ->
             target,
             details,
         }).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceStatus {
+    pub installed: bool,
+    pub running: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct InitialState {
+    pub config: String,
+    pub users: String,
+    pub ftp_running: bool,
+    pub sftp_running: bool,
+}
+
+pub fn install_service(binary_path: &str) -> Result<()> {
+    let binary_path = binary_path.to_string();
+    with_runtime(async move {
+        let response = send_request(IpcCommand::InstallService { binary_path }).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn uninstall_service() -> Result<()> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::UninstallService).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn start_system_service() -> Result<()> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::StartSystemService).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn stop_system_service() -> Result<()> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::StopSystemService).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn restart_system_service() -> Result<()> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::RestartSystemService).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn enable_service() -> Result<()> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::EnableService).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn disable_service() -> Result<()> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::DisableService).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn get_system_service_status() -> Result<ServiceStatus> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::GetSystemServiceStatus).await?;
+        match response.result {
+            IpcResult::ServiceStatus { installed, running, enabled } => Ok(ServiceStatus {
+                installed,
+                running,
+                enabled,
+            }),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn get_initial_state() -> Result<InitialState> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::GetInitialState).await?;
+        match response.result {
+            IpcResult::InitialState { config, users, ftp_running, sftp_running } => Ok(InitialState {
+                config,
+                users,
+                ftp_running,
+                sftp_running,
+            }),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn ensure_user_directories() -> Result<()> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::EnsureUserDirectories).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn get_log_files() -> Result<Vec<LogFileEntry>> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::GetLogFiles).await?;
+        match response.result {
+            IpcResult::LogFiles { files } => Ok(files),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn get_log_file_content(path: &str, count: usize) -> Result<Vec<LogEntryJson>> {
+    let path = path.to_string();
+    with_runtime(async move {
+        let response = send_request(IpcCommand::GetLogFileContent { path, count }).await?;
+        match response.result {
+            IpcResult::Logs { entries } => Ok(entries),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn get_file_log_files() -> Result<Vec<LogFileEntry>> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::GetFileLogFiles).await?;
+        match response.result {
+            IpcResult::FileLogFiles { files } => Ok(files),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn get_file_log_file_content(path: &str, count: usize) -> Result<Vec<FileLogEntryJson>> {
+    let path = path.to_string();
+    with_runtime(async move {
+        let response = send_request(IpcCommand::GetFileLogFileContent { path, count }).await?;
+        match response.result {
+            IpcResult::FileLogEntries { entries } => Ok(entries),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn save_log_config(
+    log_dir: &str,
+    log_level: &str,
+    max_log_size: u64,
+    max_log_files: usize,
+    log_to_file: bool,
+    log_to_gui: bool,
+) -> Result<()> {
+    let log_dir = log_dir.to_string();
+    let log_level = log_level.to_string();
+    with_runtime(async move {
+        let response = send_request(IpcCommand::SaveLogConfig {
+            log_dir,
+            log_level,
+            max_log_size,
+            max_log_files,
+            log_to_file,
+            log_to_gui,
+        }).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn setup_directory_permissions(path: &str) -> Result<()> {
+    let path = path.to_string();
+    with_runtime(async move {
+        let response = send_request(IpcCommand::SetupDirectoryPermissions { path }).await?;
+        match response.result {
+            IpcResult::Success { .. } => Ok(()),
+            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    })
+}
+
+pub fn create_user_directory(path: &str) -> Result<()> {
+    let path = path.to_string();
+    with_runtime(async move {
+        let response = send_request(IpcCommand::CreateUserDirectory { path }).await?;
         match response.result {
             IpcResult::Success { .. } => Ok(()),
             IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),

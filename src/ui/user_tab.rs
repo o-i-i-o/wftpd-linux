@@ -154,7 +154,7 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
             };
             
             match crate::communication::write_users(&users_json) {
-                Ok(()) => {
+                Ok(_) => {
                     let action = if new_enabled { "enabled" } else { "disabled" };
                     let _ = crate::communication::write_audit_log(
                         "gui-user",
@@ -499,7 +499,7 @@ fn show_user_dialog(
             };
             
             match crate::communication::write_users(&users_json) {
-                Ok(()) => {
+                Ok(_) => {
                     let action_type = if is_edit { "USER_MODIFY" } else { "USER_CREATE" };
                     let _ = crate::communication::write_audit_log(
                         "gui-user",
@@ -565,7 +565,7 @@ fn show_confirm_dialog(
             };
             
             match crate::communication::write_users(&users_json) {
-                Ok(()) => {
+                Ok(_) => {
                     let _ = crate::communication::write_audit_log(
                         "gui-user",
                         "USER_DELETE",

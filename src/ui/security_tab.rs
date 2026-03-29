@@ -72,7 +72,12 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
             };
             
             match crate::communication::write_config(&config_str) {
-                Ok(()) => {
+                Ok(saved_content) => {
+                    if let Ok(s) = state_clone.try_lock()
+                        && let Ok(mut cfg) = s.config.try_lock()
+                            && let Ok(new_config) = toml::from_str(&saved_content) {
+                                *cfg = new_config;
+                            }
                     let _ = crate::communication::write_audit_log(
                         "gui-security",
                         "SECURITY_CONFIG",
@@ -290,7 +295,12 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
             };
             
             match crate::communication::write_config(&config_str) {
-                Ok(()) => {
+                Ok(saved_content) => {
+                    if let Ok(s) = state_clone.try_lock()
+                        && let Ok(mut cfg) = s.config.try_lock()
+                            && let Ok(new_config) = toml::from_str(&saved_content) {
+                                *cfg = new_config;
+                            }
                     refresh_whitelist(&store, &state_clone);
                     ip_entry.set_text("");
                     log::info!("IP {} added to whitelist", ip_to_add);
@@ -322,7 +332,12 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
             };
             
             match crate::communication::write_config(&config_str) {
-                Ok(()) => {
+                Ok(saved_content) => {
+                    if let Ok(s) = state_clone.try_lock()
+                        && let Ok(mut cfg) = s.config.try_lock()
+                            && let Ok(new_config) = toml::from_str(&saved_content) {
+                                *cfg = new_config;
+                            }
                     refresh_whitelist(&store, &state_clone);
                     log::info!("IP {} removed from whitelist", ip_to_remove);
                 }
@@ -348,7 +363,12 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
         };
         
         match crate::communication::write_config(&config_str) {
-            Ok(()) => {
+            Ok(saved_content) => {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut cfg) = s.config.try_lock()
+                        && let Ok(new_config) = toml::from_str(&saved_content) {
+                            *cfg = new_config;
+                        }
                 refresh_whitelist(&store, &state_clone);
                 log::info!("Whitelist cleared");
             }
@@ -373,7 +393,12 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
         };
         
         match crate::communication::write_config(&config_str) {
-            Ok(()) => {
+            Ok(saved_content) => {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut cfg) = s.config.try_lock()
+                        && let Ok(new_config) = toml::from_str(&saved_content) {
+                            *cfg = new_config;
+                        }
                 refresh_whitelist(&store, &state_clone);
                 log::info!("Allow all IPs set");
             }
@@ -412,7 +437,12 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
             };
             
             match crate::communication::write_config(&config_str) {
-                Ok(()) => {
+                Ok(saved_content) => {
+                    if let Ok(s) = state_clone.try_lock()
+                        && let Ok(mut cfg) = s.config.try_lock()
+                            && let Ok(new_config) = toml::from_str(&saved_content) {
+                                *cfg = new_config;
+                            }
                     refresh_blacklist(&store, &state_clone);
                     ip_entry.set_text("");
                     log::info!("IP {} added to blacklist", ip_to_add);
@@ -444,7 +474,12 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
             };
             
             match crate::communication::write_config(&config_str) {
-                Ok(()) => {
+                Ok(saved_content) => {
+                    if let Ok(s) = state_clone.try_lock()
+                        && let Ok(mut cfg) = s.config.try_lock()
+                            && let Ok(new_config) = toml::from_str(&saved_content) {
+                                *cfg = new_config;
+                            }
                     refresh_blacklist(&store, &state_clone);
                     log::info!("IP {} removed from blacklist", ip_to_remove);
                 }
@@ -470,7 +505,12 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
         };
         
         match crate::communication::write_config(&config_str) {
-            Ok(()) => {
+            Ok(saved_content) => {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut cfg) = s.config.try_lock()
+                        && let Ok(new_config) = toml::from_str(&saved_content) {
+                            *cfg = new_config;
+                        }
                 refresh_blacklist(&store, &state_clone);
                 log::info!("Blacklist cleared");
             }

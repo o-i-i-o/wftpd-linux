@@ -7,6 +7,7 @@ use crate::core::logger::Logger;
 use crate::core::file_logger::FileLogger;
 use crate::core::server_manager::ServerManager;
 use crate::communication::IpcServer;
+use crate::service::ServiceManager;
 
 pub fn run_service() -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
@@ -78,6 +79,7 @@ async fn run_service_async() -> Result<()> {
         config,
         user_manager,
         server_manager,
+        ServiceManager::new(),
         logger,
         file_logger,
     );

@@ -680,7 +680,12 @@ fn setup_ftp_save_button(
         };
         
         match crate::communication::write_config(&config_str) {
-            Ok(()) => {
+            Ok(saved_content) => {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut cfg) = s.config.try_lock()
+                        && let Ok(new_config) = toml::from_str(&saved_content) {
+                            *cfg = new_config;
+                        }
                 if anon {
                     anon_status_clone.set_markup("<span foreground='green' size='small'>✓ 目录有效</span>");
                 } else {
@@ -830,7 +835,12 @@ fn setup_sftp_save_button(
         };
         
         match crate::communication::write_config(&config_str) {
-            Ok(()) => {
+            Ok(saved_content) => {
+                if let Ok(s) = state_clone.try_lock()
+                    && let Ok(mut cfg) = s.config.try_lock()
+                        && let Ok(new_config) = toml::from_str(&saved_content) {
+                            *cfg = new_config;
+                        }
                 if let Ok(s) = state_clone.try_lock()
                     && let Ok(mut log) = s.logger.try_lock() {
                         log.info("CONFIG", &format!(

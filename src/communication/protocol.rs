@@ -37,6 +37,30 @@ pub enum IpcCommand {
     },
     ConfigExists,
     UsersExists,
+    InstallService { binary_path: String },
+    UninstallService,
+    StartSystemService,
+    StopSystemService,
+    RestartSystemService,
+    EnableService,
+    DisableService,
+    GetSystemServiceStatus,
+    GetInitialState,
+    EnsureUserDirectories,
+    GetLogFiles,
+    GetLogFileContent { path: String, count: usize },
+    GetFileLogFiles,
+    GetFileLogFileContent { path: String, count: usize },
+    SaveLogConfig {
+        log_dir: String,
+        log_level: String,
+        max_log_size: u64,
+        max_log_files: usize,
+        log_to_file: bool,
+        log_to_gui: bool,
+    },
+    SetupDirectoryPermissions { path: String },
+    CreateUserDirectory { path: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,10 +76,36 @@ pub enum IpcResult {
     Error { message: String },
     Config { content: String },
     Users { content: String },
+    ConfigSaved { message: String, content: String },
+    UsersSaved { message: String, content: String },
     Status { ftp_running: bool, sftp_running: bool },
     Logs { entries: Vec<LogEntryJson> },
     LogEntry { entry: LogEntryJson },
     Bool { value: bool },
+    ServiceStatus { installed: bool, running: bool, enabled: bool },
+    InitialState { config: String, users: String, ftp_running: bool, sftp_running: bool },
+    LogFiles { files: Vec<LogFileEntry> },
+    FileLogFiles { files: Vec<LogFileEntry> },
+    FileLogEntries { entries: Vec<FileLogEntryJson> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogFileEntry {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileLogEntryJson {
+    pub timestamp: String,
+    pub username: String,
+    pub client_ip: String,
+    pub operation: String,
+    pub file_path: String,
+    pub file_size: u64,
+    pub protocol: String,
+    pub success: bool,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +158,26 @@ impl IpcResponse {
         }
     }
 
+    pub fn config_saved(id: u64, message: &str, content: String) -> Self {
+        Self {
+            id,
+            result: IpcResult::ConfigSaved {
+                message: message.to_string(),
+                content,
+            },
+        }
+    }
+
+    pub fn users_saved(id: u64, message: &str, content: String) -> Self {
+        Self {
+            id,
+            result: IpcResult::UsersSaved {
+                message: message.to_string(),
+                content,
+            },
+        }
+    }
+
     pub fn status(id: u64, ftp_running: bool, sftp_running: bool) -> Self {
         Self {
             id,
@@ -136,6 +206,43 @@ impl IpcResponse {
         Self {
             id,
             result: IpcResult::Bool { value },
+        }
+    }
+
+    pub fn service_status(id: u64, installed: bool, running: bool, enabled: bool) -> Self {
+        Self {
+            id,
+            result: IpcResult::ServiceStatus {
+                installed,
+                running,
+                enabled,
+            },
+        }
+    }
+
+    pub fn initial_state(id: u64, config: String, users: String, ftp_running: bool, sftp_running: bool) -> Self {
+        Self {
+            id,
+            result: IpcResult::InitialState {
+                config,
+                users,
+                ftp_running,
+                sftp_running,
+            },
+        }
+    }
+
+    pub fn log_files(id: u64, files: Vec<LogFileEntry>) -> Self {
+        Self {
+            id,
+            result: IpcResult::LogFiles { files },
+        }
+    }
+
+    pub fn file_log_files(id: u64, files: Vec<LogFileEntry>) -> Self {
+        Self {
+            id,
+            result: IpcResult::FileLogFiles { files },
         }
     }
 }

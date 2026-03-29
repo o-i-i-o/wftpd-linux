@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "wftpg"
-version = "2.6.0"
+version = "2.7.1"
 dependencies = [
  "anyhow",
  "argon2",

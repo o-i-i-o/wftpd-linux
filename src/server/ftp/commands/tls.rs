@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::mem;
 use tokio_rustls::TlsAcceptor;
+use tracing::{info, error};
 
 use super::super::handler::{FtpSession, FtpStream};
 
@@ -41,7 +42,6 @@ impl FtpSession {
                     Ok(tls_stream) => {
                         self.stream = FtpStream::Tls(Box::new(tls_stream));
                         self.tls_enabled = true;
-                        // 使用 tracing 记录日志
                         info!(
                             username = self.current_user.as_deref().unwrap_or("anonymous"),
                             client_ip = %self.remote_ip,
@@ -117,7 +117,6 @@ impl FtpSession {
                 "P" => {
                     self.tls_data_required = true;
                     self.stream.write_all(b"200 PROT Private - Data channel secured\r\n").await?;
-                    // 使用 tracing 记录日志
                     info!(
                         username = self.current_user.as_deref().unwrap_or("anonymous"),
                         client_ip = %self.remote_ip,
@@ -154,7 +153,6 @@ impl FtpSession {
         self.tls_data_required = false;
         self.pbsz_set = false;
 
-        // 使用 tracing 记录日志
         info!(
             username = self.current_user.as_deref().unwrap_or("anonymous"),
             client_ip = %self.remote_ip,

@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::server::TlsStream;
-use tracing::{info, debug, warn, error};
+use tracing::{warn, error};
 
 use crate::core::config::Config;
 use crate::core::file_logger::FileLogger;

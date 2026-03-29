@@ -3,6 +3,7 @@ use gtk::{Box, Orientation, Label, Button, Frame, glib, CheckButton};
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
 use crate::AppState;
+use tracing::{info, error};
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);

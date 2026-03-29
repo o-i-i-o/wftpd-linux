@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use tracing::{info, debug, warn, error};
+use tracing::{warn, error};
 
 use crate::core::error::{WftpgError, WftpgResult};
 

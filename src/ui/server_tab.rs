@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::path::Path;
 use crate::AppState;
 use crate::communication::IpcClient;
+use tracing::{info, error};
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -145,7 +146,7 @@ fn setup_ftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, sta
         if current_label == "停止" {
             status_clone.set_text("FTP: 停止中...");
             let status = status_clone.clone();
-            let state = Arc::clone(&state_clone);
+            let _state = Arc::clone(&state_clone);
             let btn = button_clone.clone();
             
             glib::MainContext::ref_thread_default().spawn_local(async move {
@@ -168,7 +169,7 @@ fn setup_ftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, sta
         } else {
             status_clone.set_text("FTP: 启动中...");
             let status = status_clone.clone();
-            let state = Arc::clone(&state_clone);
+            let _state = Arc::clone(&state_clone);
             let btn = button_clone.clone();
             
             glib::MainContext::ref_thread_default().spawn_local(async move {
@@ -177,15 +178,7 @@ fn setup_ftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, sta
                         if response.success {
                             status.set_markup("<span foreground='green'>运行中 ✓</span>");
                             btn.set_label("停止");
-                            // 使用 tracing 记录日志
-                            let (bind_ip, ftp_port) = {
-                                if let Ok(cfg) = s.config.try_lock() {
-                                    (cfg.server.bind_ip.clone(), cfg.server.ftp_port)
-                                } else {
-                                    ("0.0.0.0".to_string(), 21)
-                                }
-                            };
-                            info!(bind_ip = %bind_ip, port = ftp_port, "FTP 服务已启动");
+                            info!("FTP 服务已启动");
                         } else {
                             status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
                         }
@@ -210,7 +203,7 @@ fn setup_sftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
         if current_label == "停止" {
             status_clone.set_text("SFTP: 停止中...");
             let status = status_clone.clone();
-            let state = Arc::clone(&state_clone);
+            let _state = Arc::clone(&state_clone);
             let btn = button_clone.clone();
             
             glib::MainContext::ref_thread_default().spawn_local(async move {
@@ -233,7 +226,7 @@ fn setup_sftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
         } else {
             status_clone.set_text("SFTP: 启动中...");
             let status = status_clone.clone();
-            let state = Arc::clone(&state_clone);
+            let _state = Arc::clone(&state_clone);
             let btn = button_clone.clone();
             
             glib::MainContext::ref_thread_default().spawn_local(async move {
@@ -242,15 +235,7 @@ fn setup_sftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
                         if response.success {
                             status.set_markup("<span foreground='green'>运行中 ✓</span>");
                             btn.set_label("停止");
-                            // 使用 tracing 记录日志
-                            let (bind_ip, sftp_port) = {
-                                if let Ok(cfg) = s.config.try_lock() {
-                                    (cfg.server.bind_ip.clone(), cfg.server.sftp_port)
-                                } else {
-                                    ("0.0.0.0".to_string(), 22)
-                                }
-                            };
-                            info!(bind_ip = %bind_ip, port = sftp_port, "SFTP 服务已启动");
+                            info!("SFTP 服务已启动");
                         } else {
                             status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
                         }
@@ -273,7 +258,7 @@ fn setup_ftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, st
     button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone, @strong toggle_btn_clone => move |_| {
         status_clone.set_text("FTP: 重启中...");
         let status = status_clone.clone();
-        let state = Arc::clone(&state_clone);
+        let _state = Arc::clone(&state_clone);
         let toggle = toggle_btn_clone.clone();
         
         glib::MainContext::ref_thread_default().spawn_local(async move {
@@ -310,7 +295,7 @@ fn setup_sftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, s
     button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone, @strong toggle_btn_clone => move |_| {
         status_clone.set_text("SFTP: 重启中...");
         let status = status_clone.clone();
-        let state = Arc::clone(&state_clone);
+        let _state = Arc::clone(&state_clone);
         let toggle = toggle_btn_clone.clone();
         
         glib::MainContext::ref_thread_default().spawn_local(async move {

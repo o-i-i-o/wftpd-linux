@@ -1,9 +1,12 @@
+//! 文件操作日志模块
+//! 
+//! 基于 tracing 实现文件操作审计日志
+//! - 日志通过 tracing 输出到 file_ops target
+//! - 内存缓冲区用于 UI 实时显示
+
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
@@ -32,83 +35,16 @@ pub struct FileLogInfo<'a> {
 }
 
 pub struct FileLogger {
-    log_dir: PathBuf,
     buffer: Arc<Mutex<VecDeque<FileLogEntry>>>,
     max_buffer_size: usize,
-    current_file: Option<File>,
-    current_size: u64,
-    max_file_size: u64,
 }
 
 impl FileLogger {
-    pub fn new(log_dir: &str, max_file_size: u64) -> Self {
-        let path = PathBuf::from(log_dir);
-        
-        if let Err(e) = fs::create_dir_all(&path) {
-            eprintln!("Warning: Failed to create file log directory {}: {}", path.display(), e);
-        }
-        
-        let (log_path, size) = Self::get_available_log_path(&path);
-        let file = match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
-            Ok(f) => Some(f),
-            Err(e) => {
-                eprintln!("Warning: Failed to open file log: {}", e);
-                None
-            }
-        };
-
+    pub fn new(_log_dir: &str, _max_file_size: u64) -> Self {
         FileLogger {
-            log_dir: path,
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(2000))),
             max_buffer_size: 2000,
-            current_file: file,
-            current_size: size,
-            max_file_size,
         }
-    }
-
-    fn get_available_log_path(log_dir: &Path) -> (PathBuf, u64) {
-        let date_str = Local::now().format("%Y-%m-%d");
-        const MAX_SEQ: u32 = 10000;
-        
-        for seq in 1..=MAX_SEQ {
-            let filename = format!("file-ops-{}-{:04}.log", date_str, seq);
-            let log_path = log_dir.join(&filename);
-            
-            if !log_path.exists() {
-                return (log_path, 0);
-            }
-            
-            if let Ok(metadata) = fs::metadata(&log_path) {
-                let size = metadata.len();
-                if size < 2 * 1024 * 1024 {
-                    return (log_path, size);
-                }
-            }
-        }
-        
-        let fallback_path = log_dir.join(format!("file-ops-{}-overflow.log", date_str));
-        (fallback_path, 0)
-    }
-
-    fn get_new_log_path(&self) -> PathBuf {
-        let date_str = Local::now().format("%Y-%m-%d");
-        const MAX_SEQ: u32 = 10000;
-        
-        for seq in 1..=MAX_SEQ {
-            let filename = format!("file-ops-{}-{:04}.log", date_str, seq);
-            let log_path = self.log_dir.join(&filename);
-            
-            if !log_path.exists() {
-                return log_path;
-            }
-        }
-        
-        self.log_dir.join(format!("file-ops-{}-overflow.log", date_str))
     }
 
     pub fn log(&mut self, info: FileLogInfo<'_>) {
@@ -129,14 +65,9 @@ impl FileLogger {
             if buffer.len() >= self.max_buffer_size {
                 buffer.pop_front();
             }
-            buffer.push_back(entry.clone());
+            buffer.push_back(entry);
         }
 
-        if let Err(e) = self.write_to_file(&entry) {
-            eprintln!("Failed to write file log: {}", e);
-        }
-        
-        // 同时使用 tracing 记录文件操作审计日志
         info!(
             target: "file_ops",
             username = info.username,
@@ -149,31 +80,6 @@ impl FileLogger {
             "{}",
             info.message
         );
-    }
-
-    fn write_to_file(&mut self, entry: &FileLogEntry) -> std::io::Result<()> {
-        if self.current_file.is_none() || self.current_size >= self.max_file_size {
-            let new_path = self.get_new_log_path();
-            self.current_file = Some(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&new_path)?,
-            );
-            self.current_size = 0;
-        }
-
-        let json = serde_json::to_string(entry)
-            .unwrap_or_else(|_| format!("{{\"message\": \"{}\"}}", entry.message));
-
-        if let Some(ref mut file) = self.current_file {
-            let line = format!("{}\n", json);
-            let bytes = line.as_bytes();
-            file.write_all(bytes)?;
-            self.current_size += bytes.len() as u64;
-        }
-
-        Ok(())
     }
 
     pub fn get_recent_logs(&self, count: usize) -> Vec<FileLogEntry> {
@@ -287,14 +193,5 @@ impl FileLogger {
             success: false,
             message: error,
         });
-    }
-}
-
-impl Drop for FileLogger {
-    fn drop(&mut self) {
-        if let Some(ref mut file) = self.current_file {
-            let _ = file.flush();
-            let _ = file.sync_all();
-        }
     }
 }

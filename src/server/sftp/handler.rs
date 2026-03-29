@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{info, debug, warn, error};
 
 use super::state::SftpState;
-// use crate::core::logger::Logger;  // ← 已移除，使用 tracing
+use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
 use crate::server::common::utils::is_safe_username;

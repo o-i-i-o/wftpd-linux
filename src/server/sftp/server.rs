@@ -12,6 +12,7 @@ use tokio::time::sleep;
 use tracing::{info, warn, error, debug};
 
 use crate::core::config::Config;
+use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
 
@@ -25,6 +26,7 @@ const MAX_BACKOFF_MS: u64 = 5000;
 pub struct SftpServer {
     config: Arc<StdMutex<Config>>,
     user_manager: Arc<StdMutex<UserManager>>,
+    logger: Arc<StdMutex<Logger>>,
     file_logger: Arc<StdMutex<FileLogger>>,
     running: Arc<AtomicBool>,
     shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
@@ -37,6 +39,7 @@ impl SftpServer {
     pub fn new(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
+        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
     ) -> Self {
         let max_connections = config.try_lock()
@@ -46,6 +49,7 @@ impl SftpServer {
         SftpServer {
             config,
             user_manager,
+            logger,
             file_logger,
             running: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -58,6 +62,7 @@ impl SftpServer {
     pub fn with_paths(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
+        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
         users_path: PathBuf,
         keys_dir: PathBuf,
@@ -69,6 +74,7 @@ impl SftpServer {
         SftpServer {
             config,
             user_manager,
+            logger,
             file_logger,
             running: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -153,6 +159,7 @@ impl SftpServer {
         self.running.store(true, Ordering::SeqCst);
 
         let user_manager_clone = Arc::clone(&self.user_manager);
+        let logger_clone = Arc::clone(&self.logger);
         let file_logger_clone = Arc::clone(&self.file_logger);
         let running_clone = Arc::clone(&self.running);
         let config_clone = Arc::clone(&self.config);
@@ -197,7 +204,6 @@ impl SftpServer {
                                 let logger = Arc::clone(&logger_clone);
                                 let file_logger = Arc::clone(&file_logger_clone);
                                 let client_ip = peer_addr.ip().to_string();
-                                let logger_for_error = Arc::clone(&logger_clone);
                                 let config_for_filter = Arc::clone(&config_clone);
                                 let semaphore = Arc::clone(&semaphore_clone);
                                 let users_path = users_path_clone.clone();
@@ -229,6 +235,7 @@ impl SftpServer {
                                 tokio::spawn(async move {
                                     let handler = SftpHandler::new(
                                         user_manager,
+                                        logger,
                                         file_logger,
                                         client_ip.clone(),
                                         users_path,
@@ -331,9 +338,7 @@ impl SftpServer {
             tokio::fs::set_permissions(&pub_path, std::fs::Permissions::from_mode(0o644)).await?;
         }
 
-        if let Ok(mut log) = logger.try_lock() {
-            log.info("SFTP", &format!("Generated new host key at {:?}", path));
-        }
+        info!("Generated new host key at {:?}", path);
 
         Ok(key)
     }

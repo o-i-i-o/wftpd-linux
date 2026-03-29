@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
+use tracing::warn;
 
 use super::state::SftpState;
 use super::packet::*;
@@ -35,10 +36,8 @@ fn io_error_to_sftp_status(e: &std::io::Error) -> (u32, &'static str) {
     }
 }
 
-fn log_io_error(logger: &std::sync::Mutex<crate::core::logger::Logger>, operation: &str, path: &Path, error: &std::io::Error) {
-    if let Ok(mut log) = logger.try_lock() {
-        log.warning("SFTP", &format!("[{}] Failed for {}: {}", operation, path.display(), error));
-    }
+fn log_io_error(operation: &str, path: &Path, error: &std::io::Error) {
+    warn!(operation = operation, path = %path.display(), error = %error, "[SFTP] Operation failed");
 }
 
 #[cfg(unix)]
@@ -266,7 +265,7 @@ impl SftpState {
             Some(handle) if !handle.is_dir => match handle.file.sync_all().await {
                 Ok(_) => Ok(build_status_packet(id, SSH_FX_OK, "OK", "")),
                 Err(e) => {
-                    log_io_error(&self.logger, "FSYNC", &handle.path, &e);
+                    log_io_error("FSYNC", &handle.path, &e);
                     let (status, msg) = io_error_to_sftp_status(&e);
                     Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
                 }
@@ -537,19 +536,10 @@ impl SftpState {
                     });
                 }
                 self.invalidate_quota_cache();
-                if let Ok(mut log) = self.logger.try_lock() {
-                    log.client_action(
-                        "SFTP",
-                        &format!("Copied: {} -> {}", src_path, dst_path),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "COPY",
-                    );
-                }
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
-                log_io_error(&self.logger, "COPY", &src_full, &e);
+                log_io_error("COPY", &src_full, &e);
                 let (status, msg) = io_error_to_sftp_status(&e);
                 Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
             }
@@ -628,19 +618,10 @@ impl SftpState {
                             message: "硬链接创建成功",
                         });
                     }
-                    if let Ok(mut log) = self.logger.try_lock() {
-                        log.client_action(
-                            "SFTP",
-                            &format!("Hardlink: {} -> {}", src_path, dst_path),
-                            &self.client_ip,
-                            self.username.as_deref(),
-                            "HARDLINK",
-                        );
-                    }
                     Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
                 }
                 Err(e) => {
-                    log_io_error(&self.logger, "HARDLINK", &src_full, &e);
+                    log_io_error("HARDLINK", &src_full, &e);
                     let (status, msg) = io_error_to_sftp_status(&e);
                     Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
                 }
@@ -723,19 +704,10 @@ impl SftpState {
                         "SFTP",
                     );
                 }
-                if let Ok(mut log) = self.logger.try_lock() {
-                    log.client_action(
-                        "SFTP",
-                        &format!("Renamed (posix): {} -> {}", old_path, new_path),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "RENAME",
-                    );
-                }
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
-                log_io_error(&self.logger, "POSIX-RENAME", &old_full, &e);
+                log_io_error("POSIX-RENAME", &old_full, &e);
                 let (status, msg) = io_error_to_sftp_status(&e);
                 Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
             }

@@ -13,6 +13,7 @@ use super::protocol::*;
 use crate::core::server_manager::ServerManager;
 use crate::core::config::Config;
 use crate::core::users::UserManager;
+use crate::core::logger::Logger;
 use crate::core::file_logger::FileLogger;
 use crate::service::ServiceManager;
 
@@ -21,6 +22,7 @@ pub struct IpcServer {
     user_manager: Arc<std::sync::Mutex<UserManager>>,
     server_manager: ServerManager,
     service_manager: ServiceManager,
+    logger: Arc<std::sync::Mutex<Logger>>,
     file_logger: Arc<std::sync::Mutex<FileLogger>>,
     log_sender: broadcast::Sender<LogEntryJson>,
 }
@@ -31,6 +33,7 @@ impl IpcServer {
         user_manager: Arc<std::sync::Mutex<UserManager>>,
         server_manager: ServerManager,
         service_manager: ServiceManager,
+        logger: Arc<std::sync::Mutex<Logger>>,
         file_logger: Arc<std::sync::Mutex<FileLogger>>,
     ) -> Self {
         let (log_sender, _) = broadcast::channel(256);
@@ -40,6 +43,7 @@ impl IpcServer {
             user_manager,
             server_manager,
             service_manager,
+            logger,
             file_logger,
             log_sender,
         }
@@ -85,6 +89,7 @@ impl IpcServer {
             user_manager: Arc::clone(&self.user_manager),
             server_manager: self.server_manager.clone(),
             service_manager: ServiceManager::new(),
+            logger: Arc::clone(&self.logger),
             file_logger: Arc::clone(&self.file_logger),
             log_sender: self.log_sender.clone(),
         }
@@ -347,6 +352,7 @@ impl IpcServer {
         match self.server_manager.start_ftp(
             Arc::clone(&self.config),
             Arc::clone(&self.user_manager),
+            Arc::clone(&self.logger),
             Arc::clone(&self.file_logger),
         ).await {
             Ok(()) => IpcResponse::success(id, "FTP server started"),
@@ -363,7 +369,7 @@ impl IpcServer {
         match self.server_manager.start_sftp(
             Arc::clone(&self.config),
             Arc::clone(&self.user_manager),
-            
+            Arc::clone(&self.logger),
             Arc::clone(&self.file_logger),
         ).await {
             Ok(()) => IpcResponse::success(id, "SFTP server started"),
@@ -390,7 +396,7 @@ impl IpcServer {
             && let Err(e) = self.server_manager.start_ftp(
                 Arc::clone(&self.config),
                 Arc::clone(&self.user_manager),
-                
+                Arc::clone(&self.logger),
                 Arc::clone(&self.file_logger),
             ).await {
                 return IpcResponse::error(id, &format!("Failed to start FTP: {}", e));
@@ -400,7 +406,7 @@ impl IpcServer {
             && let Err(e) = self.server_manager.start_sftp(
                 Arc::clone(&self.config),
                 Arc::clone(&self.user_manager),
-                
+                Arc::clone(&self.logger),
                 Arc::clone(&self.file_logger),
             ).await {
                 return IpcResponse::error(id, &format!("Failed to start SFTP: {}", e));
@@ -636,15 +642,29 @@ impl IpcServer {
                         .lines()
                         .rev()
                         .take(count)
-                        .filter_map(|line| serde_json::from_str::<crate::core::logger::LogEntry>(line).ok())
-                        .map(|e| LogEntryJson {
-                            timestamp: e.timestamp.to_rfc3339(),
-                            level: e.level.to_string(),
-                            source: e.source,
-                            message: e.message,
-                            client_ip: e.client_ip,
-                            username: e.username,
-                            action: e.action,
+                        .filter_map(|line| {
+                            let value: serde_json::Value = serde_json::from_str(line).ok()?;
+                            Some(LogEntryJson {
+                                timestamp: value.get("timestamp")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("-")
+                                    .to_string(),
+                                level: value.get("level")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("INFO")
+                                    .to_string(),
+                                source: value.get("target")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("系统")
+                                    .to_string(),
+                                message: value.get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("-")
+                                    .to_string(),
+                                client_ip: value.get("client_ip").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                                username: value.get("username").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                                action: value.get("action").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            })
                         })
                         .collect();
                     IpcResponse::logs(id, entries)

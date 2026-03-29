@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::sync::Arc;
+use tracing::{info, warn};
 
 use super::super::data_connection::{create_passive_listener, find_available_passive_port};
 use super::super::handler::FtpSession;
@@ -10,7 +11,6 @@ impl FtpSession {
 
         if self.remote_ip.contains(':') {
             self.stream.write_all(b"425 IPv6 addresses not supported in PASV mode, use EPSV instead\r\n").await?;
-            // 使用 tracing 记录日志
             warn!(client_ip = %self.remote_ip, "FTP PASV 模式不支持 IPv6 地址");
             return Ok(());
         }
@@ -50,7 +50,6 @@ impl FtpSession {
             .as_bytes(),
         ).await?;
 
-        // 使用 tracing 记录文件操作审计日志
         info!(
             username = self.current_user.as_deref().unwrap_or("anonymous"),
             client_ip = %self.remote_ip,

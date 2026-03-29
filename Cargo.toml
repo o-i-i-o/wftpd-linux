@@ -1,6 +1,6 @@
 [package]
 name = "wftpg"
-version = "2.7.1"
+version = "2.7.2"
 edition = "2024"
 authors = ["WFTPG Developer"]
 description = "SFTP+FTP GUI Management Tool for ARM Linux (纯 Rust + GTK3 实现)"

@@ -1,14 +1,14 @@
 use std::sync::{Arc, Mutex};
-use tracing::{info, error};
+use tracing::info;
 
 use crate::core::config::Config;
+use crate::core::logger::Logger;
 use crate::core::users::UserManager;
-// use crate::core::logger::Logger;  // ← 已移除，使用 tracing
 use crate::core::file_logger::FileLogger;
 use crate::server::ftp::FtpServer;
 use crate::server::sftp::SftpServer;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ServerManager {
     ftp_server: Arc<Mutex<Option<FtpServer>>>,
     sftp_server: Arc<Mutex<Option<SftpServer>>>,
@@ -16,17 +16,14 @@ pub struct ServerManager {
 
 impl ServerManager {
     pub fn new() -> Self {
-        ServerManager {
-            ftp_server: Arc::new(Mutex::new(None)),
-            sftp_server: Arc::new(Mutex::new(None)),
-        }
+        Self::default()
     }
     
     pub async fn start_ftp(
         &self,
         config: Arc<Mutex<Config>>,
         user_manager: Arc<Mutex<UserManager>>,
-        // logger: Arc<Mutex<Logger>>,  // ← 已移除
+        logger: Arc<Mutex<Logger>>,
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
         {
@@ -36,7 +33,7 @@ impl ServerManager {
             }
         }
         
-        let server = FtpServer::new(config, user_manager, file_logger);
+        let server = FtpServer::new(config, user_manager, logger, file_logger);
         server.start().await?;
         
         {
@@ -61,15 +58,11 @@ impl ServerManager {
         }
     }
     
-    pub fn is_ftp_running(&self) -> bool {
-        let ftp_server = self.ftp_server.lock().unwrap();
-        ftp_server.as_ref().is_some_and(|s| s.is_running())
-    }
-    
     pub async fn start_sftp(
         &self,
         config: Arc<Mutex<Config>>,
         user_manager: Arc<Mutex<UserManager>>,
+        logger: Arc<Mutex<Logger>>,
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
         {
@@ -79,7 +72,7 @@ impl ServerManager {
             }
         }
         
-        let server = SftpServer::new(config, user_manager, file_logger);
+        let server = SftpServer::new(config, user_manager, logger, file_logger);
         server.start().await?;
         
         {
@@ -104,14 +97,11 @@ impl ServerManager {
         }
     }
     
-    pub fn is_sftp_running(&self) -> bool {
-        let sftp_server = self.sftp_server.lock().unwrap();
-        sftp_server.as_ref().is_some_and(|s| s.is_running())
+    pub fn is_ftp_running(&self) -> bool {
+        self.ftp_server.lock().unwrap().is_some()
     }
-}
-
-impl Default for ServerManager {
-    fn default() -> Self {
-        Self::new()
+    
+    pub fn is_sftp_running(&self) -> bool {
+        self.sftp_server.lock().unwrap().is_some()
     }
 }

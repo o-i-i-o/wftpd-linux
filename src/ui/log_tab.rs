@@ -8,6 +8,8 @@ use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
 use crate::AppState;
 use std::fs;
+use chrono::Local;
+use tracing::info;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -283,7 +285,7 @@ fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TreeView
     tree
 }
 
-fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source: &str) {
+fn populate_log_store(store: &ListStore, _state: &Arc<StdMutex<AppState>>, source: &str) {
     store.clear();
     
     if source == "current" {

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::core::config::Config;
 use crate::core::file_logger::FileLogger;
+use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::server_manager::ServerManager;
 use crate::service::ServiceManager;
@@ -18,7 +19,7 @@ pub struct AppState {
     pub user_manager: Arc<Mutex<UserManager>>,
     pub server_manager: ServerManager,
     pub service_manager: ServiceManager,
-    // pub logger: Arc<Mutex<Logger>>,  // ← 已移除，使用 tracing
+    pub logger: Arc<Mutex<Logger>>,
     pub file_logger: Arc<Mutex<FileLogger>>,
 }
 
@@ -41,10 +42,9 @@ impl AppState {
             )
         };
         
-        // 初始化 tracing 日志系统
-        init_tracing(&log_dir, &log_level, max_log_size, max_log_files, enable_json)?;
+        init_tracing(&log_dir, &log_level, max_log_files, enable_json)?;
         
-        // 创建 FileLogger（仍然保留文件写入功能）
+        let logger = Arc::new(Mutex::new(Logger::new(&log_dir, max_log_size, max_log_files)));
         let file_logger = Arc::new(Mutex::new(FileLogger::new(&log_dir, max_log_size)));
         
         let server_manager = ServerManager::new();
@@ -55,6 +55,7 @@ impl AppState {
             user_manager,
             server_manager,
             service_manager,
+            logger,
             file_logger,
         })
     }

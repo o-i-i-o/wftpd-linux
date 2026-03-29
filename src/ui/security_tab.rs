@@ -85,10 +85,10 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
                         "login_settings",
                         &format!("Login security updated: max_attempts={}, ban_duration={}s", max_attempts, ban_duration)
                     );
-                    log::info!("Login security settings saved");
+                    info!("Login security settings saved");
                 }
                 Err(e) => {
-                    log::error!("Failed to save security settings: {}", e);
+                    error!("Failed to save security settings: {}", e);
                 }
             }
         }),
@@ -277,7 +277,7 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
         if !ip.is_empty() {
             let ip_str = ip.to_string();
             if !validate_ip_or_cidr(&ip_str) {
-                log::warn!("Invalid IP or CIDR format: {}", ip_str);
+                warn!("Invalid IP or CIDR format: {}", ip_str);
                 return;
             }
             let store = store_clone.clone();
@@ -304,10 +304,10 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                             }
                     refresh_whitelist(&store, &state_clone);
                     ip_entry.set_text("");
-                    log::info!("IP {} added to whitelist", ip_to_add);
+                    info!("IP {} added to whitelist", ip_to_add);
                 }
                 Err(e) => {
-                    log::error!("Failed to add IP to whitelist: {}", e);
+                    error!("Failed to add IP to whitelist: {}", e);
                 }
             }
         }
@@ -340,10 +340,10 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                                 *cfg = new_config;
                             }
                     refresh_whitelist(&store, &state_clone);
-                    log::info!("IP {} removed from whitelist", ip_to_remove);
+                    info!("IP {} removed from whitelist", ip_to_remove);
                 }
                 Err(e) => {
-                    log::error!("Failed to remove IP from whitelist: {}", e);
+                    error!("Failed to remove IP from whitelist: {}", e);
                 }
             }
         }
@@ -371,10 +371,10 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                             *cfg = new_config;
                         }
                 refresh_whitelist(&store, &state_clone);
-                log::info!("Whitelist cleared");
+                info!("Whitelist cleared");
             }
             Err(e) => {
-                log::error!("Failed to clear whitelist: {}", e);
+                error!("Failed to clear whitelist: {}", e);
             }
         }
     }));
@@ -401,10 +401,10 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                             *cfg = new_config;
                         }
                 refresh_whitelist(&store, &state_clone);
-                log::info!("Allow all IPs set");
+                info!("Allow all IPs set");
             }
             Err(e) => {
-                log::error!("Failed to set allow all IPs: {}", e);
+                error!("Failed to set allow all IPs: {}", e);
             }
         }
     }));
@@ -419,7 +419,7 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
         if !ip.is_empty() {
             let ip_str = ip.to_string();
             if !validate_ip_or_cidr(&ip_str) {
-                log::warn!("Invalid IP or CIDR format: {}", ip_str);
+                warn!("Invalid IP or CIDR format: {}", ip_str);
                 return;
             }
             let store = store_clone.clone();
@@ -446,10 +446,10 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
                             }
                     refresh_blacklist(&store, &state_clone);
                     ip_entry.set_text("");
-                    log::info!("IP {} added to blacklist", ip_to_add);
+                    info!("IP {} added to blacklist", ip_to_add);
                 }
                 Err(e) => {
-                    log::error!("Failed to add IP to blacklist: {}", e);
+                    error!("Failed to add IP to blacklist: {}", e);
                 }
             }
         }
@@ -482,10 +482,10 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
                                 *cfg = new_config;
                             }
                     refresh_blacklist(&store, &state_clone);
-                    log::info!("IP {} removed from blacklist", ip_to_remove);
+                    info!("IP {} removed from blacklist", ip_to_remove);
                 }
                 Err(e) => {
-                    log::error!("Failed to remove IP from blacklist: {}", e);
+                    error!("Failed to remove IP from blacklist: {}", e);
                 }
             }
         }
@@ -513,10 +513,10 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
                             *cfg = new_config;
                         }
                 refresh_blacklist(&store, &state_clone);
-                log::info!("Blacklist cleared");
+                info!("Blacklist cleared");
             }
             Err(e) => {
-                log::error!("Failed to clear blacklist: {}", e);
+                error!("Failed to clear blacklist: {}", e);
             }
         }
     }));

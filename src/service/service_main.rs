@@ -52,54 +52,46 @@ async fn run_service_async() -> Result<()> {
         && let Err(e) = server_manager.start_ftp(
             Arc::clone(&config),
             Arc::clone(&user_manager),
-            Arc::clone(&logger),
             Arc::clone(&file_logger),
         ).await {
-            let mut log = logger.lock().unwrap();
-            log.error("SERVICE", &format!("Failed to start FTP server: {}", e));
+            error!("Failed to start FTP server: {}", e);
         }
     
     if sftp_enabled
         && let Err(e) = server_manager.start_sftp(
             Arc::clone(&config),
             Arc::clone(&user_manager),
-            Arc::clone(&logger),
             Arc::clone(&file_logger),
         ).await {
-            let mut log = logger.lock().unwrap();
-            log.error("SERVICE", &format!("Failed to start SFTP server: {}", e));
+            error!("Failed to start SFTP server: {}", e);
         }
     
-    {
-        let mut log = logger.lock().unwrap();
-        log.info("SERVICE", "WFTPG service started successfully");
-    }
+    info!("WFTPG service started successfully");
     
     let ipc_server = IpcServer::new(
         config,
         user_manager,
         server_manager,
         ServiceManager::new(),
-        logger,
         file_logger,
     );
     
     let ipc_task = tokio::spawn(async move {
         if let Err(e) = ipc_server.run().await {
-            log::error!("IPC server error: {}", e);
+            error!("IPC server error: {}", e);
         }
     });
     
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            log::info!("Received shutdown signal");
+            info!("Received shutdown signal");
         }
         _ = ipc_task => {
-            log::info!("IPC server stopped");
+            info!("IPC server stopped");
         }
     }
     
-    log::info!("WFTPG service shutting down");
+    info!("WFTPG service shutting down");
     
     Ok(())
 }

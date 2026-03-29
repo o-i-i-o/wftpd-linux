@@ -9,9 +9,9 @@ use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
+use tracing::{info, warn, error, debug};
 
 use crate::core::config::Config;
-use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
 
@@ -25,7 +25,6 @@ const MAX_BACKOFF_MS: u64 = 5000;
 pub struct SftpServer {
     config: Arc<StdMutex<Config>>,
     user_manager: Arc<StdMutex<UserManager>>,
-    logger: Arc<StdMutex<Logger>>,
     file_logger: Arc<StdMutex<FileLogger>>,
     running: Arc<AtomicBool>,
     shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
@@ -38,7 +37,6 @@ impl SftpServer {
     pub fn new(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
     ) -> Self {
         let max_connections = config.try_lock()
@@ -48,7 +46,6 @@ impl SftpServer {
         SftpServer {
             config,
             user_manager,
-            logger,
             file_logger,
             running: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -61,7 +58,6 @@ impl SftpServer {
     pub fn with_paths(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
         users_path: PathBuf,
         keys_dir: PathBuf,
@@ -73,7 +69,6 @@ impl SftpServer {
         SftpServer {
             config,
             user_manager,
-            logger,
             file_logger,
             running: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -84,28 +79,32 @@ impl SftpServer {
     }
 
     fn log_info(&self, message: &str) {
-        if let Ok(mut log) = self.logger.try_lock() {
-            log.info("SFTP", message);
-        }
+        info!("SFTP: {}", message);
     }
 
     fn log_error(&self, message: &str) {
-        if let Ok(mut log) = self.logger.try_lock() {
-            log.error("SFTP", message);
-        }
+        error!("SFTP: {}", message);
     }
 
     #[allow(dead_code)]
     fn log_warning(&self, message: &str) {
-        if let Ok(mut log) = self.logger.try_lock() {
-            log.warning("SFTP", message);
-        }
+        warn!("SFTP: {}", message);
     }
 
     #[allow(dead_code)]
     fn log_client_action(&self, action: &str, message: &str, client_ip: &str, username: Option<&str>, log_type: &str) {
-        if let Ok(mut log) = self.logger.try_lock() {
-            log.client_action(action, message, client_ip, username, log_type);
+        // 使用 file_logger 记录文件操作审计日志
+        if let Ok(mut file_log) = self.file_logger.try_lock() {
+            file_log.log(crate::core::file_logger::FileLogInfo {
+                username: username.unwrap_or("unknown"),
+                client_ip,
+                operation: action,
+                file_path: message,
+                file_size: 0,
+                protocol: "SFTP",
+                success: true,
+                message: log_type,
+            });
         }
     }
 
@@ -130,7 +129,7 @@ impl SftpServer {
 
         let semaphore = Arc::clone(&self.connection_semaphore);
 
-        let host_key = Self::load_or_generate_host_key(&host_key_path, &self.logger).await?;
+        let host_key = Self::load_or_generate_host_key(&host_key_path).await?;
 
         let mut methods = russh::MethodSet::empty();
         methods.push(MethodKind::Password);
@@ -154,7 +153,6 @@ impl SftpServer {
         self.running.store(true, Ordering::SeqCst);
 
         let user_manager_clone = Arc::clone(&self.user_manager);
-        let logger_clone = Arc::clone(&self.logger);
         let file_logger_clone = Arc::clone(&self.file_logger);
         let running_clone = Arc::clone(&self.running);
         let config_clone = Arc::clone(&self.config);
@@ -208,39 +206,22 @@ impl SftpServer {
                                 let ip_allowed = match config_for_filter.try_lock() {
                                     Ok(cfg) => cfg.is_ip_allowed(&client_ip),
                                     Err(_) => {
-                                        if let Ok(mut log) = logger_clone.try_lock() {
-                                            log.warning("SFTP", &format!("Failed to check IP filter for {}: config lock failed", client_ip));
-                                        }
+                                        warn!("Failed to check IP filter for {}: config lock failed", client_ip);
                                         false
                                     }
                                 };
 
                                 if !ip_allowed {
-                                    if let Ok(mut log) = logger_clone.try_lock() {
-                                        log.warning(
-                                            "SFTP",
-                                            &format!("Connection rejected from {} by IP filter", client_ip),
-                                        );
-                                    }
+                                    warn!("Connection rejected from {} by IP filter", client_ip);
                                     continue;
                                 }
 
-                                if let Ok(mut log) = logger_clone.try_lock() {
-                                    log.client_action(
-                                        "SFTP",
-                                        &format!("Client connected from {}", client_ip),
-                                        &client_ip,
-                                        None,
-                                        "CONNECT",
-                                    );
-                                }
+                                info!("Client connected from {}", client_ip);
 
                                 let permit = match semaphore.clone().try_acquire_owned() {
                                     Ok(p) => p,
                                     Err(_) => {
-                                        if let Ok(mut log) = logger_clone.try_lock() {
-                                            log.warning("SFTP", &format!("Connection rejected from {}: max connections reached", client_ip));
-                                        }
+                                        warn!("Connection rejected from {}: max connections reached", client_ip);
                                         continue;
                                     }
                                 };
@@ -248,7 +229,6 @@ impl SftpServer {
                                 tokio::spawn(async move {
                                     let handler = SftpHandler::new(
                                         user_manager,
-                                        logger,
                                         file_logger,
                                         client_ip.clone(),
                                         users_path,
@@ -258,19 +238,9 @@ impl SftpServer {
                                     if let Err(e) = russh::server::run_stream(config, socket, handler).await {
                                         let error_msg = format!("{}", e);
                                         if error_msg.contains("Disconnected") || error_msg.contains("Connection reset") {
-                                            if let Ok(mut log) = logger_for_error.try_lock() {
-                                                log.debug(
-                                                    "SFTP",
-                                                    &format!("Client disconnected from {}", peer_addr),
-                                                );
-                                            }
+                                            debug!("Client disconnected from {}", peer_addr);
                                         } else {
-                                            if let Ok(mut log) = logger_for_error.try_lock() {
-                                                log.error(
-                                                    "SFTP",
-                                                    &format!("SSH connection error from {}: {}", peer_addr, e),
-                                                );
-                                            }
+                                            error!("SSH connection error from {}: {}", peer_addr, e);
                                         }
                                     }
                                     drop(permit);
@@ -279,20 +249,10 @@ impl SftpServer {
                             Err(e) => {
                                 consecutive_errors += 1;
                                 
-                                if let Ok(mut log) = logger_clone.try_lock() {
-                                    log.error(
-                                        "SFTP",
-                                        &format!("Failed to accept connection (attempt {}): {}", consecutive_errors, e),
-                                    );
-                                }
+                                error!("Failed to accept connection (attempt {}): {}", consecutive_errors, e);
 
                                 if consecutive_errors >= MAX_ACCEPT_RETRIES {
-                                    if let Ok(mut log) = logger_clone.try_lock() {
-                                        log.error(
-                                            "SFTP",
-                                            &format!("Too many consecutive accept errors ({}), stopping server", consecutive_errors),
-                                        );
-                                    }
+                                    error!("Too many consecutive accept errors ({}), stopping server", consecutive_errors);
                                     break;
                                 }
 
@@ -305,9 +265,7 @@ impl SftpServer {
             }
 
             running_clone.store(false, Ordering::SeqCst);
-            if let Ok(mut log) = logger_clone.try_lock() {
-                log.info("SFTP", "SFTP server stopped");
-            }
+            info!("SFTP server stopped");
         });
 
         Ok(())
@@ -325,7 +283,7 @@ impl SftpServer {
         self.running.load(Ordering::SeqCst)
     }
 
-    async fn load_or_generate_host_key(path: &str, logger: &Arc<StdMutex<Logger>>) -> Result<PrivateKey> {
+    async fn load_or_generate_host_key(path: &str) -> Result<PrivateKey> {
         let path = PathBuf::from(path);
 
         if path.exists() {
@@ -338,9 +296,7 @@ impl SftpServer {
                 let metadata = tokio::fs::metadata(&path).await?;
                 let mode = metadata.permissions().mode() & 0o777;
                 if mode != 0o600 {
-                    if let Ok(mut log) = logger.try_lock() {
-                        log.warning("SFTP", &format!("Host key file {:?} has insecure permissions {:o}, should be 0600", path, mode));
-                    }
+                    warn!("Host key file {:?} has insecure permissions {:o}, should be 0600", path, mode);
                     tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await?;
                 }
             }

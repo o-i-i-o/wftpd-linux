@@ -76,9 +76,9 @@ WantedBy=multi-user.target
                 .status()?;
             
             if status.success() {
-                log::info!("Added {} to wftpg group for service access", current_user);
+                info!("Added {} to wftpg group for service access", current_user);
             } else {
-                log::warn!("Failed to add {} to wftpg group, permissions may need manual setup", current_user);
+                warn!("Failed to add {} to wftpg group, permissions may need manual setup", current_user);
             }
         }
         

@@ -92,6 +92,7 @@ pub struct LoggingConfig {
     pub max_log_files: usize,
     pub log_to_file: bool,
     pub log_to_gui: bool,
+    pub enable_json: bool,
 }
 
 impl Default for Config {
@@ -141,6 +142,7 @@ impl Default for Config {
                 max_log_files: 10,
                 log_to_file: true,
                 log_to_gui: true,
+                enable_json: false,
             },
         }
     }

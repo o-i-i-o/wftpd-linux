@@ -70,7 +70,6 @@ impl ServerManager {
         &self,
         config: Arc<Mutex<Config>>,
         user_manager: Arc<Mutex<UserManager>>,
-        // logger: Arc<Mutex<Logger>>,  // ← 已移除
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
         {

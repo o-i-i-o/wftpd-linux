@@ -130,7 +130,7 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
                         config.logging.log_to_file = log_to_file;
                         config.logging.log_to_gui = log_to_gui;
                         let _ = config.save(&crate::core::config::Config::get_config_path());
-                        log::info!("Logging configuration saved");
+                        info!("Logging configuration saved");
                     }
             });
         }),

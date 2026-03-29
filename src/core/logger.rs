@@ -69,6 +69,7 @@ impl Logger {
         };
 
         Logger {
+            log_dir: path,
             max_size,
             max_files,
             current_file: file,
@@ -189,10 +190,10 @@ impl Logger {
 
         // 使用 tracing 记录日志到控制台
         match level {
-            LogLevel::Debug => debug!(target: %source, "{}", message),
-            LogLevel::Info => info!(target: %source, "{}", message),
-            LogLevel::Warning => warn!(target: %source, "{}", message),
-            LogLevel::Error => error!(target: %source, "{}", message),
+            LogLevel::Debug => debug!(target = source, "{}", message),
+            LogLevel::Info => info!(target = source, "{}", message),
+            LogLevel::Warning => warn!(target = source, "{}", message),
+            LogLevel::Error => error!(target = source, "{}", message),
         }
     }
 

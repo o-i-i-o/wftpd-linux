@@ -147,10 +147,16 @@ impl FtpSession {
                     if let Some(user) = user_info {
                         if user.home_dir.trim().is_empty() {
                             self.file_logger.lock().unwrap().log(
-                                username,
-                                "LOGIN_FAIL",
-                                "",
-                                "Login failed: home directory not configured",
+                                crate::core::file_logger::FileLogInfo {
+                                    username: &username,
+                                    client_ip: &self.remote_ip,
+                                    operation: "LOGIN_FAIL",
+                                    file_path: "-",
+                                    file_size: 0,
+                                    protocol: "FTP",
+                                    success: false,
+                                    message: "Login failed: home directory not configured",
+                                }
                             );
                             self.stream.write_all(b"530 Login failed: home directory not configured\r\n").await?;
                             self.authenticated = false;
@@ -160,10 +166,16 @@ impl FtpSession {
                         let home = std::path::PathBuf::from(&user.home_dir);
                         if !home.exists() {
                             self.file_logger.lock().unwrap().log(
-                                username,
-                                "LOGIN_FAIL", 
-                                "",
-                                "Login failed: home directory does not exist",
+                                crate::core::file_logger::FileLogInfo {
+                                    username: &username,
+                                    client_ip: &self.remote_ip,
+                                    operation: "LOGIN_FAIL",
+                                    file_path: "-",
+                                    file_size: 0,
+                                    protocol: "FTP",
+                                    success: false,
+                                    message: "Login failed: home directory does not exist",
+                                }
                             );
                             self.stream.write_all(b"530 Login failed: home directory does not exist\r\n").await?;
                             self.authenticated = false;
@@ -171,10 +183,16 @@ impl FtpSession {
                         }
                         if !home.is_dir() {
                             self.file_logger.lock().unwrap().log(
-                                username,
-                                "LOGIN_FAIL",
-                                "",
-                                "Login failed: home path is not a directory",
+                                crate::core::file_logger::FileLogInfo {
+                                    username: &username,
+                                    client_ip: &self.remote_ip,
+                                    operation: "LOGIN_FAIL",
+                                    file_path: "-",
+                                    file_size: 0,
+                                    protocol: "FTP",
+                                    success: false,
+                                    message: "Login failed: home path is not a directory",
+                                }
                             );
                             self.stream.write_all(b"530 Login failed: home path is not a directory\r\n").await?;
                             self.authenticated = false;
@@ -184,10 +202,16 @@ impl FtpSession {
                             Ok(c) => c,
                             Err(e) => {
                                 self.file_logger.lock().unwrap().log(
-                                    username,
-                                    "LOGIN_FAIL",
-                                    "",
-                                    &format!("Login failed: cannot canonicalize home directory: {}", e),
+                                    crate::core::file_logger::FileLogInfo {
+                                        username: &username,
+                                        client_ip: &self.remote_ip,
+                                        operation: "LOGIN_FAIL",
+                                        file_path: "-",
+                                        file_size: 0,
+                                        protocol: "FTP",
+                                        success: false,
+                                        message: &format!("Login failed: cannot canonicalize home directory: {}", e),
+                                    }
                                 );
                                 self.stream.write_all(b"530 Login failed: cannot access home directory\r\n").await?;
                                 self.authenticated = false;
@@ -200,18 +224,21 @@ impl FtpSession {
                         self.login_tracker.clear_attempts(&self.remote_ip);
                         self.stream.write_all(b"230 User logged in\r\n").await?;
                         self.file_logger.lock().unwrap().log(
-                            username,
-                            "LOGIN",
-                            "",
-                            "User logged in",
+                            crate::core::file_logger::FileLogInfo {
+                                username: &username,
+                                client_ip: &self.remote_ip,
+                                operation: "LOGIN",
+                                file_path: "-",
+                                file_size: 0,
+                                protocol: "FTP",
+                                success: true,
+                                message: "User logged in",
+                            }
                         );
                     } else {
                         error!(user = %username, "[FTP AUTH] 用户认证成功但未找到用户数据");
                         self.authenticated = false;
-                        self.file_logger.lock().unwrap().warning(
-                            "FTP",
-                            &format!("User {} authenticated but not found in user list", username),
-                        );
+                        warn!("User {} authenticated but not found in user list", username);
                         self.stream.write_all(b"530 Login failed: user data not found\r\n").await?;
                     }
                 }
@@ -220,17 +247,20 @@ impl FtpSession {
                     self.authenticated = false;
                     let remaining = self.login_tracker.get_remaining_attempts(&self.remote_ip);
                     if !self.login_tracker.check_and_record_failure(&self.remote_ip) {
-                        self.file_logger.lock().unwrap().warning(
-                            "FTP",
-                            &format!("IP {} banned due to too many failed login attempts", self.remote_ip),
-                        );
+                        warn!("IP {} banned due to too many failed login attempts", self.remote_ip);
                         self.stream.write_all(b"530 Too many failed login attempts, you are temporarily banned\r\n").await?;
                     } else {
                         self.file_logger.lock().unwrap().log(
-                            username,
-                            "AUTH_FAIL",
-                            "",
-                            &format!("Authentication failed ({} attempts remaining)", remaining.saturating_sub(1)),
+                            crate::core::file_logger::FileLogInfo {
+                                username: &username,
+                                client_ip: &self.remote_ip,
+                                operation: "AUTH_FAIL",
+                                file_path: "-",
+                                file_size: 0,
+                                protocol: "FTP",
+                                success: false,
+                                message: &format!("Authentication failed ({} attempts remaining)", remaining.saturating_sub(1)),
+                            }
                         );
                         self.stream.write_all(b"530 Not logged in, user cannot be authenticated\r\n").await?;
                     }

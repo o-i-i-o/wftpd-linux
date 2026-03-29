@@ -2,6 +2,9 @@ use anyhow::Result;
 use std::path::Path;
 use tracing::{info, debug, warn, error};
 
+use super::super::handler::FtpSession;
+use super::super::utils::{safe_resolve_path, get_file_mtime_raw};
+
 impl FtpSession {
     pub async fn cmd_dele(&mut self, arg: Option<&str>) -> Result<()> {
         if !self.authenticated {

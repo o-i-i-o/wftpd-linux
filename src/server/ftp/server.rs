@@ -39,7 +39,6 @@ impl FtpServer {
     pub fn new(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
     ) -> Self {
         let rate_limiter = Arc::new(RateLimiter::new(10, 60, 100));
@@ -66,7 +65,6 @@ impl FtpServer {
         FtpServer {
             config,
             user_manager,
-            logger,
             file_logger,
             running: Arc::new(StdMutex::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -83,7 +81,6 @@ impl FtpServer {
     pub fn with_tls(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
         tls_config: TlsConfig,
     ) -> Result<Self> {
@@ -99,7 +96,6 @@ impl FtpServer {
         Ok(FtpServer {
             config,
             user_manager,
-            logger,
             file_logger,
             running: Arc::new(StdMutex::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -153,7 +149,6 @@ impl FtpServer {
 
         let config = Arc::clone(&self.config);
         let user_manager = Arc::clone(&self.user_manager);
-        // let logger = Arc::clone(&self.logger);  // ← 已移除
         let file_logger = Arc::clone(&self.file_logger);
         let running = Arc::clone(&self.running);
         let passive_listeners = Arc::clone(&self.passive_listeners);
@@ -175,9 +170,6 @@ impl FtpServer {
                             Ok((mut stream, peer_addr)) => {
                                 let config = Arc::clone(&config);
                                 let user_manager = Arc::clone(&user_manager);
-                                let logger_for_session = Arc::clone(&logger);
-                                let logger_for_error = Arc::clone(&logger);
-                                let logger_for_reject = Arc::clone(&logger);
                                 let file_logger = Arc::clone(&file_logger);
                                 let passive_listeners = Arc::clone(&passive_listeners);
                                 let rate_limiter = Arc::clone(&rate_limiter);
@@ -191,10 +183,7 @@ impl FtpServer {
                                 {
                                     let cfg = config.lock().unwrap();
                                     if !cfg.is_ip_allowed(&client_ip) {
-                                        logger.lock().unwrap().warning(
-                                            "FTP",
-                                            &format!("Connection rejected from {} by IP filter", client_ip),
-                                        );
+                                        warn!("Connection rejected from {} by IP filter", client_ip);
                                         continue;
                                     }
                                 }
@@ -202,28 +191,18 @@ impl FtpServer {
                                 let permit = match semaphore.clone().try_acquire_owned() {
                                     Ok(p) => p,
                                     Err(_) => {
-                                        logger_for_reject.lock().unwrap().warning(
-                                            "FTP",
-                                            &format!("Connection rejected from {}: max connections reached", client_ip),
-                                        );
+                                        warn!("Connection rejected from {}: max connections reached", client_ip);
                                         let _ = stream.write_all(b"421 Service not available, too many connections\r\n").await;
                                         continue;
                                     }
                                 };
                                 
-                                logger.lock().unwrap().client_action(
-                                    "FTP",
-                                    &format!("Client connected from {}", client_ip),
-                                    &client_ip,
-                                    None,
-                                    "CONNECT",
-                                );
+                                info!("Client connected from {}", client_ip);
 
                                 tokio::spawn(async move {
                                     let session_config = FtpSessionConfig {
                                         config,
                                         user_manager,
-                                        logger: logger_for_session,
                                         file_logger,
                                         passive_listeners,
                                         rate_limiter,
@@ -235,27 +214,18 @@ impl FtpServer {
                                     match FtpSession::new(stream, session_config) {
                                         Ok(mut session) => {
                                             if let Err(e) = session.run().await {
-                                                logger_for_error.lock().unwrap().error(
-                                                    "FTP",
-                                                    &format!("Session error from {}: {}", peer_addr, e),
-                                                );
+                                                error!("Session error from {}: {}", peer_addr, e);
                                             }
                                         }
                                         Err(e) => {
-                                            logger_for_error.lock().unwrap().error(
-                                                "FTP",
-                                                &format!("Failed to create session from {}: {}", peer_addr, e),
-                                            );
+                                            error!("Failed to create session from {}: {}", peer_addr, e);
                                         }
                                     }
                                     drop(permit);
                                 });
                             }
                             Err(e) => {
-                                logger.lock().unwrap().error(
-                                    "FTP",
-                                    &format!("Failed to accept connection: {}", e),
-                                );
+                                error!("Failed to accept connection: {}", e);
                             }
                         }
                     }
@@ -267,7 +237,7 @@ impl FtpServer {
                 *running = false;
             }
             
-            logger.lock().unwrap().info("FTP", "FTP server stopped");
+            info!("FTP server stopped");
         });
 
         Ok(())

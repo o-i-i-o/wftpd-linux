@@ -163,10 +163,10 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
                         &uname,
                         &format!("User {} status changed to {}", uname, action)
                     );
-                    log::info!("User {} enabled status toggled to {}", uname, new_enabled);
+                    info!("User {} enabled status toggled to {}", uname, new_enabled);
                 }
                 Err(e) => {
-                    log::error!("Failed to save users: {}", e);
+                    error!("Failed to save users: {}", e);
                 }
             }
             refresh_user_list(&store, &state_clone);
@@ -490,7 +490,7 @@ fn show_user_dialog(
                         
                         if success {
                             if let Err(e) = setup_shared_directory_permissions(&home_dir) {
-                                log::warn!("Failed to setup directory permissions: {}", e);
+                                warn!("Failed to setup directory permissions: {}", e);
                             }
                             
                             serde_json::to_string(&*users).unwrap_or_default()
@@ -508,10 +508,10 @@ fn show_user_dialog(
                         &username,
                         &format!("User {} {}", username, if is_edit { "modified" } else { "created" })
                     );
-                    log::info!("User {} saved", username);
+                    info!("User {} saved", username);
                 }
                 Err(e) => {
-                    log::error!("Failed to save users: {}", e);
+                    error!("Failed to save users: {}", e);
                 }
             }
             refresh_user_list(&store, &state);
@@ -573,10 +573,10 @@ fn show_confirm_dialog(
                         &username,
                         &format!("User {} deleted", username)
                     );
-                    log::info!("User {} deleted", username);
+                    info!("User {} deleted", username);
                 }
                 Err(e) => {
-                    log::error!("Failed to save users: {}", e);
+                    error!("Failed to save users: {}", e);
                 }
             }
             refresh_user_list(&store, &state_clone);
@@ -796,7 +796,7 @@ fn check_dir_permission(path: &str) -> bool {
         let ngroups = 64;
         let result = libc::getgroups(ngroups, groups.as_mut_ptr());
         if result < 0 {
-            log::warn!("Failed to get groups, falling back to world permissions");
+            warn!("Failed to get groups, falling back to world permissions");
             return world_readable && world_executable;
         }
         groups[..result as usize].to_vec()
@@ -823,7 +823,7 @@ fn setup_shared_directory_permissions(path: &str) -> std::io::Result<()> {
         .unwrap_or(false);
     
     if !wftpg_group_exists {
-        log::warn!("wftpg group not found, skipping permission setup");
+        warn!("wftpg group not found, skipping permission setup");
         return Ok(());
     }
     
@@ -833,20 +833,20 @@ fn setup_shared_directory_permissions(path: &str) -> std::io::Result<()> {
     
     match chown_result {
         Ok(status) if status.success() => {
-            log::info!("Changed group ownership to wftpg for {}", path.display());
+            info!("Changed group ownership to wftpg for {}", path.display());
         }
         _ => {
-            log::warn!("Failed to chgrp directory to wftpg group");
+            warn!("Failed to chgrp directory to wftpg group");
         }
     }
     
     let chmod_result = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o2770));
     match chmod_result {
         Ok(()) => {
-            log::info!("Set directory {} permissions to 2770", path.display());
+            info!("Set directory {} permissions to 2770", path.display());
         }
         Err(e) => {
-            log::warn!("Failed to set directory permissions: {}", e);
+            warn!("Failed to set directory permissions: {}", e);
         }
     }
     
@@ -856,10 +856,10 @@ fn setup_shared_directory_permissions(path: &str) -> std::io::Result<()> {
     
     match setfacl_result {
         Ok(status) if status.success() => {
-            log::info!("Set default ACL for directory {} (files: rw-, no execute)", path.display());
+            info!("Set default ACL for directory {} (files: rw-, no execute)", path.display());
         }
         _ => {
-            log::info!("setfacl not available, using umask for file permissions");
+            info!("setfacl not available, using umask for file permissions");
         }
     }
     

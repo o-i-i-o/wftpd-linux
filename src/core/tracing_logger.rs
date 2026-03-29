@@ -5,13 +5,13 @@
 //! - JSON 格式输出（便于机器解析）
 //! - 文件轮转（通过 tracing-appender）
 //! - 控制台输出（带颜色和时间戳）
-//! - systemd journal 集成
+//! - 分离程序日志和文件操作审计日志
 
 use anyhow::Result;
 use std::path::Path;
 use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::{fmt, layer::{Layer, SubscriberExt}, Registry};
-use tracing_subscriber::filter::Targets;
+use tracing_subscriber::filter::{Targets, LevelFilter};
 
 /// 初始化全局日志系统
 /// 
@@ -27,8 +27,8 @@ use tracing_subscriber::filter::Targets;
 pub fn init_tracing(
     log_dir: &str,
     log_level: &str,
-    max_log_size: u64,
-    max_log_files: usize,
+    _max_log_size: u64,
+    _max_log_files: usize,
     enable_json: bool,
 ) -> Result<()> {
     // 创建日志目录
@@ -38,25 +38,44 @@ pub fn init_tracing(
     // 解析日志级别
     let filter = parse_log_level(log_level);
     
-    // 设置文件日志轮转
-    let file_appender = rolling::daily(log_dir, "wftpg");
-    let (non_blocking_file, _guard) = non_blocking(file_appender);
+    // 设置程序日志文件轮转
+    let program_appender = rolling::daily(log_dir, "wftpg");
+    let (non_blocking_program, _guard_program) = non_blocking(program_appender);
     
-    // 文件日志层（JSON 格式）
-    let file_layer = fmt::layer()
-        .with_writer(non_blocking_file)
+    // 设置文件操作审计日志文件轮转
+    let audit_appender = rolling::daily(log_dir, "file-ops");
+    let (non_blocking_audit, _guard_audit) = non_blocking(audit_appender);
+    
+    // 程序日志层（JSON 格式）
+    let program_layer = if enable_json {
+        fmt::layer()
+            .with_writer(non_blocking_program)
+            .with_ansi(false)
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_line_number(true)
+            .json()
+    } else {
+        fmt::layer()
+            .with_writer(non_blocking_program)
+            .with_ansi(false)
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_line_number(true)
+            .pretty()
+    };
+    
+    // 文件操作审计日志层（始终使用 JSON 格式，便于解析）
+    let audit_layer = fmt::layer()
+        .with_writer(non_blocking_audit)
         .with_ansi(false)
-        .with_target(true)
+        .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
-        .with_line_number(true);
-    
-    // 根据配置选择格式
-    let file_subscriber = if enable_json {
-        file_layer.json().boxed()
-    } else {
-        file_layer.pretty().boxed()
-    };
+        .with_line_number(false)
+        .json();
     
     // 控制台日志层（带颜色的人类可读格式）
     let console_layer = fmt::layer()
@@ -68,11 +87,20 @@ pub fn init_tracing(
         .with_line_number(false)
         .pretty();
     
+    // 为审计日志添加过滤器，只记录 file_ops target 的日志
+    let audit_filter = Targets::new()
+        .with_target("file_ops", LevelFilter::INFO);
+    
+    // 为程序日志添加过滤器，排除 file_ops target
+    let program_filter = Targets::new()
+        .with_target("file_ops", LevelFilter::OFF);
+    
     // 合并所有层
     let subscriber = Registry::default()
-        .with(filter)
+        .with(filter.clone())
         .with(console_layer)
-        .with(file_subscriber);
+        .with(program_layer.with_filter(program_filter))
+        .with(audit_layer.with_filter(audit_filter));
     
     // 设置全局订阅者
     tracing::subscriber::set_global_default(subscriber)?;

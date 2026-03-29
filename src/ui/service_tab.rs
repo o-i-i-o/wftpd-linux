@@ -87,13 +87,13 @@ fn setup_service_buttons(
             if let Ok(s) = state.try_lock() {
                 match s.service_manager.install_service(&exe_path_str) {
                     Ok(_) => {
-                        log::info!("Service installed successfully");
+                        info!("Service installed successfully");
                         let _ = s.service_manager.reload_daemon();
                         update_service_status(&state, &status_label);
                         update_autostart_status(&state, &autostart_btn);
                     }
                     Err(e) => {
-                        log::error!("Install error: {}", e);
+                        error!("Install error: {}", e);
                         status_label.set_markup(&format!("<span foreground='red'>安装失败: {}</span>", e));
                     }
                 }
@@ -111,11 +111,11 @@ fn setup_service_buttons(
             if let Ok(s) = state.try_lock() {
                 match s.service_manager.start_service() {
                     Ok(_) => {
-                        log::info!("Service started successfully");
+                        info!("Service started successfully");
                         update_service_status(&state, &status_label);
                     }
                     Err(e) => {
-                        log::error!("Start error: {}", e);
+                        error!("Start error: {}", e);
                         status_label.set_markup(&format!("<span foreground='red'>启动失败: {}</span>", e));
                     }
                 }
@@ -133,11 +133,11 @@ fn setup_service_buttons(
             if let Ok(s) = state.try_lock() {
                 match s.service_manager.stop_service() {
                     Ok(_) => {
-                        log::info!("Service stopped successfully");
+                        info!("Service stopped successfully");
                         update_service_status(&state, &status_label);
                     }
                     Err(e) => {
-                        log::error!("Stop error: {}", e);
+                        error!("Stop error: {}", e);
                         status_label.set_markup(&format!("<span foreground='red'>停止失败: {}</span>", e));
                     }
                 }
@@ -155,11 +155,11 @@ fn setup_service_buttons(
             if let Ok(s) = state.try_lock() {
                 match s.service_manager.restart_service() {
                     Ok(_) => {
-                        log::info!("Service restarted successfully");
+                        info!("Service restarted successfully");
                         update_service_status(&state, &status_label);
                     }
                     Err(e) => {
-                        log::error!("Restart error: {}", e);
+                        error!("Restart error: {}", e);
                         status_label.set_markup(&format!("<span foreground='red'>重启失败: {}</span>", e));
                     }
                 }
@@ -179,13 +179,13 @@ fn setup_service_buttons(
             if let Ok(s) = state.try_lock() {
                 match s.service_manager.uninstall_service() {
                     Ok(_) => {
-                        log::info!("Service uninstalled successfully");
+                        info!("Service uninstalled successfully");
                         let _ = s.service_manager.reload_daemon();
                         update_service_status(&state, &status_label);
                         update_autostart_status(&state, &autostart_btn);
                     }
                     Err(e) => {
-                        log::error!("Uninstall error: {}", e);
+                        error!("Uninstall error: {}", e);
                         status_label.set_markup(&format!("<span foreground='red'>卸载失败: {}</span>", e));
                     }
                 }
@@ -218,10 +218,10 @@ fn setup_service_buttons(
                 
                 match result {
                     Ok(_) => {
-                        log::info!("Autostart {} successfully", if is_active { "enabled" } else { "disabled" });
+                        info!("Autostart {} successfully", if is_active { "enabled" } else { "disabled" });
                     }
                     Err(e) => {
-                        log::error!("Autostart error: {}", e);
+                        error!("Autostart error: {}", e);
                         update_autostart_status(&state, &autostart_btn);
                     }
                 }

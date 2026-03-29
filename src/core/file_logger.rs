@@ -5,6 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileLogEntry {
@@ -134,6 +135,20 @@ impl FileLogger {
         if let Err(e) = self.write_to_file(&entry) {
             eprintln!("Failed to write file log: {}", e);
         }
+        
+        // 同时使用 tracing 记录文件操作审计日志
+        info!(
+            target: "file_ops",
+            username = info.username,
+            client_ip = info.client_ip,
+            operation = info.operation,
+            file_path = info.file_path,
+            file_size = info.file_size,
+            protocol = info.protocol,
+            success = info.success,
+            "{}",
+            info.message
+        );
     }
 
     fn write_to_file(&mut self, entry: &FileLogEntry) -> std::io::Result<()> {

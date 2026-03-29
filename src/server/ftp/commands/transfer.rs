@@ -461,7 +461,7 @@ impl FtpSession {
                             }
                             if transfer_success {
                                 if let Err(e) = file.sync_all().await {
-                                    error!(file = %file_path, error = %e, "FTP STOR 同步文件失败");
+                                    error!(file = %file_path.display(), error = %e, "FTP STOR 同步文件失败");
                                 }
                                 info!(
                                     bytes = total_written,

@@ -7,11 +7,11 @@ pub mod ui;
 use std::sync::{Arc, Mutex};
 
 use crate::core::config::Config;
-// use crate::core::logger::Logger;  // ← 已移除，使用 tracing
 use crate::core::file_logger::FileLogger;
 use crate::core::users::UserManager;
 use crate::core::server_manager::ServerManager;
 use crate::service::ServiceManager;
+use crate::core::tracing_logger::init_tracing;
 
 pub struct AppState {
     pub config: Arc<Mutex<Config>>,
@@ -30,12 +30,21 @@ impl AppState {
         let users_path = Config::get_users_path();
         let user_manager = Arc::new(Mutex::new(UserManager::load(&users_path)?));
         
-        let (log_dir, max_log_size, max_log_files) = {
+        let (log_dir, log_level, max_log_size, max_log_files, enable_json) = {
             let cfg = config.lock().unwrap();
-            (cfg.logging.log_dir.clone(), cfg.logging.max_log_size, cfg.logging.max_log_files)
+            (
+                cfg.logging.log_dir.clone(),
+                cfg.logging.log_level.clone(),
+                cfg.logging.max_log_size,
+                cfg.logging.max_log_files,
+                cfg.logging.enable_json,
+            )
         };
         
-        // let logger = Arc::new(Mutex::new(Logger::new(&log_dir, max_log_size, max_log_files)));  // ← 已移除
+        // 初始化 tracing 日志系统
+        init_tracing(&log_dir, &log_level, max_log_size, max_log_files, enable_json)?;
+        
+        // 创建 FileLogger（仍然保留文件写入功能）
         let file_logger = Arc::new(Mutex::new(FileLogger::new(&log_dir, max_log_size)));
         
         let server_manager = ServerManager::new();
@@ -46,7 +55,6 @@ impl AppState {
             user_manager,
             server_manager,
             service_manager,
-            // logger,  // ← 已移除
             file_logger,
         })
     }

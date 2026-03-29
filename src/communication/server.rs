@@ -427,13 +427,14 @@ impl IpcServer {
                     source: "FTP".to_string(),
                     message: format!("{} {} {} - {}", e.username, e.operation, e.file_path, e.message),
                     client_ip: Some(e.client_ip),
+                    username: Some(e.username),
                     action: Some(e.operation),
                 })
                 .collect();
             
-            match serde_json::to_vec(&entries) {
-                Ok(data) => IpcResponse { id, success: true, data },
-                Err(e) => IpcResponse::error(id, &format!("Failed to serialize logs: {}", e)),
+            IpcResponse {
+                id,
+                result: crate::communication::protocol::IpcResult::Logs { entries },
             }
         } else {
             IpcResponse::error(id, "Failed to access logger")

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
+use tracing::{info, debug, warn, error};
 
 use super::super::handler::FtpSession;
 
@@ -26,23 +27,19 @@ impl FtpSession {
                     Some(home) if !home.trim().is_empty() => {
                         let home_path = Path::new(&home);
                         if !home_path.exists() {
-                            self.logger.lock().unwrap().client_action(
-                                "FTP",
-                                &format!("Anonymous login failed: anonymous home directory '{}' does not exist", home),
-                                &self.remote_ip,
-                                Some("anonymous"),
-                                "LOGIN_FAIL",
+                            warn!(
+                                client_ip = %self.remote_ip,
+                                home = %home,
+                                "FTP 匿名登录失败：匿名主目录不存在"
                             );
                             self.stream.write_all(b"530 Login failed: anonymous home directory does not exist\r\n").await?;
                             return Ok(());
                         }
                         if !home_path.is_dir() {
-                            self.logger.lock().unwrap().client_action(
-                                "FTP",
-                                &format!("Anonymous login failed: anonymous home path '{}' is not a directory", home),
-                                &self.remote_ip,
-                                Some("anonymous"),
-                                "LOGIN_FAIL",
+                            warn!(
+                                client_ip = %self.remote_ip,
+                                home = %home,
+                                "FTP 匿名登录失败：匿名主目录不是目录"
                             );
                             self.stream.write_all(b"530 Login failed: anonymous home path is not a directory\r\n").await?;
                             return Ok(());
@@ -51,12 +48,11 @@ impl FtpSession {
                         let home_canon = match home_path.canonicalize() {
                             Ok(c) => c,
                             Err(e) => {
-                                self.logger.lock().unwrap().client_action(
-                                    "FTP",
-                                    &format!("Anonymous login failed: cannot canonicalize anonymous home directory '{}': {}", home, e),
-                                    &self.remote_ip,
-                                    Some("anonymous"),
-                                    "LOGIN_FAIL",
+                                warn!(
+                                    client_ip = %self.remote_ip,
+                                    home = %home,
+                                    error = %e,
+                                    "FTP 匿名登录失败：无法解析匿名主目录"
                                 );
                                 self.stream.write_all(b"530 Login failed: cannot access anonymous home directory\r\n").await?;
                                 return Ok(());
@@ -69,21 +65,17 @@ impl FtpSession {
                         self.authenticated = true;
                         self.login_tracker.clear_attempts(&self.remote_ip);
                         self.stream.write_all(b"230 Anonymous login successful\r\n").await?;
-                        self.logger.lock().unwrap().client_action(
-                            "FTP",
-                            "Anonymous user logged in",
-                            &self.remote_ip,
-                            Some("anonymous"),
-                            "LOGIN",
+                        // 使用 tracing 记录日志
+                        info!(
+                            username = "anonymous",
+                            client_ip = %self.remote_ip,
+                            "FTP 匿名用户登录成功"
                         );
                     }
                     _ => {
-                        self.logger.lock().unwrap().client_action(
-                            "FTP",
-                            "Anonymous login failed: anonymous home directory not configured",
-                            &self.remote_ip,
-                            Some("anonymous"),
-                            "LOGIN_FAIL",
+                        warn!(
+                            client_ip = %self.remote_ip,
+                            "FTP 匿名登录失败：未配置匿名主目录"
                         );
                         self.stream.write_all(b"530 Anonymous login failed: anonymous home directory not configured\r\n").await?;
                     }
@@ -113,23 +105,40 @@ impl FtpSession {
             
             let password = arg.unwrap_or("");
             
-            let (_user_data, should_reload) = {
-                let users = self.user_manager.lock().unwrap();
-                (users.get_user(username).cloned(), users.get_user(username).is_none())
-            };
-            
-            if should_reload {
+            // Always reload users from disk to ensure latest data
+            let users_path = std::path::PathBuf::from("/etc/wftpg/users.json");
+            debug!(user = %username, ip = %self.remote_ip, "[FTP AUTH] 用户尝试登录");
+            debug!(users_path = ?users_path, "[FTP AUTH] 重新加载用户配置文件");
+            {
                 let mut users = self.user_manager.lock().unwrap();
-                let _ = users.reload(&std::path::PathBuf::from("/etc/wftpg/users.json"));
+                if let Err(e) = users.reload(&users_path) {
+                    error!(error = %e, "[FTP AUTH] 重新加载用户配置失败");
+                }
+                let user_count = users.get_users().len();
+                debug!(user_count = user_count, "[FTP AUTH] 当前内存中用户数");
+                
+                // 检查用户是否存在
+                if let Some(user) = users.get_user(username) {
+                    debug!(
+                        user = %username,
+                        enabled = user.enabled,
+                        home_dir = %user.home_dir,
+                        "[FTP AUTH] 找到用户"
+                    );
+                } else {
+                    warn!(user = %username, "[FTP AUTH] 未找到用户");
+                }
             }
             
             let auth_result = {
                 let mut users = self.user_manager.lock().unwrap();
+                debug!(user = %username, "[FTP AUTH] 开始验证密码");
                 users.authenticate(username, password)
             };
             
             match auth_result {
                 Ok(true) => {
+                    info!(user = %username, ip = %self.remote_ip, "[FTP AUTH] 用户认证成功");
                     let user_info = {
                         let users = self.user_manager.lock().unwrap();
                         users.get_user(username).cloned()
@@ -137,12 +146,11 @@ impl FtpSession {
                     
                     if let Some(user) = user_info {
                         if user.home_dir.trim().is_empty() {
-                            self.logger.lock().unwrap().client_action(
-                                "FTP",
-                                &format!("Login failed: home directory not configured for user '{}'", username),
-                                &self.remote_ip,
-                                Some(username),
+                            self.file_logger.lock().unwrap().log(
+                                username,
                                 "LOGIN_FAIL",
+                                "",
+                                "Login failed: home directory not configured",
                             );
                             self.stream.write_all(b"530 Login failed: home directory not configured\r\n").await?;
                             self.authenticated = false;
@@ -151,24 +159,22 @@ impl FtpSession {
                         
                         let home = std::path::PathBuf::from(&user.home_dir);
                         if !home.exists() {
-                            self.logger.lock().unwrap().client_action(
-                                "FTP",
-                                &format!("Login failed: home directory '{}' does not exist", user.home_dir),
-                                &self.remote_ip,
-                                Some(username),
-                                "LOGIN_FAIL",
+                            self.file_logger.lock().unwrap().log(
+                                username,
+                                "LOGIN_FAIL", 
+                                "",
+                                "Login failed: home directory does not exist",
                             );
                             self.stream.write_all(b"530 Login failed: home directory does not exist\r\n").await?;
                             self.authenticated = false;
                             return Ok(());
                         }
                         if !home.is_dir() {
-                            self.logger.lock().unwrap().client_action(
-                                "FTP",
-                                &format!("Login failed: home path '{}' is not a directory", user.home_dir),
-                                &self.remote_ip,
-                                Some(username),
+                            self.file_logger.lock().unwrap().log(
+                                username,
                                 "LOGIN_FAIL",
+                                "",
+                                "Login failed: home path is not a directory",
                             );
                             self.stream.write_all(b"530 Login failed: home path is not a directory\r\n").await?;
                             self.authenticated = false;
@@ -177,12 +183,11 @@ impl FtpSession {
                         let home_canon = match home.canonicalize() {
                             Ok(c) => c,
                             Err(e) => {
-                                self.logger.lock().unwrap().client_action(
-                                    "FTP",
-                                    &format!("Login failed: cannot canonicalize home directory '{}': {}", home.display(), e),
-                                    &self.remote_ip,
-                                    Some(username),
+                                self.file_logger.lock().unwrap().log(
+                                    username,
                                     "LOGIN_FAIL",
+                                    "",
+                                    &format!("Login failed: cannot canonicalize home directory: {}", e),
                                 );
                                 self.stream.write_all(b"530 Login failed: cannot access home directory\r\n").await?;
                                 self.authenticated = false;
@@ -194,16 +199,16 @@ impl FtpSession {
                         self.authenticated = true;
                         self.login_tracker.clear_attempts(&self.remote_ip);
                         self.stream.write_all(b"230 User logged in\r\n").await?;
-                        self.logger.lock().unwrap().client_action(
-                            "FTP",
-                            &format!("User {} logged in", username),
-                            &self.remote_ip,
-                            Some(username),
+                        self.file_logger.lock().unwrap().log(
+                            username,
                             "LOGIN",
+                            "",
+                            "User logged in",
                         );
                     } else {
+                        error!(user = %username, "[FTP AUTH] 用户认证成功但未找到用户数据");
                         self.authenticated = false;
-                        self.logger.lock().unwrap().warning(
+                        self.file_logger.lock().unwrap().warning(
                             "FTP",
                             &format!("User {} authenticated but not found in user list", username),
                         );
@@ -211,21 +216,21 @@ impl FtpSession {
                     }
                 }
                 Ok(false) | Err(_) => {
+                    info!(user = %username, ip = %self.remote_ip, "[FTP AUTH] 用户认证失败");
                     self.authenticated = false;
                     let remaining = self.login_tracker.get_remaining_attempts(&self.remote_ip);
                     if !self.login_tracker.check_and_record_failure(&self.remote_ip) {
-                        self.logger.lock().unwrap().warning(
+                        self.file_logger.lock().unwrap().warning(
                             "FTP",
                             &format!("IP {} banned due to too many failed login attempts", self.remote_ip),
                         );
                         self.stream.write_all(b"530 Too many failed login attempts, you are temporarily banned\r\n").await?;
                     } else {
-                        self.logger.lock().unwrap().client_action(
-                            "FTP",
-                            &format!("Authentication failed for user {} ({} attempts remaining)", username, remaining.saturating_sub(1)),
-                            &self.remote_ip,
-                            Some(username),
+                        self.file_logger.lock().unwrap().log(
+                            username,
                             "AUTH_FAIL",
+                            "",
+                            &format!("Authentication failed ({} attempts remaining)", remaining.saturating_sub(1)),
                         );
                         self.stream.write_all(b"530 Not logged in, user cannot be authenticated\r\n").await?;
                     }

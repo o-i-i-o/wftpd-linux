@@ -5,6 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tracing::{warn, error, info, debug};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -51,7 +52,7 @@ impl Logger {
         let path = PathBuf::from(log_dir);
         
         if let Err(e) = fs::create_dir_all(&path) {
-            eprintln!("Warning: Failed to create log directory {}: {}", path.display(), e);
+            warn!("Failed to create log directory {}: {}", path.display(), e);
         }
         
         let (log_path, size) = Self::get_available_log_path(&path);
@@ -62,13 +63,12 @@ impl Logger {
         {
             Ok(f) => Some(f),
             Err(e) => {
-                eprintln!("Warning: Failed to open log file: {}", e);
+                warn!("Failed to open log file: {}", e);
                 None
             }
         };
 
         Logger {
-            log_dir: path,
             max_size,
             max_files,
             current_file: file,
@@ -184,23 +184,16 @@ impl Logger {
         }
 
         if let Err(e) = self.write_to_file(&entry) {
-            eprintln!("Failed to write log: {}", e);
+            error!("Failed to write log: {}", e);
         }
 
-        let level_str = match level {
-            LogLevel::Debug => "DEBUG",
-            LogLevel::Info => "INFO",
-            LogLevel::Warning => "WARN",
-            LogLevel::Error => "ERROR",
-        };
-        
-        println!(
-            "[{}] [{}] {} - {}",
-            entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
-            level_str,
-            entry.source,
-            entry.message
-        );
+        // 使用 tracing 记录日志到控制台
+        match level {
+            LogLevel::Debug => debug!(target: %source, "{}", message),
+            LogLevel::Info => info!(target: %source, "{}", message),
+            LogLevel::Warning => warn!(target: %source, "{}", message),
+            LogLevel::Error => error!(target: %source, "{}", message),
+        }
     }
 
     fn write_to_file(&mut self, entry: &LogEntry) -> std::io::Result<()> {

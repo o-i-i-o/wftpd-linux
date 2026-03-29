@@ -277,7 +277,7 @@ fi
 
 log_success "找到已编译的可执行文件: ${TARGET_DIR}/wftp-gui"
 
-log_info "[3/9] 创建DEB包目录结构..."
+log_info "[3/9] 创建 DEB 包目录结构..."
 DEB_DIR="${BUILD_DIR}/${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}"
 mkdir -p "${DEB_DIR}/DEBIAN"
 mkdir -p "${DEB_DIR}/usr/bin"
@@ -290,11 +290,14 @@ mkdir -p "${DEB_DIR}/usr/share/polkit-1/actions"
 mkdir -p "${DEB_DIR}/lib/systemd/system"
 mkdir -p "${DEB_DIR}/usr/share/doc/${PACKAGE_NAME}"
 mkdir -p "${DEB_DIR}/etc/wftpg"
+mkdir -p "${DEB_DIR}/etc/wftpg/keys"
 mkdir -p "${DEB_DIR}/var/log/wftpg"
+mkdir -p "${DEB_DIR}/var/lib/wftpg"
+mkdir -p "${DEB_DIR}/var/lib/wftpg/ssh"
+mkdir -p "${DEB_DIR}/var/lib/wftpg/share"
 mkdir -p "${DEB_DIR}/usr/share/${PACKAGE_NAME}"
 mkdir -p "${DEB_DIR}/etc/dbus-1/system.d"
 mkdir -p "${DEB_DIR}/usr/share/dbus-1/system-services"
-mkdir -p "${DEB_DIR}/etc/wftpg/keys"
 
 log_info "[4/9] 复制可执行文件..."
 
@@ -556,8 +559,17 @@ EOF
 log_info "设置目录权限..."
 chown -R root:root "${DEB_DIR}"
 chmod -R 755 "${DEB_DIR}/usr/bin"
-chmod -R 755 "${DEB_DIR}/etc/wftpg"
-chmod -R 755 "${DEB_DIR}/var/log/wftpg"
+
+# 配置文件和日志目录设置为 wftpg:wftpg（安装时由 postinst 处理）
+# 先检查目录是否存在，避免权限设置失败
+for dir in "${DEB_DIR}/etc/wftpg" "${DEB_DIR}/etc/wftpg/keys" "${DEB_DIR}/var/log/wftpg" "${DEB_DIR}/var/lib/wftpg" "${DEB_DIR}/var/lib/wftpg/ssh" "${DEB_DIR}/var/lib/wftpg/share"; do
+    if [ -d "$dir" ]; then
+        chmod 755 "$dir"
+    else
+        log_warning "目录不存在，跳过权限设置：$dir"
+    fi
+done
+
 chmod 644 "${DEB_DIR}/etc/wftpg/config.toml.example"
 
 log_info "构建DEB包..."

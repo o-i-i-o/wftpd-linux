@@ -287,31 +287,42 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
     store.clear();
     
     if source == "current" {
-        if let Ok(s) = state.try_lock()
-            && let Ok(logger) = s.logger.try_lock() {
-                let entries = logger.get_recent_logs(500);
-                for entry in entries.into_iter().rev() {
-                    let iter = store.append();
-                    store.set_value(&iter, 0, &entry.timestamp.format("%Y-%m-%d %H:%M:%S").to_string().to_value());
-                    store.set_value(&iter, 1, &entry.level.to_string().to_value());
-                    store.set_value(&iter, 2, &entry.source.to_value());
-                    store.set_value(&iter, 3, &entry.message.to_value());
-                    store.set_value(&iter, 4, &entry.client_ip.unwrap_or_default().to_value());
-                    store.set_value(&iter, 5, &entry.action.unwrap_or_default().to_value());
-                }
-            }
+        // 使用 tracing-appender 的日志文件
+        // TODO: 可以实现从最近的日志文件中读取
+        // 暂时显示提示信息
+        let iter = store.append();
+        store.set_value(&iter, 0, &Local::now().format("%Y-%m-%d %H:%M:%S").to_string().to_value());
+        store.set_value(&iter, 1, &"INFO".to_string().to_value());
+        store.set_value(&iter, 2, &"系统".to_value());
+        store.set_value(&iter, 3, &"日志将记录到 /var/log/wftpg/ 目录下的文件中".to_value());
+        store.set_value(&iter, 4, &"-".to_value());
+        store.set_value(&iter, 5, &"tracing".to_value());
     } else {
         match fs::read_to_string(source) {
             Ok(content) => {
+                // 读取 tracing 生成的 JSON 日志文件
                 for line in content.lines().rev().take(500) {
-                    if let Ok(entry) = serde_json::from_str::<crate::core::logger::LogEntry>(line) {
+                    if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                         let iter = store.append();
-                        store.set_value(&iter, 0, &entry.timestamp.format("%Y-%m-%d %H:%M:%S").to_string().to_value());
-                        store.set_value(&iter, 1, &entry.level.to_string().to_value());
-                        store.set_value(&iter, 2, &entry.source.to_value());
-                        store.set_value(&iter, 3, &entry.message.to_value());
-                        store.set_value(&iter, 4, &entry.client_ip.unwrap_or_default().to_value());
-                        store.set_value(&iter, 5, &entry.action.unwrap_or_default().to_value());
+                        let timestamp = entry.get("timestamp")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("-");
+                        let level = entry.get("level")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("INFO");
+                        let target = entry.get("target")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("系统");
+                        let message = entry.get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("-");
+                        
+                        store.set_value(&iter, 0, &timestamp.to_value());
+                        store.set_value(&iter, 1, &level.to_value());
+                        store.set_value(&iter, 2, &target.to_value());
+                        store.set_value(&iter, 3, &message.to_value());
+                        store.set_value(&iter, 4, &"-".to_value());
+                        store.set_value(&iter, 5, &"tracing".to_value());
                     }
                 }
             }

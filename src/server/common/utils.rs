@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use tracing::{info, debug, warn, error};
 
 use crate::core::error::{WftpgError, WftpgResult};
 
@@ -77,9 +78,9 @@ fn canonicalize_home(home_dir: &str) -> WftpgResult<PathBuf> {
     match home.canonicalize() {
         Ok(canon) => Ok(canon),
         Err(e) => {
-            log::error!("无法规范化主目录 {:?}: {}", home, e);
+            error!(home = ?home, error = %e, "无法规范化主目录");
             Err(WftpgError::PathResolveError(
-                format!("主目录不存在或无法访问: {:?}", home)
+                format!("主目录不存在或无法访问：{:?}", home)
             ))
         }
     }
@@ -91,9 +92,9 @@ async fn canonicalize_home_async(home_dir: &str) -> WftpgResult<PathBuf> {
     match tokio::fs::canonicalize(&home).await {
         Ok(canon) => Ok(canon),
         Err(e) => {
-            log::error!("无法规范化主目录 {:?}: {}", home, e);
+            error!(home = ?home, error = %e, "无法规范化主目录");
             Err(WftpgError::PathResolveError(
-                format!("主目录不存在或无法访问: {:?}", home)
+                format!("主目录不存在或无法访问：{:?}", home)
             ))
         }
     }
@@ -115,13 +116,13 @@ fn apply_path_components_safe(
             std::path::Component::ParentDir => {
                 if safe_path != home_canon && safe_path.starts_with(home_canon) {
                     if !safe_path.pop() {
-                        log::warn!("路径遍历攻击: {:?} 中包含过多的父目录", original_path);
+                        warn!("路径遍历攻击: {:?} 中包含过多的父目录", original_path);
                         return Err(WftpgError::PathResolveError(
                             "路径中包含过多的父目录".to_string()
                         ));
                     }
                 } else {
-                    log::warn!("路径遍历攻击被阻止: {:?} 中无法访问主目录之上的目录", original_path);
+                    warn!("路径遍历攻击被阻止: {:?} 中无法访问主目录之上的目录", original_path);
                     return Err(WftpgError::PathResolveError(
                         "无法访问主目录之上的目录".to_string()
                     ));
@@ -144,14 +145,14 @@ fn apply_path_components_safe(
                     if canon.starts_with(home_canon) {
                         Ok(canon)
                     } else {
-                        log::warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", canon, home_canon);
+                        warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", canon, home_canon);
                         Err(WftpgError::PathResolveError(
                             "路径逃逸了主目录".to_string()
                         ))
                     }
                 }
                 Err(e) => {
-                    log::warn!("无法规范化路径 {:?}: {}", safe_path, e);
+                    warn!("无法规范化路径 {:?}: {}", safe_path, e);
                     Err(WftpgError::PathResolveError(
                         "无法访问路径".to_string()
                     ))
@@ -161,7 +162,7 @@ fn apply_path_components_safe(
             Ok(safe_path)
         }
     } else {
-        log::warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", safe_path, home_canon);
+        warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", safe_path, home_canon);
         Err(WftpgError::PathResolveError(
             "路径逃逸了主目录".to_string()
         ))
@@ -184,13 +185,13 @@ async fn apply_path_components_safe_async(
             std::path::Component::ParentDir => {
                 if safe_path != home_canon && safe_path.starts_with(home_canon) {
                     if !safe_path.pop() {
-                        log::warn!("路径遍历攻击: {:?} 中包含过多的父目录", original_path);
+                        warn!("路径遍历攻击: {:?} 中包含过多的父目录", original_path);
                         return Err(WftpgError::PathResolveError(
                             "路径中包含过多的父目录".to_string()
                         ));
                     }
                 } else {
-                    log::warn!("路径遍历攻击被阻止: {:?} 中无法访问主目录之上的目录", original_path);
+                    warn!("路径遍历攻击被阻止: {:?} 中无法访问主目录之上的目录", original_path);
                     return Err(WftpgError::PathResolveError(
                         "无法访问主目录之上的目录".to_string()
                     ));
@@ -214,14 +215,14 @@ async fn apply_path_components_safe_async(
                         if canon.starts_with(home_canon) {
                             Ok(canon)
                         } else {
-                            log::warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", canon, home_canon);
+                            warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", canon, home_canon);
                             Err(WftpgError::PathResolveError(
                                 "路径逃逸了主目录".to_string()
                             ))
                         }
                     }
                     Err(e) => {
-                        log::warn!("无法规范化路径 {:?}: {}", safe_path, e);
+                        warn!("无法规范化路径 {:?}: {}", safe_path, e);
                         Err(WftpgError::PathResolveError(
                             "无法访问路径".to_string()
                         ))
@@ -230,14 +231,14 @@ async fn apply_path_components_safe_async(
             }
             Ok(false) => Ok(safe_path),
             Err(e) => {
-                log::warn!("无法检查路径是否存在 {:?}: {}", safe_path, e);
+                warn!("无法检查路径是否存在 {:?}: {}", safe_path, e);
                 Err(WftpgError::PathResolveError(
                     "无法访问路径".to_string()
                 ))
             }
         }
     } else {
-        log::warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", safe_path, home_canon);
+        warn!("路径遍历攻击被阻止: {:?} 逃逸了主目录 {:?}", safe_path, home_canon);
         Err(WftpgError::PathResolveError(
             "路径逃逸了主目录".to_string()
         ))
@@ -251,7 +252,7 @@ fn resolve_nonexistent_path(resolved: &Path, home_canon: &Path, original_path: &
         if resolved.starts_with(home_canon) {
             Ok(resolved.to_path_buf())
         } else {
-            log::warn!("绝对路径位于主目录之外: {:?}", resolved);
+            warn!("绝对路径位于主目录之外: {:?}", resolved);
             Err(WftpgError::PathResolveError(
                 "绝对路径位于主目录之外".to_string()
             ))
@@ -268,7 +269,7 @@ async fn resolve_nonexistent_path_async(resolved: &Path, home_canon: &Path, orig
         if resolved.starts_with(home_canon) {
             Ok(resolved.to_path_buf())
         } else {
-            log::warn!("绝对路径位于主目录之外: {:?}", resolved);
+            warn!("绝对路径位于主目录之外: {:?}", resolved);
             Err(WftpgError::PathResolveError(
                 "绝对路径位于主目录之外".to_string()
             ))
@@ -315,7 +316,7 @@ pub fn safe_resolve_path(home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
             if canon.starts_with(&home_canon) {
                 Ok(canon)
             } else {
-                log::warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
+                warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
                 Err(WftpgError::PathResolveError(
                     "路径位于主目录之外".to_string()
                 ))
@@ -364,7 +365,7 @@ pub async fn safe_resolve_path_async(home_dir: &str, path: &str) -> WftpgResult<
             if canon.starts_with(&home_canon) {
                 Ok(canon)
             } else {
-                log::warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
+                warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
                 Err(WftpgError::PathResolveError(
                     "路径位于主目录之外".to_string()
                 ))
@@ -413,7 +414,7 @@ pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Wftp
             if canon.starts_with(&home_canon) {
                 Ok(canon)
             } else {
-                log::warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
+                warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
                 Err(WftpgError::PathResolveError(
                     "路径位于主目录之外".to_string()
                 ))
@@ -462,7 +463,7 @@ pub async fn safe_resolve_path_with_cwd_async(cwd: &str, home_dir: &str, path: &
             if canon.starts_with(&home_canon) {
                 Ok(canon)
             } else {
-                log::warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
+                warn!("路径遍历攻击被阻止: {:?} 位于主目录 {:?} 之外", canon, home_canon);
                 Err(WftpgError::PathResolveError(
                     "路径位于主目录之外".to_string()
                 ))
@@ -481,7 +482,7 @@ fn resolve_nonexistent_path_with_cwd(resolved: &Path, home_canon: &Path, cwd: &s
         if resolved.starts_with(home_canon) {
             Ok(resolved.to_path_buf())
         } else {
-            log::warn!("绝对路径位于主目录之外: {:?}", resolved);
+            warn!("绝对路径位于主目录之外: {:?}", resolved);
             Err(WftpgError::PathResolveError(
                 "绝对路径位于主目录之外".to_string()
             ))
@@ -499,7 +500,7 @@ async fn resolve_nonexistent_path_with_cwd_async(resolved: &Path, home_canon: &P
         if resolved.starts_with(home_canon) {
             Ok(resolved.to_path_buf())
         } else {
-            log::warn!("绝对路径位于主目录之外: {:?}", resolved);
+            warn!("绝对路径位于主目录之外: {:?}", resolved);
             Err(WftpgError::PathResolveError(
                 "绝对路径位于主目录之外".to_string()
             ))
@@ -521,14 +522,14 @@ fn resolve_cwd(cwd: &str, home_canon: &Path) -> WftpgResult<PathBuf> {
             if canon.starts_with(home_canon) {
                 Ok(canon)
             } else {
-                log::warn!("当前工作目录位于主目录之外: {:?}", cwd_path);
+                warn!("当前工作目录位于主目录之外: {:?}", cwd_path);
                 Err(WftpgError::PathResolveError(
                     "当前工作目录位于主目录之外".to_string()
                 ))
             }
         }
         Err(e) => {
-            log::warn!("当前工作目录不存在或无法访问 {:?}: {}", cwd_path, e);
+            warn!("当前工作目录不存在或无法访问 {:?}: {}", cwd_path, e);
             Err(WftpgError::PathResolveError(
                 "当前工作目录不存在或无法访问".to_string()
             ))
@@ -547,14 +548,14 @@ async fn resolve_cwd_async(cwd: &str, home_canon: &Path) -> WftpgResult<PathBuf>
             if canon.starts_with(home_canon) {
                 Ok(canon)
             } else {
-                log::warn!("当前工作目录位于主目录之外: {:?}", cwd_path);
+                warn!("当前工作目录位于主目录之外: {:?}", cwd_path);
                 Err(WftpgError::PathResolveError(
                     "当前工作目录位于主目录之外".to_string()
                 ))
             }
         }
         Err(e) => {
-            log::warn!("当前工作目录不存在或无法访问 {:?}: {}", cwd_path, e);
+            warn!("当前工作目录不存在或无法访问 {:?}: {}", cwd_path, e);
             Err(WftpgError::PathResolveError(
                 "当前工作目录不存在或无法访问".to_string()
             ))
@@ -677,7 +678,7 @@ pub fn safe_open_file_at(home_dir: &str, relative_path: &str) -> WftpgResult<std
         OFlag::O_DIRECTORY | OFlag::O_RDONLY,
         Mode::empty()
     ).map_err(|e| {
-        log::error!("无法打开主目录 {:?}: {}", home_canon, e);
+        error!("无法打开主目录 {:?}: {}", home_canon, e);
         WftpgError::PathResolveError("无法打开主目录".to_string())
     })?;
     
@@ -687,7 +688,7 @@ pub fn safe_open_file_at(home_dir: &str, relative_path: &str) -> WftpgResult<std
     
     for (i, component) in components.iter().enumerate() {
         if *component == ".." {
-            log::warn!("路径遍历攻击被阻止: 相对路径中包含 '..'");
+            warn!("路径遍历攻击被阻止: 相对路径中包含 '..'");
             for fd in fds_to_close {
                 nix::unistd::close(fd).ok();
             }
@@ -714,7 +715,7 @@ pub fn safe_open_file_at(home_dir: &str, relative_path: &str) -> WftpgResult<std
                 current_fd = fd;
             }
             Err(e) => {
-                log::warn!("无法打开路径组件 '{}': {}", component, e);
+                warn!("无法打开路径组件 '{}': {}", component, e);
                 for fd in fds_to_close {
                     nix::unistd::close(fd).ok();
                 }
@@ -747,7 +748,7 @@ pub async fn safe_open_file_at_async(home_dir: &str, relative_path: &str) -> Wft
         OFlag::O_DIRECTORY | OFlag::O_RDONLY,
         Mode::empty()
     ).map_err(|e| {
-        log::error!("无法打开主目录 {:?}: {}", home_canon, e);
+        error!("无法打开主目录 {:?}: {}", home_canon, e);
         WftpgError::PathResolveError("无法打开主目录".to_string())
     })?;
     
@@ -757,7 +758,7 @@ pub async fn safe_open_file_at_async(home_dir: &str, relative_path: &str) -> Wft
     
     for (i, component) in components.iter().enumerate() {
         if *component == ".." {
-            log::warn!("路径遍历攻击被阻止: 相对路径中包含 '..'");
+            warn!("路径遍历攻击被阻止: 相对路径中包含 '..'");
             for fd in fds_to_close {
                 nix::unistd::close(fd).ok();
             }
@@ -784,7 +785,7 @@ pub async fn safe_open_file_at_async(home_dir: &str, relative_path: &str) -> Wft
                 current_fd = fd;
             }
             Err(e) => {
-                log::warn!("无法打开路径组件 '{}': {}", component, e);
+                warn!("无法打开路径组件 '{}': {}", component, e);
                 for fd in fds_to_close {
                     nix::unistd::close(fd).ok();
                 }

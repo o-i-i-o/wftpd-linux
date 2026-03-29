@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Semaphore};
+use tracing::{info, warn, error};
 
 use crate::core::config::Config;
-use crate::core::logger::Logger;
+// use crate::core::logger::Logger;  // ← 已移除，使用 tracing
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
 use crate::server::common::login_tracker::LoginTracker;
@@ -21,7 +22,7 @@ use super::tls::TlsConfig;
 pub struct FtpServer {
     config: Arc<StdMutex<Config>>,
     user_manager: Arc<StdMutex<UserManager>>,
-    logger: Arc<StdMutex<Logger>>,
+    // logger: Arc<StdMutex<Logger>>,  // ← 已移除
     file_logger: Arc<StdMutex<FileLogger>>,
     running: Arc<StdMutex<bool>>,
     shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
@@ -148,11 +149,11 @@ impl FtpServer {
         } else {
             ""
         };
-        self.logger.lock().unwrap().info("FTP", &format!("FTP server started on {}{}", bind_addr, tls_info));
+        info!(bind_addr = %bind_addr, tls = self.tls_config.is_some(), "FTP 服务已启动");
 
         let config = Arc::clone(&self.config);
         let user_manager = Arc::clone(&self.user_manager);
-        let logger = Arc::clone(&self.logger);
+        // let logger = Arc::clone(&self.logger);  // ← 已移除
         let file_logger = Arc::clone(&self.file_logger);
         let running = Arc::clone(&self.running);
         let passive_listeners = Arc::clone(&self.passive_listeners);
@@ -285,7 +286,7 @@ impl FtpServer {
         let mut listeners = self.passive_listeners.lock().await;
         listeners.clear();
         
-        self.logger.lock().unwrap().info("FTP", "FTP server stopped");
+        info!("FTP 服务已停止");
     }
 
     pub fn is_running(&self) -> bool {

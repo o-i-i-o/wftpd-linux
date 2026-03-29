@@ -7,7 +7,7 @@ pub mod ui;
 use std::sync::{Arc, Mutex};
 
 use crate::core::config::Config;
-use crate::core::logger::Logger;
+// use crate::core::logger::Logger;  // ← 已移除，使用 tracing
 use crate::core::file_logger::FileLogger;
 use crate::core::users::UserManager;
 use crate::core::server_manager::ServerManager;
@@ -18,7 +18,7 @@ pub struct AppState {
     pub user_manager: Arc<Mutex<UserManager>>,
     pub server_manager: ServerManager,
     pub service_manager: ServiceManager,
-    pub logger: Arc<Mutex<Logger>>,
+    // pub logger: Arc<Mutex<Logger>>,  // ← 已移除，使用 tracing
     pub file_logger: Arc<Mutex<FileLogger>>,
 }
 
@@ -35,7 +35,7 @@ impl AppState {
             (cfg.logging.log_dir.clone(), cfg.logging.max_log_size, cfg.logging.max_log_files)
         };
         
-        let logger = Arc::new(Mutex::new(Logger::new(&log_dir, max_log_size, max_log_files)));
+        // let logger = Arc::new(Mutex::new(Logger::new(&log_dir, max_log_size, max_log_files)));  // ← 已移除
         let file_logger = Arc::new(Mutex::new(FileLogger::new(&log_dir, max_log_size)));
         
         let server_manager = ServerManager::new();
@@ -46,13 +46,13 @@ impl AppState {
             user_manager,
             server_manager,
             service_manager,
-            logger,
+            // logger,  // ← 已移除
             file_logger,
         })
     }
     
     pub async fn stop_all(&self) {
-        self.server_manager.stop_ftp(&self.logger).await;
-        self.server_manager.stop_sftp(&self.logger).await;
+        self.server_manager.stop_ftp().await;
+        self.server_manager.stop_sftp().await;
     }
 }

@@ -2,6 +2,7 @@ use anyhow::{Result, Context};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tracing::{info, debug, warn, error};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -222,7 +223,7 @@ impl Config {
         if self.sftp.enabled {
             let host_key = Path::new(&self.sftp.host_key_path);
             if !host_key.exists() {
-                log::warn!(
+                warn!(
                     "SFTP主机密钥不存在: {}，请运行安装脚本生成",
                     self.sftp.host_key_path
                 );
@@ -237,7 +238,7 @@ impl Config {
             match ip_matches_cidr(ip, cidr) {
                 Ok(matches) => matches,
                 Err(e) => {
-                    log::warn!("Failed to match IP {} against denied CIDR {}: {}", ip, cidr, e);
+                    warn!("Failed to match IP {} against denied CIDR {}: {}", ip, cidr, e);
                     false
                 }
             }
@@ -253,7 +254,7 @@ impl Config {
             match ip_matches_cidr(ip, cidr) {
                 Ok(matches) => matches,
                 Err(e) => {
-                    log::warn!("Failed to match IP {} against allowed CIDR {}: {}", ip, cidr, e);
+                    warn!("Failed to match IP {} against allowed CIDR {}: {}", ip, cidr, e);
                     false
                 }
             }

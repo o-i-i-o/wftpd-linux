@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
+use tracing::info;
 
 use super::super::handler::FtpSession;
 use super::super::utils::{build_mlst_facts, safe_resolve_path, escape_mlst_filename, real_to_virtual_path};
@@ -128,12 +129,12 @@ impl FtpSession {
                     &dir_path.to_string_lossy(),
                     "FTP",
                 );
-                self.logger.lock().unwrap().client_action(
-                    "FTP",
-                    &format!("Created directory: {}", dirname),
-                    &self.remote_ip,
-                    self.current_user.as_deref(),
-                    "MKDIR",
+                // 使用 tracing 记录客户端操作审计日志
+                info!(
+                    username = self.current_user.as_deref().unwrap_or("anonymous"),
+                    client_ip = %self.remote_ip,
+                    path = %dir_path.to_string_lossy(),
+                    "FTP 创建目录"
                 );
             } else {
                 self.stream.write_all(b"550 Create directory operation failed\r\n").await?;
@@ -193,12 +194,12 @@ impl FtpSession {
                     &dir_path.to_string_lossy(),
                     "FTP",
                 );
-                self.logger.lock().unwrap().client_action(
-                    "FTP",
-                    &format!("Removed directory: {}", dirname),
-                    &self.remote_ip,
-                    self.current_user.as_deref(),
-                    "RMDIR",
+                // 使用 tracing 记录客户端操作审计日志
+                info!(
+                    username = self.current_user.as_deref().unwrap_or("anonymous"),
+                    client_ip = %self.remote_ip,
+                    path = %dir_path.to_string_lossy(),
+                    "FTP 删除目录"
                 );
             } else {
                 self.stream.write_all(b"550 Remove directory operation failed\r\n").await?;

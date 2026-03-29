@@ -10,13 +10,8 @@ impl FtpSession {
 
         if self.remote_ip.contains(':') {
             self.stream.write_all(b"425 IPv6 addresses not supported in PASV mode, use EPSV instead\r\n").await?;
-            self.logger.lock().unwrap().client_action(
-                "FTP",
-                "PASV rejected: IPv6 address requires EPSV",
-                &self.remote_ip,
-                self.current_user.as_deref(),
-                "PASV_FAIL",
-            );
+            // 使用 tracing 记录日志
+            warn!(client_ip = %self.remote_ip, "FTP PASV 模式不支持 IPv6 地址");
             return Ok(());
         }
 
@@ -55,12 +50,13 @@ impl FtpSession {
             .as_bytes(),
         ).await?;
 
-        self.logger.lock().unwrap().client_action(
-            "FTP",
-            &format!("PASV mode: port {}, server IP: {}", passive_port, server_ip),
-            &self.remote_ip,
-            self.current_user.as_deref(),
-            "PASV",
+        // 使用 tracing 记录文件操作审计日志
+        info!(
+            username = self.current_user.as_deref().unwrap_or("anonymous"),
+            client_ip = %self.remote_ip,
+            port = passive_port,
+            server_ip = %server_ip,
+            "FTP PASV 模式已启用"
         );
         Ok(())
     }
@@ -95,9 +91,10 @@ impl FtpSession {
                 let client_specified_ip = format!("{}.{}.{}.{}", parts[0], parts[1], parts[2], parts[3]);
 
                 if client_specified_ip != self.remote_ip {
-                    self.logger.lock().unwrap().warning(
-                        "FTP",
-                        &format!("PORT rejected: IP mismatch. Client={}, Specified={}", self.remote_ip, client_specified_ip),
+                    warn!(
+                        client_ip = %self.remote_ip,
+                        specified_ip = %client_specified_ip,
+                        "FTP PORT 命令被拒绝：IP 地址不匹配"
                     );
                     self.stream.write_all(b"500 Illegal PORT command - IP must match client IP\r\n").await?;
                     return Ok(());
@@ -126,9 +123,10 @@ impl FtpSession {
                 let tcp_port = parts[3];
 
                 if net_addr != self.remote_ip {
-                    self.logger.lock().unwrap().warning(
-                        "FTP",
-                        &format!("EPRT rejected: IP mismatch. Client={}, Specified={}", self.remote_ip, net_addr),
+                    warn!(
+                        client_ip = %self.remote_ip,
+                        specified_ip = %net_addr,
+                        "FTP EPRT 命令被拒绝：IP 地址不匹配"
                     );
                     self.stream.write_all(b"500 Illegal EPRT command - IP must match client IP\r\n").await?;
                     return Ok(());

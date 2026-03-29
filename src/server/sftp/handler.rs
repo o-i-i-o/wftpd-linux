@@ -8,8 +8,10 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 
+use tracing::{info, debug, warn, error};
+
 use super::state::SftpState;
-use crate::core::logger::Logger;
+// use crate::core::logger::Logger;  // ← 已移除，使用 tracing
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
 use crate::server::common::utils::is_safe_username;
@@ -59,21 +61,29 @@ impl SftpHandler {
         username: Option<&str>,
         log_type: &str,
     ) {
-        if let Ok(mut log) = self.logger.try_lock() {
-            log.client_action(action, message, &self.client_ip, username, log_type);
+        // 使用 tracing 记录文件操作审计日志
+        if let Ok(mut file_log) = self.file_logger.try_lock() {
+            file_log.log(crate::core::file_logger::FileLogInfo {
+                username: username.unwrap_or("unknown"),
+                client_ip: &self.client_ip,
+                operation: action,
+                file_path: message,
+                file_size: 0,
+                protocol: "SFTP",
+                success: true,
+                message: log_type,
+            });
         }
     }
 
     fn log_warning(&self, message: &str) {
-        if let Ok(mut log) = self.logger.try_lock() {
-            log.warning("SFTP", message);
-        }
+        // 使用 tracing 记录警告日志
+        warn!(target: "sftp", client_ip = %self.client_ip, "{}", message);
     }
 
     fn log_info(&self, message: &str) {
-        if let Ok(mut log) = self.logger.try_lock() {
-            log.info("SFTP", message);
-        }
+        // 使用 tracing 记录信息日志
+        info!(target: "sftp", client_ip = %self.client_ip, "{}", message);
     }
 
     async fn validate_and_set_home_dir(
@@ -131,24 +141,47 @@ impl russh::server::Handler for SftpHandler {
             });
         }
         
+        debug!(user = %user, ip = %self.client_ip, "[SFTP AUTH] 用户尝试密码认证");
+        
         let auth_result = {
             match self.user_manager.try_lock() {
                 Ok(mut users) => {
-                    if users.get_user(user).is_none() {
-                        let _ = users.reload(&self.users_path);
+                    // Always reload users from disk to ensure latest data
+                    debug!(users_path = ?self.users_path, "[SFTP AUTH] 重新加载用户配置文件");
+                    if let Err(e) = users.reload(&self.users_path) {
+                        error!(error = %e, "[SFTP AUTH] 重新加载用户配置失败");
+                    }
+                    let user_count = users.get_users().len();
+                    debug!(user_count = user_count, "[SFTP AUTH] 当前内存中用户数");
+                    
+                    // 检查用户是否存在
+                    if let Some(u) = users.get_user(user) {
+                        debug!(
+                            user = %user,
+                            enabled = u.enabled,
+                            home_dir = %u.home_dir,
+                            "[SFTP AUTH] 找到用户"
+                        );
+                    } else {
+                        warn!(user = %user, "[SFTP AUTH] 未找到用户");
                     }
                     
                     match users.authenticate(user, password) {
                         Ok(true) => {
+                            info!(user = %user, "[SFTP AUTH] 用户密码认证成功");
                             self.authenticated = true;
                             self.username = Some(user.to_string());
                             users.get_user(user).map(|u| u.home_dir.clone())
                         }
-                        Ok(false) | Err(_) => None,
+                        Ok(false) | Err(_) => {
+                            info!(user = %user, "[SFTP AUTH] 用户密码认证失败");
+                            None
+                        },
                     }
                 }
                 Err(_) => {
                     self.log_warning("Failed to acquire user_manager lock during password auth");
+                    error!("[SFTP AUTH] 获取 UserManager 锁失败");
                     return Ok(server::Auth::Reject { 
                         proceed_with_methods: None,
                         partial_success: false,
@@ -216,17 +249,45 @@ impl russh::server::Handler for SftpHandler {
             });
         }
         
+        debug!(user = %user, ip = %self.client_ip, "[SFTP AUTH] 用户尝试公钥认证");
+        
+        // Always reload users from disk to ensure latest data
+        {
+            match self.user_manager.try_lock() {
+                Ok(mut users) => {
+                    debug!(users_path = ?self.users_path, "[SFTP AUTH] 重新加载用户配置文件");
+                    if let Err(e) = users.reload(&self.users_path) {
+                        error!(error = %e, "[SFTP AUTH] 重新加载用户配置失败");
+                    }
+                    let user_count = users.get_users().len();
+                    debug!(user_count = user_count, "[SFTP AUTH] 当前内存中用户数");
+                }
+                Err(_) => {
+                    self.log_warning("Failed to acquire user_manager lock during public key auth");
+                    error!("[SFTP AUTH] 获取 UserManager 锁失败");
+                }
+            }
+        }
+        
         let (enabled, user_home_dir) = {
             match self.user_manager.try_lock() {
                 Ok(users) => {
                     if let Some(u) = users.get_user(user) {
+                        debug!(
+                            user = %user,
+                            enabled = u.enabled,
+                            home_dir = %u.home_dir,
+                            "[SFTP AUTH] 找到用户"
+                        );
                         (u.enabled, u.home_dir.clone())
                     } else {
+                        warn!(user = %user, "[SFTP AUTH] 未找到用户或用户已禁用");
                         (false, String::new())
                     }
                 }
                 Err(_) => {
                     self.log_warning("Failed to acquire user_manager lock during public key auth");
+                    error!("[SFTP AUTH] 获取 UserManager 锁失败 (检查用户)");
                     return Ok(server::Auth::Reject { 
                         proceed_with_methods: None,
                         partial_success: false,
@@ -236,6 +297,7 @@ impl russh::server::Handler for SftpHandler {
         };
         
         if !enabled {
+            info!(user = %user, "[SFTP AUTH] 用户公钥认证失败：用户未找到或已禁用");
             self.log_client_action(
                 "SFTP",
                 &format!("Public key auth failed for user {}: user not found or disabled", user),

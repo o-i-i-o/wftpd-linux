@@ -8,6 +8,7 @@ use gtk::glib::{self, clone};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::os::unix::fs::PermissionsExt;
 use crate::AppState;
+use tracing::{info, warn, error};
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);

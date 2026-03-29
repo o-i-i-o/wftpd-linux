@@ -16,6 +16,7 @@ pub struct IpcRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IpcCommand {
     ReloadConfig,
+    ReloadUsers,
     GetConfig,
     SaveConfig { content: String },
     GetUsers,

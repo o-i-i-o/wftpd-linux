@@ -7,10 +7,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::server::TlsStream;
+use tracing::{info, debug, warn, error};
 
 use crate::core::config::Config;
 use crate::core::file_logger::FileLogger;
-use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::server::common::login_tracker::LoginTracker;
 use crate::server::common::quota::QuotaCache;
@@ -65,7 +65,7 @@ impl FtpStream {
 pub struct FtpSessionConfig {
     pub config: Arc<std::sync::Mutex<Config>>,
     pub user_manager: Arc<std::sync::Mutex<UserManager>>,
-    pub logger: Arc<std::sync::Mutex<Logger>>,
+    // pub logger: Arc<std::sync::Mutex<Logger>>,  // ← 已移除，使用 tracing
     pub file_logger: Arc<std::sync::Mutex<FileLogger>>,
     pub passive_listeners: PassiveListenerMap,
     pub rate_limiter: Arc<RateLimiter>,
@@ -79,7 +79,7 @@ pub struct FtpSession {
     pub stream: FtpStream,
     pub config: Arc<std::sync::Mutex<Config>>,
     pub user_manager: Arc<std::sync::Mutex<UserManager>>,
-    pub logger: Arc<std::sync::Mutex<Logger>>,
+    // pub logger: Arc<std::sync::Mutex<Logger>>,  // ← 已移除，使用 tracing
     pub file_logger: Arc<std::sync::Mutex<FileLogger>>,
     pub passive_listeners: PassiveListenerMap,
     pub rate_limiter: Arc<RateLimiter>,
@@ -119,7 +119,7 @@ impl FtpSession {
             stream: FtpStream::Plain(stream),
             config: session_config.config,
             user_manager: session_config.user_manager,
-            logger: session_config.logger,
+            // logger: session_config.logger,  // ← 已移除
             file_logger: session_config.file_logger,
             passive_listeners: session_config.passive_listeners,
             rate_limiter: session_config.rate_limiter,
@@ -149,21 +149,24 @@ impl FtpSession {
 
     pub async fn run(&mut self) -> Result<()> {
         if let Err(_e) = self.rate_limiter.check_and_record(&self.remote_ip) {
-            self.logger.lock().unwrap().warning(
-                "FTP",
-                &format!("Rate limit exceeded for {}", self.remote_ip),
-            );
+            warn!(client_ip = %self.remote_ip, "FTP 连接频率超限");
             self.stream.write_all(b"421 Too many connections, try again later\r\n").await?;
             return Ok(());
         }
 
-        self.logger.lock().unwrap().client_action(
-            "FTP",
-            &format!("Client connected from {}", self.remote_ip),
-            &self.remote_ip,
-            None,
-            "CONNECT",
-        );
+        // 记录文件操作审计日志
+        if let Ok(mut file_log) = self.file_logger.try_lock() {
+            file_log.log(crate::core::file_logger::FileLogInfo {
+                username: "anonymous",
+                client_ip: &self.remote_ip,
+                operation: "CONNECT",
+                file_path: "-",
+                file_size: 0,
+                protocol: "FTP",
+                success: true,
+                message: "客户端已连接",
+            });
+        }
 
         let is_allowed = {
             let cfg = self.config.lock().unwrap();
@@ -171,9 +174,7 @@ impl FtpSession {
         };
         
         if !is_allowed {
-            if let Ok(mut log) = self.logger.try_lock() {
-                log.warning("FTP", &format!("Connection rejected from {} by IP filter", self.remote_ip));
-            }
+            warn!(client_ip = %self.remote_ip, "FTP 连接被 IP 过滤器拒绝");
             self.stream.write_all(b"530 Connection denied by IP filter\r\n").await?;
             self.rate_limiter.release_for_ip(&self.remote_ip);
             return Ok(());
@@ -214,17 +215,11 @@ impl FtpSession {
                     }
                 }
                 Ok(Err(e)) => {
-                    self.logger.lock().unwrap().error(
-                        "FTP",
-                        &format!("Read error from {}: {}", self.remote_ip, e),
-                    );
+                    error!(client_ip = %self.remote_ip, error = %e, "FTP 读取错误");
                     break;
                 }
                 Err(_) => {
-                    self.logger.lock().unwrap().warning(
-                        "FTP",
-                        &format!("Idle timeout from {} ({}s)", self.remote_ip, idle_timeout),
-                    );
+                    warn!(client_ip = %self.remote_ip, timeout = idle_timeout, "FTP 连接空闲超时");
                     break;
                 }
             }

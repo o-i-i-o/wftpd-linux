@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::fs::File;
+use tracing::{info, debug, warn, error};
 
 use super::super::data_connection::get_data_connection;
 use super::super::handler::FtpSession;
@@ -66,20 +67,14 @@ impl FtpSession {
                         }
                     }
                     Err(e) => {
-                        self.logger.lock().unwrap().warning(
-                            "FTP",
-                            &format!("Failed to read directory {}: {}", cwd, e),
-                        );
+                        warn!(directory = %cwd, error = %e, "FTP 读取目录失败");
                     }
                 }
                 self.cleanup_data_connection().await;
                 self.stream.write_all(b"226 Transfer complete\r\n").await?;
             }
             Err(e) => {
-                self.logger.lock().unwrap().warning(
-                    "FTP",
-                    &format!("Failed to get data connection: {}", e),
-                );
+                warn!(error = %e, "FTP 数据连接获取失败");
                 self.cleanup_data_connection().await;
                 self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
             }
@@ -135,10 +130,7 @@ impl FtpSession {
                 self.stream.write_all(b"226 Transfer complete\r\n").await?;
             }
             Err(e) => {
-                self.logger.lock().unwrap().warning(
-                    "FTP",
-                    &format!("Failed to get data connection: {}", e),
-                );
+                warn!(error = %e, "FTP 数据连接获取失败");
                 self.cleanup_data_connection().await;
                 self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
             }
@@ -162,24 +154,21 @@ impl FtpSession {
                 }
             };
             
-            self.logger.lock().unwrap().debug(
-                "FTP",
-                &format!(
-                    "RETR: input='{}', cwd='{}', home='{}', resolved='{}'",
-                    filename, self.cwd, self.home_dir, file_path.display()
-                ),
+            // 使用 tracing 记录调试日志
+            debug!(
+                filename = %filename,
+                cwd = %self.cwd,
+                home = %self.home_dir,
+                resolved = %file_path.display(),
+                "FTP RETR 命令参数"
             );
 
             if !file_path.exists() || !file_path.is_file() || !file_path.starts_with(Path::new(&self.home_dir)) {
-                self.logger.lock().unwrap().warning(
-                    "FTP",
-                    &format!(
-                        "RETR: File not found or access denied: {} (exists={}, is_file={}, in_home={})",
-                        file_path.display(),
-                        file_path.exists(),
-                        file_path.is_file(),
-                        file_path.starts_with(&self.home_dir)
-                    ),
+                warn!(
+                    file = %file_path.display(),
+                    exists = file_path.exists(),
+                    is_file = file_path.is_file(),
+                    "FTP RETR: 文件不存在或访问被拒绝"
                 );
                 self.stream.write_all(b"550 File not found\r\n").await?;
                 return Ok(());
@@ -254,7 +243,7 @@ impl FtpSession {
                                 Ok(n) => {
                                     total_read += n as u64;
                                     if data_stream.write_all(&buf[..n]).await.is_err() {
-                                        log::error!("RETR write error to data stream for file: {}", file_path.display());
+                                        error!(file = %file_path.display(), "RETR write error to data stream");
                                         transfer_success = false;
                                         break;
                                     }
@@ -275,26 +264,23 @@ impl FtpSession {
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!("RETR read error from file: {} - {}", file_path.display(), e);
+                                    error!(file = %file_path.display(), error = %e, "RETR read error from file");
                                     transfer_success = false;
                                     break;
                                 }
                             }
                         }
                         if transfer_success {
-                            log::info!("RETR completed: {} bytes sent from {}", total_read, file_path.display());
+                            info!(bytes_sent = total_read, file = %file_path.display(), "RETR completed");
+                        } else {
+                            error!(file = %file_path.display(), "RETR failed to open file");
                         }
-                    } else {
-                        log::error!("RETR failed to open file: {}", file_path.display());
                     }
                     self.cleanup_data_connection().await;
                     self.stream.write_all(b"226 Transfer complete\r\n").await?;
                 }
                 Err(e) => {
-                    self.logger.lock().unwrap().warning(
-                        "FTP",
-                        &format!("Failed to get data connection: {}", e),
-                    );
+                    warn!(error = %e, "FTP 数据连接获取失败");
                     self.cleanup_data_connection().await;
                     self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                     return Ok(());
@@ -310,15 +296,13 @@ impl FtpSession {
                 "FTP",
             );
 
-            self.logger.lock().unwrap().client_action(
-                "FTP",
-                &format!(
-                    "Downloaded: {} ({} bytes from offset {})",
-                    filename, remaining, self.rest_offset
-                ),
-                &self.remote_ip,
-                self.current_user.as_deref(),
-                "DOWNLOAD",
+            // 使用 tracing 记录文件操作审计日志
+            info!(
+                username = self.current_user.as_deref().unwrap_or("anonymous"),
+                client_ip = %self.remote_ip,
+                file = %file_path.to_string_lossy(),
+                size = file_size,
+                "FTP 文件下载完成"
             );
 
             self.rest_offset = 0;
@@ -357,18 +341,19 @@ impl FtpSession {
                 }
             };
 
-            self.logger.lock().unwrap().debug(
-                "FTP",
-                &format!(
-                    "STOR: input='{}', cwd='{}', home='{}', resolved='{}'",
-                    filename, self.cwd, self.home_dir, file_path.display()
-                ),
+            // 使用 tracing 记录调试日志
+            debug!(
+                filename = %filename,
+                cwd = %self.cwd,
+                home = %self.home_dir,
+                resolved = %file_path.display(),
+                "FTP STOR 命令参数"
             );
 
             if !file_path.starts_with(&self.home_dir) {
-                self.logger.lock().unwrap().warning(
-                    "FTP",
-                    &format!("STOR: Path outside home directory: {}", file_path.display()),
+                warn!(
+                    file = %file_path.display(),
+                    "FTP STOR: 路径超出主目录限制"
                 );
                 self.stream.write_all(b"550 Permission denied\r\n").await?;
                 return Ok(());
@@ -378,12 +363,11 @@ impl FtpSession {
                 let current_usage = self.quota_cache.calculate_usage(&self.home_dir);
                 let quota_bytes = quota_mb * 1024 * 1024;
                 if current_usage >= quota_bytes {
-                    self.logger.lock().unwrap().warning(
-                        "FTP",
-                        &format!("Quota exceeded for user {}: {}MB / {}MB", 
-                            self.current_user.as_deref().unwrap_or("anonymous"),
-                            current_usage / 1024 / 1024,
-                            quota_mb),
+                    warn!(
+                        username = self.current_user.as_deref().unwrap_or("anonymous"),
+                        usage_mb = current_usage / 1024 / 1024,
+                        quota_mb = quota_mb,
+                        "FTP 配额超限"
                     );
                     self.stream.write_all(b"552 Quota exceeded, upload denied\r\n").await?;
                     return Ok(());
@@ -447,10 +431,7 @@ impl FtpSession {
                                     Ok(0) => break,
                                     Ok(n) => {
                                         if file.write_all(&buf[..n]).await.is_err() {
-                                            self.logger.lock().unwrap().error(
-                                                "FTP",
-                                                &format!("STOR write error for file: {}", file_path.display()),
-                                            );
+                                            error!(file = %file_path.display(), "FTP STOR 写入错误");
                                             transfer_success = false;
                                             break;
                                         }
@@ -472,10 +453,7 @@ impl FtpSession {
                                         }
                                     }
                                     Err(e) => {
-                                        self.logger.lock().unwrap().error(
-                                            "FTP",
-                                            &format!("STOR read error from data stream: {}", e),
-                                        );
+                                        error!(error = %e, "FTP STOR 数据流读取错误");
                                         transfer_success = false;
                                         break;
                                     }
@@ -483,31 +461,23 @@ impl FtpSession {
                             }
                             if transfer_success {
                                 if let Err(e) = file.sync_all().await {
-                                    self.logger.lock().unwrap().error(
-                                        "FTP",
-                                        &format!("Failed to sync file {:?}: {}", file_path, e),
-                                    );
+                                    error!(file = %file_path, error = %e, "FTP STOR 同步文件失败");
                                 }
-                                self.logger.lock().unwrap().info(
-                                    "FTP",
-                                    &format!("STOR completed: {} bytes written to {}", total_written, file_path.display()),
+                                info!(
+                                    bytes = total_written,
+                                    file = %file_path.display(),
+                                    "FTP STOR 完成"
                                 );
                             }
                         }
                         Err(e) => {
-                            self.logger.lock().unwrap().error(
-                                "FTP",
-                                &format!("STOR failed to create file {}: {}", file_path.display(), e),
-                            );
+                            error!(file = %file_path.display(), error = %e, "FTP STOR 创建文件失败");
                         }
                     }
                     self.cleanup_data_connection().await;
                 }
                 Err(e) => {
-                    self.logger.lock().unwrap().warning(
-                        "FTP",
-                        &format!("Failed to get data connection: {}", e),
-                    );
+                    warn!(error = %e, "FTP 数据连接获取失败");
                     self.cleanup_data_connection().await;
                     self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                     return Ok(());
@@ -537,12 +507,13 @@ impl FtpSession {
                     );
                 }
 
-                self.logger.lock().unwrap().client_action(
-                    "FTP",
-                    &format!("Uploaded: {} ({} bytes) at offset {}", filename, uploaded_size, self.rest_offset),
-                    &self.remote_ip,
-                    self.current_user.as_deref(),
-                    "UPLOAD",
+                // 使用 tracing 记录文件操作审计日志
+                info!(
+                    username = self.current_user.as_deref().unwrap_or("anonymous"),
+                    client_ip = %self.remote_ip,
+                    file = %file_path.to_string_lossy(),
+                    size = uploaded_size,
+                    "FTP 文件上传完成"
                 );
             } else {
                 self.stream.write_all(b"451 Transfer failed\r\n").await?;
@@ -632,10 +603,7 @@ impl FtpSession {
                     self.stream.write_all(b"226 Transfer complete\r\n").await?;
                 }
                 Err(e) => {
-                    self.logger.lock().unwrap().warning(
-                        "FTP",
-                        &format!("Failed to get data connection: {}", e),
-                    );
+                    warn!(error = %e, "FTP 数据连接获取失败");
                     self.cleanup_data_connection().await;
                     self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                     return Ok(());
@@ -654,12 +622,12 @@ impl FtpSession {
                 message: "文件追加成功",
             });
 
-            self.logger.lock().unwrap().client_action(
-                "FTP",
-                &format!("Appended: {}", filename),
-                &self.remote_ip,
-                self.current_user.as_deref(),
-                "APPEND",
+            // 使用 tracing 记录文件操作审计日志
+            info!(
+                username = self.current_user.as_deref().unwrap_or("anonymous"),
+                client_ip = %self.remote_ip,
+                file = %filename,
+                "FTP 文件追加完成"
             );
         }
         Ok(())
@@ -743,26 +711,17 @@ impl FtpSession {
                         }
                         if transfer_success
                             && let Err(e) = file.sync_all().await {
-                                self.logger.lock().unwrap().error(
-                                    "FTP",
-                                    &format!("STOU sync error: {}", e),
-                                );
+                                error!(file = %unique_name, error = %e, "FTP STOU 同步文件失败");
                             }
                     }
                     Err(e) => {
-                        self.logger.lock().unwrap().error(
-                            "FTP",
-                            &format!("STOU failed to create file: {}", e),
-                        );
+                        error!(file = %unique_name, error = %e, "FTP STOU 创建文件失败");
                     }
                 }
                 self.cleanup_data_connection().await;
             }
             Err(e) => {
-                self.logger.lock().unwrap().warning(
-                    "FTP",
-                    &format!("Failed to get data connection: {}", e),
-                );
+                warn!(error = %e, "FTP 数据连接获取失败");
                 self.cleanup_data_connection().await;
                 self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
                 return Ok(());
@@ -781,12 +740,13 @@ impl FtpSession {
                 "FTP",
             );
 
-            self.logger.lock().unwrap().client_action(
-                "FTP",
-                &format!("STOU uploaded: {} ({} bytes)", unique_name, uploaded_size),
-                &self.remote_ip,
-                self.current_user.as_deref(),
-                "UPLOAD",
+            // 使用 tracing 记录文件操作审计日志
+            info!(
+                username = self.current_user.as_deref().unwrap_or("anonymous"),
+                client_ip = %self.remote_ip,
+                file = %unique_name,
+                size = uploaded_size,
+                "FTP STOU 上传完成"
             );
         } else {
             self.stream.write_all(b"451 Transfer failed\r\n").await?;

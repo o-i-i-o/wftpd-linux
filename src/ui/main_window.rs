@@ -36,15 +36,16 @@ pub fn build_ui(app: &Application) {
     window.connect_delete_event(move |_, _| {
         let state_for_stop = Arc::clone(&state_clone);
         gtk::glib::MainContext::default().spawn_local(async move {
-            let (server_manager, logger) = {
+            let server_manager = {
                 if let Ok(s) = state_for_stop.lock() {
-                    (s.server_manager.clone(), Arc::clone(&s.logger))
+                    s.server_manager.clone()
                 } else {
                     return;
                 }
             };
-            server_manager.stop_ftp(&logger).await;
-            server_manager.stop_sftp(&logger).await;
+            // 使用 tracing 记录日志，不再需要 logger 参数
+            server_manager.stop_ftp().await;
+            server_manager.stop_sftp().await;
         });
         gtk::glib::Propagation::Proceed
     });

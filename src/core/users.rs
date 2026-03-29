@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
+use tracing::{info, debug, warn, error};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,30 +80,48 @@ impl UserManager {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
+        debug!("[UserManager] 尝试加载用户配置文件：{:?}", path);
+        
         if !path.exists() {
+            warn!("[UserManager] 用户配置文件不存在：{:?}，将创建空用户管理器", path);
             return Ok(Self::new());
         }
 
+        info!("[UserManager] 用户配置文件存在，开始读取：{:?}", path);
+        
         let content = match fs::read_to_string(path) {
-            Ok(c) => c,
+            Ok(c) => {
+                debug!("[UserManager] 成功读取用户配置文件，大小：{} 字节", c.len());
+                c
+            },
             Err(e) => {
+                error!("[UserManager] 读取用户配置文件失败：{} - {:?}", e, path);
                 eprintln!("Warning: Failed to read users file: {}", e);
                 return Ok(Self::new());
             }
         };
 
         if content.trim().is_empty() {
+            warn!("[UserManager] 用户配置文件内容为空：{:?}", path);
             return Ok(Self::new());
         }
 
-        let manager: UserManager = match serde_json::from_str(&content) {
-            Ok(m) => m,
-            Err(e) => {
+        debug!("[UserManager] 开始解析 JSON 内容...");
+        let manager: UserManager = serde_json::from_str(&content)
+            .unwrap_or_else(|e| {
+                error!("[UserManager] 解析用户配置文件 JSON 失败：{} - 内容预览：{}", 
+                           e, &content[..content.len().min(200)]);
                 eprintln!("Warning: Failed to parse users file: {}", e);
-                return Ok(Self::new());
-            }
-        };
+                UserManager::new()
+            });
+        
+        info!("[UserManager] 成功加载 {} 个用户", manager.users.len());
+        for (username, user) in &manager.users {
+            debug!("[UserManager]   - 用户：{}, 启用：{}, 主目录：{}, 权限：{}", 
+                       username, user.enabled, user.home_dir, user.permissions);
+        }
 
+        info!("[UserManager] 用户配置加载完成");
         Ok(manager)
     }
 
@@ -135,7 +154,7 @@ impl UserManager {
         let parsed_hash = match PasswordHash::new(hash) {
             Ok(h) => h,
             Err(e) => {
-                log::warn!("Failed to parse password hash: {}", e);
+                warn!("Failed to parse password hash: {}", e);
                 return false;
             }
         };
@@ -274,31 +293,52 @@ impl UserManager {
     }
 
     pub fn reload(&mut self, path: &Path) -> Result<()> {
+        debug!("[UserManager::reload] 尝试重新加载用户配置文件：{:?}", path);
+        
         if !path.exists() {
+            warn!("[UserManager::reload] 用户配置文件不存在：{:?}", path);
             return Ok(());
         }
 
+        info!("[UserManager::reload] 开始重新加载用户配置文件：{:?}", path);
+        
         let content = match fs::read_to_string(path) {
-            Ok(c) => c,
+            Ok(c) => {
+                debug!("[UserManager::reload] 成功读取文件，大小：{} 字节", c.len());
+                c
+            },
             Err(e) => {
-                log::warn!("Failed to read users file during reload: {}", e);
+                error!("[UserManager::reload] 读取文件失败：{} - {:?}", e, path);
+                warn!("Failed to read users file during reload: {}", e);
                 return Ok(());
             }
         };
 
         if content.trim().is_empty() {
+            warn!("[UserManager::reload] 文件内容为空：{:?}", path);
             return Ok(());
         }
 
-        let manager: UserManager = match serde_json::from_str(&content) {
-            Ok(m) => m,
-            Err(e) => {
-                log::warn!("Failed to parse users file during reload: {}", e);
-                return Ok(());
-            }
-        };
+        debug!("[UserManager::reload] 开始解析 JSON...");
+        let manager: UserManager = serde_json::from_str(&content)
+            .unwrap_or_else(|e| {
+                error!("[UserManager::reload] 解析 JSON 失败：{} - 内容预览：{}", 
+                           e, &content[..content.len().min(200)]);
+                warn!("Failed to parse users file during reload: {}", e);
+                UserManager::new()
+            });
+        
+        info!("[UserManager::reload] 成功重新加载 {} 个用户 (原用户数：{})", 
+                  manager.users.len(), self.users.len());
+        for (username, user) in &manager.users {
+            debug!("[UserManager::reload]   - 用户：{}, 启用：{}, 主目录：{}", 
+                       username, user.enabled, user.home_dir);
+        }
 
+        let old_count = self.users.len();
         self.users = manager.users;
+        info!("[UserManager::reload] 重新加载完成，用户数变化：{} -> {}", 
+                  old_count, self.users.len());
         Ok(())
     }
 

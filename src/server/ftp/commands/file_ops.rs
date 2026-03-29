@@ -1,8 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
-
-use super::super::handler::FtpSession;
-use super::super::utils::{get_file_mtime_raw, safe_resolve_path};
+use tracing::{info, debug, warn, error};
 
 impl FtpSession {
     pub async fn cmd_dele(&mut self, arg: Option<&str>) -> Result<()> {
@@ -45,12 +43,12 @@ impl FtpSession {
                         &file_path.to_string_lossy(),
                         "FTP",
                     );
-                    self.logger.lock().unwrap().client_action(
-                        "FTP",
-                        &format!("Deleted: {}", filename),
-                        &self.remote_ip,
-                        self.current_user.as_deref(),
-                        "DELETE",
+                    // 使用 tracing 记录日志
+                    info!(
+                        username = self.current_user.as_deref().unwrap_or("anonymous"),
+                        client_ip = %self.remote_ip,
+                        file = %filename,
+                        "FTP 文件删除成功"
                     );
                 }
                 Err(e) => {
@@ -80,9 +78,12 @@ impl FtpSession {
         }
 
         if let Some(from_name) = arg {
-            self.logger.lock().unwrap().debug(
-                "FTP",
-                &format!("RNFR: input='{}', cwd='{}', home='{}'", from_name, self.cwd, self.home_dir),
+            // 使用 tracing 记录调试日志
+            debug!(
+                input = %from_name,
+                cwd = %self.cwd,
+                home = %self.home_dir,
+                "FTP RNFR 命令参数"
             );
             
             let from_path = match safe_resolve_path(&self.cwd, &self.home_dir, from_name) {
@@ -90,17 +91,16 @@ impl FtpSession {
                 Err(e) => {
                     let error_msg = format!("550 Path resolution failed: {}\r\n", e);
                     self.stream.write_all(error_msg.as_bytes()).await?;
-                    self.logger.lock().unwrap().warning(
-                        "FTP",
-                        &format!("RNFR path resolution failed: {}", e),
-                    );
+                    warn!(error = %e, "FTP RNFR 路径解析失败");
                     return Ok(());
                 }
             };
             
-            self.logger.lock().unwrap().debug(
-                "FTP",
-                &format!("RNFR: resolved path='{}', exists={}", from_path.display(), from_path.exists()),
+            // 使用 tracing 记录调试日志
+            debug!(
+                resolved = %from_path.display(),
+                exists = from_path.exists(),
+                "FTP RNFR 解析路径"
             );
             
             let home_path = Path::new(&self.home_dir);
@@ -112,9 +112,10 @@ impl FtpSession {
             if from_path.exists() && from_path.starts_with(&home_canon) {
                 self.rename_from = Some(from_path.to_string_lossy().to_string());
                 self.stream.write_all(b"350 File exists, ready for destination name\r\n").await?;
-                self.logger.lock().unwrap().debug(
-                    "FTP",
-                    &format!("RNFR: stored path for rename: {}", from_path.display()),
+                // 使用 tracing 记录调试日志
+                debug!(
+                    from_path = %from_path.display(),
+                    "FTP RNFR 存储路径"
                 );
             } else {
                 let reason = if !from_path.exists() {
@@ -122,9 +123,11 @@ impl FtpSession {
                 } else {
                     "path outside home directory"
                 };
-                self.logger.lock().unwrap().warning(
-                    "FTP",
-                    &format!("RNFR failed for '{}': {}", from_path.display(), reason),
+                // 使用 tracing 记录警告日志
+                warn!(
+                    from_path = %from_path.display(),
+                    reason = reason,
+                    "FTP RNFR 失败"
                 );
                 self.stream.write_all(b"550 File not found\r\n").await?;
             }
@@ -143,29 +146,31 @@ impl FtpSession {
 
         if let Some(ref from_path) = self.rename_from {
             if let Some(to_name) = arg {
-                self.logger.lock().unwrap().debug(
-                    "FTP",
-                    &format!("RNTO: input='{}', from_path='{}', cwd='{}', home='{}'", 
-                        to_name, from_path, self.cwd, self.home_dir),
+                // 使用 tracing 记录调试日志
+                debug!(
+                    input = %to_name,
+                    from_path = %from_path,
+                    cwd = %self.cwd,
+                    home = %self.home_dir,
+                    "FTP RNTO 命令参数"
                 );
                 
                 let to_path = match safe_resolve_path(&self.cwd, &self.home_dir, to_name) {
                     Ok(p) => p,
-                    Err(e) => {
-                        let error_msg = format!("550 Path resolution failed: {}\r\n", e);
-                        self.stream.write_all(error_msg.as_bytes()).await?;
-                        self.logger.lock().unwrap().warning(
-                            "FTP",
-                            &format!("RNTO path resolution failed: {}", e),
-                        );
-                        self.rename_from = None;
+                        Err(e) => {
+                            let error_msg = format!("550 Path resolution failed: {}\r\n", e);
+                            self.stream.write_all(error_msg.as_bytes()).await?;
+                            // 使用 tracing 记录警告日志
+                            warn!(error = %e, "FTP RNTO 路径解析失败");
+                            self.rename_from = None;
                         return Ok(());
                     }
                 };
                 
-                self.logger.lock().unwrap().debug(
-                    "FTP",
-                    &format!("RNTO: resolved to_path='{}'", to_path.display()),
+                // 使用 tracing 记录调试日志
+                debug!(
+                    resolved_to_path = %to_path.display(),
+                    "FTP RNTO 解析路径"
                 );
                 
                 let home_path = Path::new(&self.home_dir);
@@ -176,9 +181,10 @@ impl FtpSession {
                 
                 if !to_path.starts_with(&home_canon) {
                     self.stream.write_all(b"550 Permission denied\r\n").await?;
-                    self.logger.lock().unwrap().warning(
-                        "FTP",
-                        &format!("RNTO: destination path '{}' outside home directory", to_path.display()),
+                    // 使用 tracing 记录警告日志
+                    warn!(
+                        to_path = %to_path.display(),
+                        "FTP RNTO 目标路径超出主目录范围"
                     );
                     self.rename_from = None;
                     return Ok(());
@@ -199,29 +205,33 @@ impl FtpSession {
                 }
                 
                 match std::fs::rename(from_path, &to_path) {
-                    Ok(_) => {
-                        self.stream.write_all(b"250 Rename successful\r\n").await?;
-                        self.file_logger.lock().unwrap().log_rename(
-                            self.current_user.as_deref().unwrap_or("anonymous"),
-                            &self.remote_ip,
-                            from_path,
-                            &to_path.to_string_lossy(),
-                            "FTP",
-                        );
-                        self.logger.lock().unwrap().client_action(
-                            "FTP",
-                            &format!("Renamed: {} -> {}", from_path, to_path.display()),
-                            &self.remote_ip,
-                            self.current_user.as_deref(),
-                            "RENAME",
-                        );
+                        Ok(_) => {
+                            self.stream.write_all(b"250 Rename successful\r\n").await?;
+                            self.file_logger.lock().unwrap().log_rename(
+                                self.current_user.as_deref().unwrap_or("anonymous"),
+                                &self.remote_ip,
+                                from_path,
+                                &to_path.to_string_lossy(),
+                                "FTP",
+                            );
+                            // 使用 tracing 记录客户端操作审计日志
+                            info!(
+                                username = self.current_user.as_deref().unwrap_or("anonymous"),
+                                client_ip = %self.remote_ip,
+                                from_path = %from_path,
+                                to_path = %to_path.display(),
+                                "FTP 文件重命名成功"
+                            );
                     }
                     Err(e) => {
                         let error_msg = format!("550 Rename failed: {}\r\n", e);
                         self.stream.write_all(error_msg.as_bytes()).await?;
-                        self.logger.lock().unwrap().error(
-                            "FTP",
-                            &format!("RNTO: rename failed from '{}' to '{}': {}", from_path, to_path.display(), e),
+                        // 使用 tracing 记录错误日志
+                        error!(
+                            from_path = %from_path,
+                            to_path = %to_path.display(),
+                            error = %e,
+                            "FTP RNTO 重命名失败"
                         );
                     }
                 }

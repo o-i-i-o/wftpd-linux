@@ -7,12 +7,12 @@ use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tracing::{info, debug, warn, error};
 
 use super::protocol::*;
 use crate::core::server_manager::ServerManager;
 use crate::core::config::Config;
 use crate::core::users::UserManager;
-use crate::core::logger::Logger;
 use crate::core::file_logger::FileLogger;
 use crate::service::ServiceManager;
 
@@ -21,7 +21,6 @@ pub struct IpcServer {
     user_manager: Arc<std::sync::Mutex<UserManager>>,
     server_manager: ServerManager,
     service_manager: ServiceManager,
-    logger: Arc<std::sync::Mutex<Logger>>,
     file_logger: Arc<std::sync::Mutex<FileLogger>>,
     log_sender: broadcast::Sender<LogEntryJson>,
 }
@@ -32,7 +31,6 @@ impl IpcServer {
         user_manager: Arc<std::sync::Mutex<UserManager>>,
         server_manager: ServerManager,
         service_manager: ServiceManager,
-        logger: Arc<std::sync::Mutex<Logger>>,
         file_logger: Arc<std::sync::Mutex<FileLogger>>,
     ) -> Self {
         let (log_sender, _) = broadcast::channel(256);
@@ -42,7 +40,6 @@ impl IpcServer {
             user_manager,
             server_manager,
             service_manager,
-            logger,
             file_logger,
             log_sender,
         }
@@ -63,7 +60,7 @@ impl IpcServer {
         let listener = UnixListener::bind(socket_path)?;
         fs::set_permissions(socket_path, fs::Permissions::from_mode(0o660))?;
         
-        log::info!("IPC server listening on {}", SOCKET_PATH);
+        info!(socket_path = %SOCKET_PATH, "IPC server listening");
         
         loop {
             match listener.accept().await {
@@ -71,12 +68,12 @@ impl IpcServer {
                     let server = self.clone_handler();
                     tokio::spawn(async move {
                         if let Err(e) = server.handle_connection(stream).await {
-                            log::error!("IPC connection error: {}", e);
+                            error!(error = %e, "IPC connection error");
                         }
                     });
                 }
                 Err(e) => {
-                    log::error!("Failed to accept IPC connection: {}", e);
+                    error!(error = %e, "Failed to accept IPC connection");
                 }
             }
         }
@@ -88,7 +85,6 @@ impl IpcServer {
             user_manager: Arc::clone(&self.user_manager),
             server_manager: self.server_manager.clone(),
             service_manager: ServiceManager::new(),
-            logger: Arc::clone(&self.logger),
             file_logger: Arc::clone(&self.file_logger),
             log_sender: self.log_sender.clone(),
         }
@@ -134,7 +130,7 @@ impl IpcServer {
                     }
                 }
                 Err(e) => {
-                    log::error!("Failed to read from IPC client: {}", e);
+                    error!(error = %e, "Failed to read from IPC client");
                     break;
                 }
             }
@@ -170,6 +166,7 @@ impl IpcServer {
     async fn handle_request(&self, request: IpcRequest) -> IpcResponse {
         match request.command {
             IpcCommand::ReloadConfig => self.handle_reload_config(request.id).await,
+            IpcCommand::ReloadUsers => self.handle_reload_users(request.id).await,
             IpcCommand::GetConfig => self.handle_get_config(request.id).await,
             IpcCommand::SaveConfig { content } => self.handle_save_config(request.id, content).await,
             IpcCommand::GetUsers => self.handle_get_users(request.id).await,
@@ -219,6 +216,26 @@ impl IpcServer {
                 IpcResponse::success(id, "Configuration reloaded")
             }
             Err(e) => IpcResponse::error(id, &format!("Failed to reload config: {}", e)),
+        }
+    }
+
+    async fn handle_reload_users(&self, id: u64) -> IpcResponse {
+        info!("[IPC] 收到重新加载用户配置请求");
+        let users_path = Config::get_users_path();
+        debug!(users_path = ?users_path, "[IPC] 重新加载用户配置");
+        match UserManager::load(&users_path) {
+            Ok(new_users) => {
+                let mut users = self.user_manager.lock().unwrap();
+                let old_count = users.get_users().len();
+                let new_count = new_users.get_users().len();
+                *users = new_users;
+                info!(old_count = old_count, new_count = new_count, "[IPC] 用户配置重新加载完成");
+                IpcResponse::success(id, "Users reloaded")
+            }
+            Err(e) => {
+                error!(error = %e, "[IPC] 重新加载用户配置失败");
+                IpcResponse::error(id, &format!("Failed to reload users: {}", e))
+            }
         }
     }
 
@@ -274,35 +291,55 @@ impl IpcServer {
     }
 
     async fn handle_save_users(&self, id: u64, content: String) -> IpcResponse {
+        info!(content_size = content.len(), "[IPC] 收到保存用户配置请求");
+        
         if let Some(parent) = Path::new(USERS_PATH).parent()
             && let Err(e) = fs::create_dir_all(parent) {
+                error!(error = %e, "[IPC] 创建用户配置目录失败");
                 return IpcResponse::error(id, &format!("Failed to create users directory: {}", e));
             }
         
+        debug!(users_path = %USERS_PATH, "[IPC] 保存用户配置");
         match fs::write(USERS_PATH, &content) {
             Ok(()) => {
+                info!("[IPC] 用户配置已成功写入磁盘");
                 let users_path = Config::get_users_path();
+                debug!(users_path = ?users_path, "[IPC] 重新加载用户配置");
                 match UserManager::load(&users_path) {
                     Ok(new_users) => {
                         {
                             let mut users = self.user_manager.lock().unwrap();
+                            let old_count = users.get_users().len();
+                            let new_count = new_users.get_users().len();
                             *users = new_users;
+                            info!(old_count = old_count, new_count = new_count, "[IPC] 内存中用户配置已更新");
                         }
                         match fs::read_to_string(USERS_PATH) {
-                            Ok(saved_content) => IpcResponse {
+                            Ok(saved_content) => {
+                                info!("[IPC] 用户配置保存并加载完成");
+                                IpcResponse {
                                 id,
                                 result: IpcResult::UsersSaved {
                                     message: "Users saved".to_string(),
                                     content: saved_content,
                                 },
+                            }},
+                            Err(e) => {
+                                error!(error = %e, "[IPC] 读取保存的用户配置失败");
+                                IpcResponse::error(id, &format!("Failed to read saved users: {}", e))
                             },
-                            Err(e) => IpcResponse::error(id, &format!("Failed to read saved users: {}", e)),
                         }
                     }
-                    Err(e) => IpcResponse::error(id, &format!("Failed to load saved users: {}", e)),
+                    Err(e) => {
+                        error!(error = %e, "[IPC] 加载保存的用户配置失败");
+                        IpcResponse::error(id, &format!("Failed to load saved users: {}", e))
+                    },
                 }
             }
-            Err(e) => IpcResponse::error(id, &format!("Failed to save users: {}", e)),
+            Err(e) => {
+                error!(error = %e, "[IPC] 写入用户配置文件失败");
+                IpcResponse::error(id, &format!("Failed to save users: {}", e))
+            },
         }
     }
 
@@ -310,7 +347,6 @@ impl IpcServer {
         match self.server_manager.start_ftp(
             Arc::clone(&self.config),
             Arc::clone(&self.user_manager),
-            Arc::clone(&self.logger),
             Arc::clone(&self.file_logger),
         ).await {
             Ok(()) => IpcResponse::success(id, "FTP server started"),
@@ -319,7 +355,7 @@ impl IpcServer {
     }
 
     async fn handle_stop_ftp(&self, id: u64) -> IpcResponse {
-        self.server_manager.stop_ftp(&self.logger).await;
+        self.server_manager.stop_ftp().await;
         IpcResponse::success(id, "FTP server stopped")
     }
 
@@ -327,7 +363,7 @@ impl IpcServer {
         match self.server_manager.start_sftp(
             Arc::clone(&self.config),
             Arc::clone(&self.user_manager),
-            Arc::clone(&self.logger),
+            
             Arc::clone(&self.file_logger),
         ).await {
             Ok(()) => IpcResponse::success(id, "SFTP server started"),
@@ -336,13 +372,13 @@ impl IpcServer {
     }
 
     async fn handle_stop_sftp(&self, id: u64) -> IpcResponse {
-        self.server_manager.stop_sftp(&self.logger).await;
+        self.server_manager.stop_sftp().await;
         IpcResponse::success(id, "SFTP server stopped")
     }
 
     async fn handle_restart_service(&self, id: u64) -> IpcResponse {
-        self.server_manager.stop_ftp(&self.logger).await;
-        self.server_manager.stop_sftp(&self.logger).await;
+        self.server_manager.stop_ftp().await;
+        self.server_manager.stop_sftp().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         
         let (ftp_enabled, sftp_enabled) = {
@@ -354,7 +390,7 @@ impl IpcServer {
             && let Err(e) = self.server_manager.start_ftp(
                 Arc::clone(&self.config),
                 Arc::clone(&self.user_manager),
-                Arc::clone(&self.logger),
+                
                 Arc::clone(&self.file_logger),
             ).await {
                 return IpcResponse::error(id, &format!("Failed to start FTP: {}", e));
@@ -364,7 +400,7 @@ impl IpcServer {
             && let Err(e) = self.server_manager.start_sftp(
                 Arc::clone(&self.config),
                 Arc::clone(&self.user_manager),
-                Arc::clone(&self.logger),
+                
                 Arc::clone(&self.file_logger),
             ).await {
                 return IpcResponse::error(id, &format!("Failed to start SFTP: {}", e));
@@ -380,21 +416,28 @@ impl IpcServer {
     }
 
     async fn handle_get_logs(&self, id: u64, count: usize) -> IpcResponse {
-        let logger = self.logger.lock().unwrap();
-        let entries: Vec<LogEntryJson> = logger
-            .get_recent_logs(count)
-            .into_iter()
-            .map(|e| LogEntryJson {
-                timestamp: e.timestamp.to_rfc3339(),
-                level: e.level.to_string(),
-                source: e.source,
-                message: e.message,
-                client_ip: e.client_ip,
-                username: e.username,
-                action: e.action,
-            })
-            .collect();
-        IpcResponse::logs(id, entries)
+        // 使用 file_logger 获取日志
+        if let Ok(file_logger) = self.file_logger.try_lock() {
+            let entries: Vec<LogEntryJson> = file_logger
+                .get_recent_logs(count)
+                .into_iter()
+                .map(|e| LogEntryJson {
+                    timestamp: e.timestamp.to_rfc3339(),
+                    level: "INFO".to_string(),
+                    source: "FTP".to_string(),
+                    message: format!("{} {} {} - {}", e.username, e.operation, e.file_path, e.message),
+                    client_ip: Some(e.client_ip),
+                    action: Some(e.operation),
+                })
+                .collect();
+            
+            match serde_json::to_vec(&entries) {
+                Ok(data) => IpcResponse { id, success: true, data },
+                Err(e) => IpcResponse::error(id, &format!("Failed to serialize logs: {}", e)),
+            }
+        } else {
+            IpcResponse::error(id, "Failed to access logger")
+        }
     }
 
     async fn handle_write_audit_log(&self, id: u64, user: &str, action: &str, target: &str, details: &str) -> IpcResponse {
@@ -523,7 +566,7 @@ impl IpcServer {
             let path = Path::new(&user.home_dir);
             if !path.exists()
                 && let Err(e) = fs::create_dir_all(path) {
-                    log::warn!("Failed to create directory {}: {}", user.home_dir, e);
+                    warn!(path = %user.home_dir, error = %e, "Failed to create directory");
                 }
         }
         
@@ -566,21 +609,25 @@ impl IpcServer {
 
     async fn handle_get_log_file_content(&self, id: u64, path: &str, count: usize) -> IpcResponse {
         if path == "current" {
-            let logger = self.logger.lock().unwrap();
-            let entries: Vec<LogEntryJson> = logger
-                .get_recent_logs(count)
-                .into_iter()
-                .map(|e| LogEntryJson {
-                    timestamp: e.timestamp.to_rfc3339(),
-                    level: e.level.to_string(),
-                    source: e.source,
-                    message: e.message,
-                    client_ip: e.client_ip,
-                    username: e.username,
-                    action: e.action,
-                })
-                .collect();
-            IpcResponse::logs(id, entries)
+            // 使用 file_logger 获取日志
+            if let Ok(file_logger) = self.file_logger.try_lock() {
+                let entries: Vec<LogEntryJson> = file_logger
+                    .get_recent_logs(count)
+                    .into_iter()
+                    .map(|e| LogEntryJson {
+                        timestamp: e.timestamp.to_rfc3339(),
+                        level: "INFO".to_string(),
+                        source: "FTP".to_string(),
+                        message: format!("{} {} {} - {}", e.username, e.operation, e.file_path, e.message),
+                        client_ip: Some(e.client_ip),
+                        username: Some(e.username),
+                        action: Some(e.operation),
+                    })
+                    .collect();
+                IpcResponse::logs(id, entries)
+            } else {
+                IpcResponse::error(id, "Failed to access logger")
+            }
         } else {
             match fs::read_to_string(path) {
                 Ok(content) => {
@@ -749,15 +796,15 @@ impl IpcServer {
         
         match chgrp_result {
             Ok(status) if status.success() => {
-                log::info!("Changed group ownership to wftpg for {}", path.display());
+                info!("Changed group ownership to wftpg for {}", path.display());
             }
             _ => {
-                log::warn!("Failed to chgrp directory to wftpg group");
+                warn!("Failed to chgrp directory to wftpg group");
             }
         }
         
         if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(0o2770)) {
-            log::warn!("Failed to set directory permissions: {}", e);
+            warn!("Failed to set directory permissions: {}", e);
         }
         
         let setfacl_result = std::process::Command::new("setfacl")
@@ -766,10 +813,10 @@ impl IpcServer {
         
         match setfacl_result {
             Ok(status) if status.success() => {
-                log::info!("Set default ACL for directory {}", path.display());
+                info!("Set default ACL for directory {}", path.display());
             }
             _ => {
-                log::info!("setfacl not available, using umask for file permissions");
+                info!("setfacl not available, using umask for file permissions");
             }
         }
         

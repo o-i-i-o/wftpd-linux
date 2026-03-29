@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex};
+use tracing::{info, error};
 
 use crate::core::config::Config;
 use crate::core::users::UserManager;
-use crate::core::logger::Logger;
+// use crate::core::logger::Logger;  // ← 已移除，使用 tracing
 use crate::core::file_logger::FileLogger;
 use crate::server::ftp::FtpServer;
 use crate::server::sftp::SftpServer;
@@ -25,7 +26,7 @@ impl ServerManager {
         &self,
         config: Arc<Mutex<Config>>,
         user_manager: Arc<Mutex<UserManager>>,
-        logger: Arc<Mutex<Logger>>,
+        // logger: Arc<Mutex<Logger>>,  // ← 已移除
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
         {
@@ -35,7 +36,7 @@ impl ServerManager {
             }
         }
         
-        let server = FtpServer::new(config, user_manager, logger, file_logger);
+        let server = FtpServer::new(config, user_manager, file_logger);
         server.start().await?;
         
         {
@@ -43,10 +44,12 @@ impl ServerManager {
             *ftp_server = Some(server);
         }
         
+        info!("FTP server started");
+        
         Ok(())
     }
     
-    pub async fn stop_ftp(&self, logger: &Arc<Mutex<Logger>>) {
+    pub async fn stop_ftp(&self) {
         let server = {
             let mut ftp_server = self.ftp_server.lock().unwrap();
             ftp_server.take()
@@ -54,9 +57,7 @@ impl ServerManager {
         
         if let Some(srv) = server {
             srv.stop().await;
-            if let Ok(mut log) = logger.lock() {
-                log.info("FTP", "FTP server stopped");
-            }
+            info!("FTP server stopped");
         }
     }
     
@@ -69,7 +70,7 @@ impl ServerManager {
         &self,
         config: Arc<Mutex<Config>>,
         user_manager: Arc<Mutex<UserManager>>,
-        logger: Arc<Mutex<Logger>>,
+        // logger: Arc<Mutex<Logger>>,  // ← 已移除
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
         {
@@ -79,7 +80,7 @@ impl ServerManager {
             }
         }
         
-        let server = SftpServer::new(config, user_manager, Arc::clone(&logger), file_logger);
+        let server = SftpServer::new(config, user_manager, file_logger);
         server.start().await?;
         
         {
@@ -87,14 +88,12 @@ impl ServerManager {
             *sftp_server = Some(server);
         }
         
-        if let Ok(mut log) = logger.lock() {
-            log.info("SFTP", "SFTP server started successfully");
-        }
+        info!("SFTP server started successfully");
         
         Ok(())
     }
     
-    pub async fn stop_sftp(&self, logger: &Arc<Mutex<Logger>>) {
+    pub async fn stop_sftp(&self) {
         let server = {
             let mut sftp_server = self.sftp_server.lock().unwrap();
             sftp_server.take()
@@ -102,9 +101,7 @@ impl ServerManager {
         
         if let Some(srv) = server {
             srv.stop().await;
-            if let Ok(mut log) = logger.lock() {
-                log.info("SFTP", "SFTP server stopped");
-            }
+            info!("SFTP server stopped");
         }
     }
     

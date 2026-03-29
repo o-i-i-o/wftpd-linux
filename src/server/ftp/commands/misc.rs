@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::sync::atomic::Ordering;
+use tracing::info;
 
 use super::super::handler::FtpSession;
 
@@ -104,12 +105,12 @@ impl FtpSession {
             if let Ok(offset) = offset_str.parse::<u64>() {
                 self.rest_offset = offset;
                 self.stream.write_all(format!("350 Restarting at {}\r\n", offset).as_bytes()).await?;
-                self.logger.lock().unwrap().client_action(
-                    "FTP",
-                    &format!("REST command: offset {}", offset),
-                    &self.remote_ip,
-                    self.current_user.as_deref(),
-                    "REST",
+                // 使用 tracing 记录客户端操作审计日志
+                info!(
+                    username = self.current_user.as_deref().unwrap_or("anonymous"),
+                    client_ip = %self.remote_ip,
+                    offset = offset,
+                    "FTP 设置断点续传位置"
                 );
             } else {
                 self.stream.write_all(b"501 Syntax error in REST parameter\r\n").await?;
@@ -192,12 +193,11 @@ impl FtpSession {
         
         self.stream.write_all(b"220 Ready for new user\r\n").await?;
         
-        self.logger.lock().unwrap().client_action(
-            "FTP",
-            "Session reinitialized",
-            &self.remote_ip,
-            None,
-            "REIN",
+        // 使用 tracing 记录客户端操作审计日志
+        info!(
+            client_ip = %self.remote_ip,
+            old_username = self.current_user.as_deref().unwrap_or("none"),
+            "FTP 会话重新初始化"
         );
         
         Ok(())

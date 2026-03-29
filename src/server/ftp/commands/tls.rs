@@ -41,18 +41,18 @@ impl FtpSession {
                     Ok(tls_stream) => {
                         self.stream = FtpStream::Tls(Box::new(tls_stream));
                         self.tls_enabled = true;
-                        self.logger.lock().unwrap().client_action(
-                            "FTP",
-                            "TLS negotiation successful",
-                            &self.remote_ip,
-                            self.current_user.as_deref(),
-                            "TLS_START",
+                        // 使用 tracing 记录日志
+                        info!(
+                            username = self.current_user.as_deref().unwrap_or("anonymous"),
+                            client_ip = %self.remote_ip,
+                            "FTP TLS 协商成功"
                         );
                     }
                     Err(e) => {
-                        self.logger.lock().unwrap().error(
-                            "FTP",
-                            &format!("TLS negotiation failed: {}", e),
+                        error!(
+                            client_ip = %self.remote_ip,
+                            error = %e,
+                            "FTP TLS 协商失败"
                         );
                         return Err(anyhow::anyhow!("TLS negotiation failed: {}", e));
                     }
@@ -117,12 +117,11 @@ impl FtpSession {
                 "P" => {
                     self.tls_data_required = true;
                     self.stream.write_all(b"200 PROT Private - Data channel secured\r\n").await?;
-                    self.logger.lock().unwrap().client_action(
-                        "FTP",
-                        "Data channel protection set to Private",
-                        &self.remote_ip,
-                        self.current_user.as_deref(),
-                        "PROT_P",
+                    // 使用 tracing 记录日志
+                    info!(
+                        username = self.current_user.as_deref().unwrap_or("anonymous"),
+                        client_ip = %self.remote_ip,
+                        "FTP PROT 设置为私有数据通道"
                     );
                 }
                 "C" => {
@@ -155,12 +154,11 @@ impl FtpSession {
         self.tls_data_required = false;
         self.pbsz_set = false;
 
-        self.logger.lock().unwrap().client_action(
-            "FTP",
-            "CCC - reverted to clear text",
-            &self.remote_ip,
-            self.current_user.as_deref(),
-            "CCC",
+        // 使用 tracing 记录日志
+        info!(
+            username = self.current_user.as_deref().unwrap_or("anonymous"),
+            client_ip = %self.remote_ip,
+            "FTP CCC 命令：恢复明文通信"
         );
 
         Ok(())

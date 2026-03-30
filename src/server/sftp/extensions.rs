@@ -204,7 +204,8 @@ impl SftpState {
 
         match self.handles.get(&handle_str) {
             Some(handle) if !handle.is_dir => {
-                match fstatvfs(&handle.file) {
+                let file = handle.file.as_ref().ok_or_else(|| anyhow::anyhow!("File handle is None"))?;
+                match fstatvfs(file) {
                     Ok(stats) => Ok(build_statvfs_reply(id, &stats)),
                     Err(e) => {
                         let (status, msg) = match e {
@@ -244,12 +245,15 @@ impl SftpState {
             }
 
         match self.handles.get(&handle_str) {
-            Some(handle) if !handle.is_dir => match handle.file.sync_all().await {
-                Ok(_) => Ok(build_status_packet(id, SSH_FX_OK, "OK", "")),
-                Err(e) => {
-                    log_io_error("FSYNC", &handle.path, &e);
-                    let (status, msg) = io_error_to_sftp_status(&e);
-                    Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
+            Some(handle) if !handle.is_dir => {
+                let file = handle.file.as_ref().ok_or_else(|| anyhow::anyhow!("File handle is None"))?;
+                match file.sync_all().await {
+                    Ok(_) => Ok(build_status_packet(id, SSH_FX_OK, "OK", "")),
+                    Err(e) => {
+                        log_io_error("FSYNC", &handle.path, &e);
+                        let (status, msg) = io_error_to_sftp_status(&e);
+                        Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
+                    }
                 }
             },
             Some(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Handle does not reference a file", "")),

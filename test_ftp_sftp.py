@@ -1048,13 +1048,13 @@ class WFTPDManager:
         self.wftpd_path = None
     
     def find_wftpd(self):
-        """查找 wftpd.exe 路径"""
-        # 在构建目录中查找
+        """查找 wftpd 路径"""
+        # 在构建目录中查找（Linux）
         possible_paths = [
-            Path(__file__).parent / 'target' / 'release' / 'wftpd.exe',
-            Path(__file__).parent / 'target' / 'debug' / 'wftpd.exe',
-            Path(__file__).parent / 'wftpd.exe',
-            Path('C:\\ProgramData\\wftpg\\wftpd.exe'),
+            Path(__file__).parent / 'target' / 'release' / 'wftpd',
+            Path(__file__).parent / 'target' / 'debug' / 'wftpd',
+            Path('/usr/bin/wftpd'),
+            Path('/usr/local/bin/wftpd'),
         ]
         
         for path in possible_paths:
@@ -1079,7 +1079,7 @@ class WFTPDManager:
         else:
             print(f"[错误] FTP ({FTP_PORT}) 和 SFTP ({SFTP_PORT}) 端口均未就绪")
             print("\n请先手动启动 WFTPD 服务：")
-            print("1. 以管理员身份运行：target/release/wftpd.exe")
+            print("1. 运行：sudo ./target/release/wftpd")
             print("2. 或者运行 GUI 程序启动服务")
             print("3. 启动完成后重新运行此测试脚本")
             return False

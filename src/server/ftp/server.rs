@@ -8,7 +8,6 @@ use tokio::sync::{Mutex, Semaphore};
 use tracing::{info, warn, error};
 
 use crate::core::config::Config;
-use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
 use crate::server::common::login_tracker::LoginTracker;
@@ -22,7 +21,6 @@ use super::tls::TlsConfig;
 pub struct FtpServer {
     config: Arc<StdMutex<Config>>,
     user_manager: Arc<StdMutex<UserManager>>,
-    _logger: Arc<StdMutex<Logger>>,
     file_logger: Arc<StdMutex<FileLogger>>,
     running: Arc<StdMutex<bool>>,
     shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
@@ -39,7 +37,6 @@ impl FtpServer {
     pub fn new(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
     ) -> Self {
         let rate_limiter = Arc::new(RateLimiter::new(10, 60, 100));
@@ -66,7 +63,6 @@ impl FtpServer {
         FtpServer {
             config,
             user_manager,
-            _logger: logger,
             file_logger,
             running: Arc::new(StdMutex::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -83,7 +79,6 @@ impl FtpServer {
     pub fn with_tls(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
         tls_config: TlsConfig,
     ) -> Result<Self> {
@@ -99,7 +94,6 @@ impl FtpServer {
         Ok(FtpServer {
             config,
             user_manager,
-            _logger: logger,
             file_logger,
             running: Arc::new(StdMutex::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),

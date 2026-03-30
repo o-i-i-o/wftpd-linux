@@ -12,9 +12,9 @@ use tokio::time::sleep;
 use tracing::{info, warn, error, debug};
 
 use crate::core::config::Config;
-use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
+use crate::server::common::quota::QuotaCache;
 
 use super::handler::SftpHandler;
 
@@ -26,43 +26,43 @@ const MAX_BACKOFF_MS: u64 = 5000;
 pub struct SftpServer {
     config: Arc<StdMutex<Config>>,
     user_manager: Arc<StdMutex<UserManager>>,
-    logger: Arc<StdMutex<Logger>>,
     file_logger: Arc<StdMutex<FileLogger>>,
     running: Arc<AtomicBool>,
     shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     connection_semaphore: Arc<Semaphore>,
     users_path: PathBuf,
     keys_dir: PathBuf,
+    quota_cache: Arc<QuotaCache>,
 }
 
 impl SftpServer {
     pub fn new(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
     ) -> Self {
         let max_connections = config.try_lock()
             .map(|c| c.server.max_connections)
             .unwrap_or(100);
         
+        let quota_cache = Arc::new(QuotaCache::new());
+        
         SftpServer {
             config,
             user_manager,
-            logger,
             file_logger,
             running: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
             connection_semaphore: Arc::new(Semaphore::new(max_connections)),
             users_path: Config::get_users_path(),
             keys_dir: PathBuf::from("/etc/wftpg/keys"),
+            quota_cache,
         }
     }
 
     pub fn with_paths(
         config: Arc<StdMutex<Config>>,
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
         users_path: PathBuf,
         keys_dir: PathBuf,
@@ -71,16 +71,18 @@ impl SftpServer {
             .map(|c| c.server.max_connections)
             .unwrap_or(100);
         
+        let quota_cache = Arc::new(QuotaCache::new());
+        
         SftpServer {
             config,
             user_manager,
-            logger,
             file_logger,
             running: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
             connection_semaphore: Arc::new(Semaphore::new(max_connections)),
             users_path,
             keys_dir,
+            quota_cache,
         }
     }
 
@@ -159,13 +161,13 @@ impl SftpServer {
         self.running.store(true, Ordering::SeqCst);
 
         let user_manager_clone = Arc::clone(&self.user_manager);
-        let logger_clone = Arc::clone(&self.logger);
         let file_logger_clone = Arc::clone(&self.file_logger);
         let running_clone = Arc::clone(&self.running);
         let config_clone = Arc::clone(&self.config);
         let semaphore_clone = Arc::clone(&semaphore);
         let users_path_clone = self.users_path.clone();
         let keys_dir_clone = self.keys_dir.clone();
+        let quota_cache_clone = Arc::clone(&self.quota_cache);
 
         let bind_addr = format!("{}:{}", bind_ip, sftp_port);
         
@@ -201,13 +203,13 @@ impl SftpServer {
                                 
                                 let config = Arc::clone(&config);
                                 let user_manager = Arc::clone(&user_manager_clone);
-                                let logger = Arc::clone(&logger_clone);
                                 let file_logger = Arc::clone(&file_logger_clone);
                                 let client_ip = peer_addr.ip().to_string();
                                 let config_for_filter = Arc::clone(&config_clone);
                                 let semaphore = Arc::clone(&semaphore_clone);
                                 let users_path = users_path_clone.clone();
                                 let keys_dir = keys_dir_clone.clone();
+                                let quota_cache = Arc::clone(&quota_cache_clone);
 
                                 let ip_allowed = match config_for_filter.try_lock() {
                                     Ok(cfg) => cfg.is_ip_allowed(&client_ip),
@@ -235,8 +237,8 @@ impl SftpServer {
                                 tokio::spawn(async move {
                                     let handler = SftpHandler::new(
                                         user_manager,
-                                        logger,
                                         file_logger,
+                                        quota_cache,
                                         client_ip.clone(),
                                         users_path,
                                         keys_dir,

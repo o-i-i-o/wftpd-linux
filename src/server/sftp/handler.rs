@@ -11,15 +11,15 @@ use tokio::sync::Mutex;
 use tracing::{info, debug, warn, error};
 
 use super::state::SftpState;
-use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
 use crate::server::common::utils::is_safe_username;
+use crate::server::common::quota::QuotaCache;
 
 pub struct SftpHandler {
     user_manager: Arc<StdMutex<UserManager>>,
-    logger: Arc<StdMutex<Logger>>,
     file_logger: Arc<StdMutex<FileLogger>>,
+    quota_cache: Arc<QuotaCache>,
     authenticated: bool,
     username: Option<String>,
     home_dir: Option<String>,
@@ -33,16 +33,16 @@ pub struct SftpHandler {
 impl SftpHandler {
     pub fn new(
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
+        quota_cache: Arc<QuotaCache>,
         client_ip: String,
         users_path: std::path::PathBuf,
         keys_dir: PathBuf,
     ) -> Self {
         SftpHandler {
             user_manager,
-            logger,
             file_logger,
+            quota_cache,
             authenticated: false,
             username: None,
             home_dir: None,
@@ -424,8 +424,8 @@ impl russh::server::Handler for SftpHandler {
             home_dir,
             username,
             Arc::clone(&self.user_manager),
-            Arc::clone(&self.logger),
             Arc::clone(&self.file_logger),
+            Arc::clone(&self.quota_cache),
             self.client_ip.clone(),
         ))));
         

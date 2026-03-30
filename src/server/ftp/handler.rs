@@ -65,7 +65,6 @@ impl FtpStream {
 pub struct FtpSessionConfig {
     pub config: Arc<std::sync::Mutex<Config>>,
     pub user_manager: Arc<std::sync::Mutex<UserManager>>,
-    // pub logger: Arc<std::sync::Mutex<Logger>>,  // ← 已移除，使用 tracing
     pub file_logger: Arc<std::sync::Mutex<FileLogger>>,
     pub passive_listeners: PassiveListenerMap,
     pub rate_limiter: Arc<RateLimiter>,
@@ -79,7 +78,6 @@ pub struct FtpSession {
     pub stream: FtpStream,
     pub config: Arc<std::sync::Mutex<Config>>,
     pub user_manager: Arc<std::sync::Mutex<UserManager>>,
-    // pub logger: Arc<std::sync::Mutex<Logger>>,  // ← 已移除，使用 tracing
     pub file_logger: Arc<std::sync::Mutex<FileLogger>>,
     pub passive_listeners: PassiveListenerMap,
     pub rate_limiter: Arc<RateLimiter>,
@@ -119,7 +117,6 @@ impl FtpSession {
             stream: FtpStream::Plain(stream),
             config: session_config.config,
             user_manager: session_config.user_manager,
-            // logger: session_config.logger,  // ← 已移除
             file_logger: session_config.file_logger,
             passive_listeners: session_config.passive_listeners,
             rate_limiter: session_config.rate_limiter,

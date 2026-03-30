@@ -62,7 +62,6 @@ async fn run_service_async() -> Result<()> {
         && let Err(e) = server_manager.start_ftp(
             Arc::clone(&config),
             Arc::clone(&user_manager),
-            Arc::clone(&logger),
             Arc::clone(&file_logger),
         ).await {
             error!("Failed to start FTP server: {}", e);
@@ -72,7 +71,6 @@ async fn run_service_async() -> Result<()> {
         && let Err(e) = server_manager.start_sftp(
             Arc::clone(&config),
             Arc::clone(&user_manager),
-            Arc::clone(&logger),
             Arc::clone(&file_logger),
         ).await {
             error!("Failed to start SFTP server: {}", e);

@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex};
 use tracing::info;
 
 use crate::core::config::Config;
-use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::file_logger::FileLogger;
 use crate::server::ftp::FtpServer;
@@ -23,7 +22,6 @@ impl ServerManager {
         &self,
         config: Arc<Mutex<Config>>,
         user_manager: Arc<Mutex<UserManager>>,
-        logger: Arc<Mutex<Logger>>,
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
         {
@@ -33,7 +31,7 @@ impl ServerManager {
             }
         }
         
-        let server = FtpServer::new(config, user_manager, logger, file_logger);
+        let server = FtpServer::new(config, user_manager, file_logger);
         server.start().await?;
         
         {
@@ -62,7 +60,6 @@ impl ServerManager {
         &self,
         config: Arc<Mutex<Config>>,
         user_manager: Arc<Mutex<UserManager>>,
-        logger: Arc<Mutex<Logger>>,
         file_logger: Arc<Mutex<FileLogger>>,
     ) -> anyhow::Result<()> {
         {
@@ -72,7 +69,7 @@ impl ServerManager {
             }
         }
         
-        let server = SftpServer::new(config, user_manager, logger, file_logger);
+        let server = SftpServer::new(config, user_manager, file_logger);
         server.start().await?;
         
         {

@@ -1,0 +1,60 @@
+{
+  "start_time": "2026-03-30T09:41:32.924086",
+  "ftp": {
+    "total": 17,
+    "passed": 10,
+    "failed": 7,
+    "success_rate": "58.82%",
+    "duration_seconds": 0.42,
+    "errors": [
+      {
+        "test": "STOR 上传文件（MD5 校验）",
+        "reason": "451 Transfer failed"
+      },
+      {
+        "test": "LIST 列出目录",
+        "reason": "目录列表为空"
+      },
+      {
+        "test": "SIZE 获取文件大小",
+        "reason": "550 File not found"
+      },
+      {
+        "test": "MDTM 获取修改时间",
+        "reason": "550 File not found"
+      },
+      {
+        "test": "RETR 下载文件（MD5 校验）",
+        "reason": "550 File not found"
+      },
+      {
+        "test": "RNFR/RNTO 重命名",
+        "reason": "451 Transfer failed"
+      },
+      {
+        "test": "DELE 删除文件",
+        "reason": "451 Transfer failed"
+      }
+    ]
+  },
+  "sftp": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "success_rate": "0.00%",
+    "duration_seconds": 0.05,
+    "errors": [
+      {
+        "test": "SFTP 连接",
+        "reason": "无法连接到 SFTP 服务器"
+      }
+    ]
+  },
+  "summary": {
+    "total_tests": 18,
+    "total_passed": 10,
+    "total_failed": 8,
+    "success_rate": "55.56%"
+  },
+  "end_time": "2026-03-30T09:41:35.392278"
+}

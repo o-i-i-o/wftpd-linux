@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use tracing::{info, warn, debug};
 use std::os::unix::fs::MetadataExt;
 
 use super::packet::*;
@@ -13,7 +14,6 @@ use super::packet::SSH_FX_NO_SUCH_FILE;
 use super::packet::SSH_FX_PERMISSION_DENIED;
 use super::packet::SSH_FX_FAILURE;
 use super::packet::SSH_FX_OP_UNSUPPORTED;
-use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::users::Permissions;
 use crate::core::file_logger::FileLogger;
@@ -48,29 +48,24 @@ const SSH_FXP_EXTENDED: u8 = 200;
 
 pub struct SftpFileHandle {
     pub path: PathBuf,
-    pub file: tokio::fs::File,
+    pub file: Option<tokio::fs::File>,
     pub locked: bool,
     pub existed: bool,
     pub written_bytes: u64,
+    pub read_bytes: u64,
+    // 目录相关字段
     pub is_dir: bool,
-    pub dir_entries: Vec<DirEntryInfo>,
+    pub dir_entries: Vec<(String, bool, u64)>, // (name, is_dir, size)
     pub dir_index: usize,
-}
-
-pub struct DirEntryInfo {
-    pub name: String,
-    pub is_dir: bool,
-    pub size: u64,
-    pub mtime: i64,
-    pub mode: u32,
 }
 
 pub struct SftpState {
     pub home_dir: String,
+    pub cwd: String,
     pub username: Option<String>,
     pub user_manager: Arc<StdMutex<UserManager>>,
-    pub logger: Arc<StdMutex<Logger>>,
     pub file_logger: Arc<StdMutex<FileLogger>>,
+    pub quota_cache: Arc<QuotaCache>,
     pub handles: HashMap<String, SftpFileHandle>,
     pub next_handle_id: u32,
     pub sftp_version: u32,
@@ -78,53 +73,27 @@ pub struct SftpState {
     pub locked_files: HashSet<PathBuf>,
     pub client_ip: String,
     cached_permissions: Option<Permissions>,
-    quota_cache: QuotaCache,
     speed_limiter: Option<Arc<SpeedLimiter>>,
 }
 
 impl Drop for SftpState {
     fn drop(&mut self) {
-        let locked_handles: Vec<(PathBuf, std::fs::File)> = self.handles.drain()
+        let locked_handles: Vec<PathBuf> = self.handles.drain()
             .filter_map(|(_, handle)| {
                 if handle.locked {
-                    if let Ok(file) = handle.file.try_into_std() {
-                        Some((handle.path, file))
-                    } else {
-                        None
-                    }
+                    Some(handle.path)
                 } else {
                     None
                 }
             })
             .collect();
         
-        self.locked_files.clear();
-        
-        if locked_handles.is_empty() {
-            return;
+        for path in locked_handles {
+            self.locked_files.remove(&path);
         }
         
-        let logger = Arc::clone(&self.logger);
-        
-        let _ = std::thread::Builder::new()
-            .name("sftp-cleanup".to_string())
-            .spawn(move || {
-                for (path, file) in locked_handles {
-                    match fs2::FileExt::unlock(&file) {
-                        Ok(()) => {
-                            if let Ok(log) = logger.lock() {
-                                log.info("SFTP", &format!("Auto-unlocked file on drop: {:?}", path));
-                            }
-                        }
-                        Err(e) => {
-                            if let Ok(log) = logger.lock() {
-                                log.warning("SFTP", &format!("Failed to unlock file {:?}: {}", path, e));
-                            }
-                        }
-                    }
-                    drop(file);
-                }
-            });
+        self.locked_files.clear();
+        debug!(username = ?self.username, "SFTP session cleanup completed");
     }
 }
 
@@ -170,8 +139,8 @@ impl SftpState {
         home_dir: String,
         username: Option<String>,
         user_manager: Arc<StdMutex<UserManager>>,
-        logger: Arc<StdMutex<Logger>>,
         file_logger: Arc<StdMutex<FileLogger>>,
+        quota_cache: Arc<QuotaCache>,
         client_ip: String,
     ) -> Self {
         let cached_permissions = username.as_ref().and_then(|u| {
@@ -186,11 +155,12 @@ impl SftpState {
             .map(|limit| Arc::new(SpeedLimiter::new(limit)));
 
         SftpState {
-            home_dir,
+            home_dir: home_dir.clone(),
+            cwd: home_dir,
             username,
             user_manager,
-            logger,
             file_logger,
+            quota_cache,
             handles: HashMap::new(),
             next_handle_id: 0,
             sftp_version: 3,
@@ -198,7 +168,6 @@ impl SftpState {
             locked_files: HashSet::new(),
             client_ip,
             cached_permissions,
-            quota_cache: QuotaCache::new(),
             speed_limiter,
         }
     }
@@ -251,9 +220,7 @@ impl SftpState {
         let username = match &self.username {
             Some(u) => u,
             None => {
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", "Permission check failed: username is None");
-                }
+                warn!("SFTP permission check failed: username is None");
                 return false;
             }
         };
@@ -266,16 +233,13 @@ impl SftpState {
         match users.get_user(username) {
             Some(user) => {
                 let result = check_fn(&user.permissions);
-                if !result
-                    && let Ok(log) = self.logger.lock() {
-                        log.warning("SFTP", &format!("Permission denied for user: {}", username));
-                    }
+                if !result {
+                    warn!(username = %username, "SFTP permission denied");
+                }
                 result
             }
             None => {
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("User not found in permission check: {}", username));
-                }
+                warn!(username = %username, "SFTP user not found in permission check");
                 false
             }
         }
@@ -315,9 +279,6 @@ impl SftpState {
 
         let msg_type = data[0];
         
-        if let Ok(log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[PACKET] type={}, len={}, id={}", msg_type, data.len(), parse_u32(data, 1)));
-        }
 
         match msg_type {
             SSH_FXP_INIT => self.handle_init(data).await,
@@ -406,19 +367,17 @@ impl SftpState {
                     let metadata = entry.metadata().await.ok();
                     let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
                     let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-                    let mtime = metadata.as_ref().map(|m| m.mtime()).unwrap_or(0);
-                    let mode = metadata.as_ref().map(|m| m.mode()).unwrap_or(0o644);
-                    entries.push(DirEntryInfo { name, is_dir, size, mtime, mode });
+                    entries.push((name, is_dir, size));
                 }
                 
                 let handle = self.generate_handle();
-                let null_file = tokio::fs::File::from(std::fs::File::open("/dev/null")?);
                 self.handles.insert(handle.clone(), SftpFileHandle {
                     path: full_path,
-                    file: null_file,
+                    file: None,
                     locked: false,
                     existed: true,
                     written_bytes: 0,
+                    read_bytes: 0,
                     is_dir: true,
                     dir_entries: entries,
                     dir_index: 0,
@@ -428,9 +387,7 @@ impl SftpState {
             }
             Err(e) => {
                 let (status, msg) = io_error_to_sftp_status(&e);
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("OPENDIR: Failed for {}: {}", full_path.display(), e));
-                }
+                warn!("OPENDIR: Failed for {}: {}", full_path.display(), e);
                 Ok(build_status_packet(id, status, msg, ""))
             }
         }
@@ -466,15 +423,7 @@ impl SftpState {
                     }
                 }
 
-                if let Ok(log) = self.logger.lock() {
-                    log.client_action(
-                        "SFTP",
-                        &format!("Closed file: {} ({} bytes)", handle.path.display(), file_size),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "CLOSE",
-                    );
-                }
+                info!(username = ?self.username, path = ?handle.path, bytes = file_size, "SFTP file closed");
             }
 
         Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
@@ -492,22 +441,22 @@ impl SftpState {
                 }
 
                 let count = (h.dir_entries.len() - h.dir_index).min(100);
-                let result_entries: Vec<&DirEntryInfo> = h.dir_entries[h.dir_index..h.dir_index + count].iter().collect();
+                let result_entries: Vec<(String, bool, u64)> = h.dir_entries[h.dir_index..h.dir_index + count].to_vec();
                 h.dir_index += count;
 
                 let mut payload = vec![104];
                 payload.extend_from_slice(&id.to_be_bytes());
                 payload.extend_from_slice(&(result_entries.len() as u32).to_be_bytes());
 
-                for entry in result_entries {
-                    payload.extend_from_slice(&(entry.name.len() as u32).to_be_bytes());
-                    payload.extend_from_slice(entry.name.as_bytes());
+                for (name, is_dir, size) in result_entries {
+                    payload.extend_from_slice(&(name.len() as u32).to_be_bytes());
+                    payload.extend_from_slice(name.as_bytes());
                     
-                    let long_name = format_longname(&entry.name, entry.is_dir, entry.size, entry.mtime, entry.mode);
+                    let long_name = format_longname(&name, is_dir, size, 0, 0o644);
                     payload.extend_from_slice(&(long_name.len() as u32).to_be_bytes());
                     payload.extend_from_slice(long_name.as_bytes());
                     
-                    payload.extend_from_slice(&build_attrs(entry.is_dir, entry.size));
+                    payload.extend_from_slice(&build_attrs(is_dir, size));
                 }
 
                 Ok(build_packet(&payload))
@@ -537,21 +486,19 @@ impl SftpState {
             Some(h) if !h.is_dir => {
                 use tokio::io::{AsyncReadExt, AsyncSeekExt};
                 
-                if let Err(e) = h.file.seek(std::io::SeekFrom::Start(offset)).await {
-                    if let Ok(log) = self.logger.lock() {
-                        log.warning("SFTP", &format!("Failed to seek to offset {}: {}", offset, e));
-                    }
+                let file = h.file.as_mut().ok_or_else(|| anyhow::anyhow!("File handle is None"))?;
+                
+                if let Err(e) = file.seek(std::io::SeekFrom::Start(offset)).await {
+                    warn!(path = ?h.path, offset = offset, error = %e, "SFTP seek failed");
                     return Ok(build_status_packet(id, SSH_FX_FAILURE, "Seek failed", ""));
                 }
                 
                 let read_len = len.min(32768);
                 let mut buffer = vec![0u8; read_len];
-                let n = match h.file.read(&mut buffer).await {
+                let n = match file.read(&mut buffer).await {
                     Ok(n) => n,
                     Err(e) => {
-                        if let Ok(log) = self.logger.lock() {
-                            log.warning("SFTP", &format!("Failed to read from {:?}: {}", h.path, e));
-                        }
+                        warn!(path = ?h.path, error = %e, "SFTP read failed");
                         let (status, msg) = io_error_to_sftp_status(&e);
                         return Ok(build_status_packet(id, status, msg, ""));
                     }
@@ -571,15 +518,7 @@ impl SftpState {
             limiter.throttle(buffer.len()).await;
         }
 
-        if let Ok(log) = self.logger.lock() {
-            log.client_action(
-                "SFTP",
-                &format!("Read {} bytes from {:?}", buffer.len(), path),
-                &self.client_ip,
-                self.username.as_deref(),
-                "READ",
-            );
-        }
+        info!(username = ?self.username, path = ?path, bytes = buffer.len(), "SFTP read");
 
         if let Ok(mut fl) = self.file_logger.lock() {
             fl.log_download(
@@ -644,8 +583,11 @@ impl SftpState {
         match handle {
             Some(h) if !h.is_dir => {
                 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-                let _ = h.file.seek(std::io::SeekFrom::Start(offset)).await;
-                if let Err(e) = h.file.write_all(write_data).await {
+                
+                let file = h.file.as_mut().ok_or_else(|| anyhow::anyhow!("File handle is None"))?;
+                
+                let _ = file.seek(std::io::SeekFrom::Start(offset)).await;
+                if let Err(e) = file.write_all(write_data).await {
                     let (status, msg) = io_error_to_sftp_status(&e);
                     return Ok(build_status_packet(id, status, msg, ""));
                 }
@@ -686,15 +628,7 @@ impl SftpState {
                         "SFTP",
                     );
                 }
-                if let Ok(log) = self.logger.lock() {
-                    log.client_action(
-                        "SFTP",
-                        &format!("Removed file: {}", path),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "DELETE",
-                    );
-                }
+                info!(username = ?self.username, path = ?full_path, "SFTP file deleted");
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
@@ -735,15 +669,7 @@ impl SftpState {
                         "SFTP",
                     );
                 }
-                if let Ok(log) = self.logger.lock() {
-                    log.client_action(
-                        "SFTP",
-                        &format!("Created directory: {}", path),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "MKDIR",
-                    );
-                }
+                info!(username = ?self.username, path = ?full_path, "SFTP directory created");
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
@@ -779,15 +705,6 @@ impl SftpState {
                         "SFTP",
                     );
                 }
-                if let Ok(log) = self.logger.lock() {
-                    log.client_action(
-                        "SFTP",
-                        &format!("Removed directory: {}", path),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "RMDIR",
-                    );
-                }
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
@@ -800,50 +717,29 @@ impl SftpState {
     async fn handle_rename(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let id = parse_u32_checked(data, 1)?;
         
-        if let Ok(log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[RENAME] Starting, packet len={}, id={}", data.len(), id));
-        }
         
         if data.len() < 9 {
-            if let Ok(log) = self.logger.lock() {
-                log.warning("SFTP", &format!("[RENAME] Invalid packet: len={}", data.len()));
-            }
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
         }
         
         let (old_path, old_len) = parse_string_checked(data, 5)?;
         let new_path_pos = 5 + 4 + old_len;
         
-        if let Ok(log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[RENAME] old_path='{}', old_len={}, new_path_pos={}", old_path, old_len, new_path_pos));
-        }
         
         if data.len() < new_path_pos + 4 {
-            if let Ok(log) = self.logger.lock() {
-                log.warning("SFTP", &format!("[RENAME] Invalid packet: len={}, new_path_pos={}", data.len(), new_path_pos));
-            }
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
         }
         
-        let (new_path, new_len) = parse_string_checked(data, new_path_pos)?;
+        let (new_path, _new_len) = parse_string_checked(data, new_path_pos)?;
 
-        if let Ok(log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[RENAME] new_path='{}', new_len={}", new_path, new_len));
-        }
 
         if !self.check_permission_cached(|p| p.can_rename) {
-            if let Ok(log) = self.logger.lock() {
-                log.warning("SFTP", "[RENAME] Permission denied");
-            }
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
         let old_full = match self.resolve_path(&old_path) {
             Ok(p) => p,
             Err(e) => {
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("[RENAME] Old path resolution failed: {}", e));
-                }
                 return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
             }
         };
@@ -853,18 +749,12 @@ impl SftpState {
         let new_full = match self.resolve_path(&new_path) {
             Ok(p) => p,
             Err(e) => {
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("[RENAME] New path resolution failed: {}", e));
-                }
                 return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
             }
         };
         
         self.log_path_info("RENAME_NEW", &new_full);
 
-        if let Ok(log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[RENAME] Attempting rename: '{}' -> '{}'", old_full.display(), new_full.display()));
-        }
 
         let result = match tokio::fs::rename(&old_full, &new_full).await {
             Ok(_) => {
@@ -877,32 +767,14 @@ impl SftpState {
                         "SFTP",
                     );
                 }
-                if let Ok(log) = self.logger.lock() {
-                    log.client_action(
-                        "SFTP",
-                        &format!("Renamed: {} -> {}", old_path, new_path),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "RENAME",
-                    );
-                }
-                if let Ok(log) = self.logger.lock() {
-                    log.debug("SFTP", "[RENAME] Success, returning SSH_FX_OK");
-                }
                 build_status_packet(id, SSH_FX_OK, "OK", "")
             }
             Err(e) => {
                 let (status, msg) = io_error_to_sftp_status(&e);
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("[RENAME] Failed: {}", e));
-                }
                 build_status_packet(id, status, &format!("{}: {}", msg, e), "")
             }
         };
         
-        if let Ok(log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[RENAME] Returning response, len={}", result.len()));
-        }
         
         Ok(result)
     }
@@ -932,9 +804,6 @@ impl SftpState {
             }
             Err(e) => {
                 let (status, msg) = io_error_to_sftp_status(&e);
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("STAT: Failed to get metadata for {}: {}", full_path.display(), e));
-                }
                 Ok(build_status_packet(id, status, msg, ""))
             }
         }
@@ -1096,30 +965,13 @@ impl SftpState {
     }
     
     fn log_path_info(&self, operation: &str, path: &std::path::Path) {
-        let exists = path.exists();
-        let is_dir = path.is_dir();
-        let is_file = path.is_file();
-        
-        let canonical = if exists {
-            path.canonicalize().ok()
-        } else {
-            None
-        };
-        
-        if let Ok(log) = self.logger.lock() {
-            log.debug(
-                "SFTP",
-                &format!(
-                    "[{}] Path info: path='{}', exists={}, is_dir={}, is_file={}, canonical='{}'",
-                    operation,
-                    path.display(),
-                    exists,
-                    is_dir,
-                    is_file,
-                    canonical.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "N/A".to_string())
-                ),
-            );
-        }
+        debug!(
+            username = ?self.username,
+            operation = %operation,
+            path = ?path,
+            exists = path.exists(),
+            "SFTP path info"
+        );
     }
 
     fn generate_handle(&mut self) -> String {
@@ -1134,9 +986,6 @@ impl SftpState {
             
             attempts += 1;
             if attempts > 1000 {
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", "Failed to generate unique handle after 1000 attempts");
-                }
                 return handle;
             }
         }
@@ -1217,10 +1066,11 @@ impl SftpState {
                 let handle = self.generate_handle();
                 self.handles.insert(handle.clone(), SftpFileHandle {
                     path: full_path,
-                    file,
+                    file: Some(file),
                     locked: false,
                     existed: file_existed,
                     written_bytes: 0,
+                    read_bytes: 0,
                     is_dir: false,
                     dir_entries: Vec::new(),
                     dir_index: 0,
@@ -1237,25 +1087,16 @@ impl SftpState {
 
     async fn handle_readlink(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let id = parse_u32_checked(data, 1)?;
-        let (path, path_len) = parse_string_checked(data, 5)?;
+        let (path, _path_len) = parse_string_checked(data, 5)?;
         
-        if let Ok(log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[READLINK] id={}, path='{}', path_len={}", id, path, path_len));
-        }
 
         let full_path = match self.resolve_path(&path) {
             Ok(p) => p,
-            Err(e) => {
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("[READLINK] Path resolution failed: {}", e));
-                }
+            Err(_e) => {
                 return Ok(build_status_packet(id, SSH_FX_NO_SUCH_FILE, "No such file", ""));
             }
         };
         
-        if let Ok(log) = self.logger.lock() {
-            log.debug("SFTP", &format!("[READLINK] resolved_path='{}'", full_path.display()));
-        }
 
         match tokio::fs::symlink_metadata(&full_path).await {
             Ok(metadata) => {
@@ -1263,9 +1104,6 @@ impl SftpState {
                     match tokio::fs::read_link(&full_path).await {
                         Ok(target) => {
                             let target_str = target.to_string_lossy().to_string();
-                            if let Ok(log) = self.logger.lock() {
-                                log.debug("SFTP", &format!("[READLINK] symlink target='{}'", target_str));
-                            }
                             let mut payload = vec![104];
                             payload.extend_from_slice(&id.to_be_bytes());
                             payload.extend_from_slice(&1u32.to_be_bytes());
@@ -1277,25 +1115,16 @@ impl SftpState {
                             Ok(build_packet(&payload))
                         }
                         Err(e) => {
-                            if let Ok(log) = self.logger.lock() {
-                                log.warning("SFTP", &format!("[READLINK] Failed to read link: {}", e));
-                            }
                             let (status, msg) = io_error_to_sftp_status(&e);
                             Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
                         }
                     }
                 } else {
-                    if let Ok(log) = self.logger.lock() {
-                        log.debug("SFTP", "[READLINK] Not a symlink, returning SSH_FX_FAILURE");
-                    }
                     Ok(build_status_packet(id, SSH_FX_FAILURE, "Not a symbolic link", ""))
                 }
             }
             Err(e) => {
                 let (status, msg) = io_error_to_sftp_status(&e);
-                if let Ok(log) = self.logger.lock() {
-                    log.warning("SFTP", &format!("READLINK: symlink_metadata failed for {}: {}", full_path.display(), e));
-                }
                 Ok(build_status_packet(id, status, msg, ""))
             }
         }
@@ -1328,15 +1157,6 @@ impl SftpState {
                 }
             };
             if !resolved.starts_with(&home_canon) {
-                if let Ok(log) = self.logger.lock() {
-                    log.client_action(
-                        "SFTP",
-                        "Symlink rejected: absolute target outside home directory",
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "SYMLINK_DENIED",
-                    );
-                }
                 return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
             }
             resolved
@@ -1348,15 +1168,6 @@ impl SftpState {
                 }
             };
             if !resolved.starts_with(&home_canon) {
-                if let Ok(log) = self.logger.lock() {
-                    log.client_action(
-                        "SFTP",
-                        "Symlink rejected: relative target outside home directory",
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "SYMLINK_DENIED",
-                    );
-                }
                 return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
             }
             resolved
@@ -1375,15 +1186,6 @@ impl SftpState {
                         success: true,
                         message: "符号链接创建成功",
                     });
-                }
-                if let Ok(log) = self.logger.lock() {
-                    log.client_action(
-                        "SFTP",
-                        &format!("Created symlink: {} -> {}", link_path, target),
-                        &self.client_ip,
-                        self.username.as_deref(),
-                        "SYMLINK",
-                    );
                 }
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
@@ -1409,7 +1211,9 @@ impl SftpState {
                     return Ok(build_status_packet(id, SSH_FX_OK, "Already locked", ""));
                 }
 
-                let std_file = match h.file.try_clone().await {
+                let file = h.file.as_ref().ok_or_else(|| anyhow::anyhow!("File handle is None"))?;
+                
+                let std_file = match file.try_clone().await {
                     Ok(f) => f.into_std().await,
                     Err(_) => {
                         return Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to clone file handle", ""));
@@ -1420,15 +1224,6 @@ impl SftpState {
                     Ok(()) => {
                         h.locked = true;
                         self.locked_files.insert(h.path.clone());
-                        if let Ok(log) = self.logger.lock() {
-                            log.client_action(
-                                "SFTP",
-                                &format!("Locked file: {:?}", h.path),
-                                &self.client_ip,
-                                self.username.as_deref(),
-                                "LOCK",
-                            );
-                        }
                         Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
                     }
                     Err(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to lock file", "")),
@@ -1449,7 +1244,9 @@ impl SftpState {
                     return Ok(build_status_packet(id, SSH_FX_OK, "Not locked", ""));
                 }
 
-                let std_file = match h.file.try_clone().await {
+                let file = h.file.as_ref().ok_or_else(|| anyhow::anyhow!("File handle is None"))?;
+                
+                let std_file = match file.try_clone().await {
                     Ok(f) => f.into_std().await,
                     Err(_) => {
                         return Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to clone file handle", ""));
@@ -1460,15 +1257,6 @@ impl SftpState {
                     Ok(()) => {
                         h.locked = false;
                         self.locked_files.remove(&h.path);
-                        if let Ok(log) = self.logger.lock() {
-                            log.client_action(
-                                "SFTP",
-                                &format!("Unlocked file: {:?}", h.path),
-                                &self.client_ip,
-                                self.username.as_deref(),
-                                "UNLOCK",
-                            );
-                        }
                         Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
                     }
                     Err(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to unlock file", "")),
@@ -1648,10 +1436,11 @@ mod tests {
             "h00000001".to_string(),
             SftpFileHandle {
                 path: target_path.clone(),
-                file,
+                file: Some(file),
                 locked: false,
                 existed: false,
                 written_bytes: 0,
+                read_bytes: 0,
                 is_dir: false,
                 dir_entries: Vec::new(),
                 dir_index: 0,
@@ -1735,10 +1524,11 @@ mod tests {
             "h00000002".to_string(),
             SftpFileHandle {
                 path: file_path,
-                file,
+                file: Some(file),
                 locked: false,
                 existed: true,
                 written_bytes: 0,
+                read_bytes: 0,
                 is_dir: false,
                 dir_entries: Vec::new(),
                 dir_index: 0,

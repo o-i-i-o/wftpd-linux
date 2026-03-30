@@ -352,7 +352,6 @@ impl IpcServer {
         match self.server_manager.start_ftp(
             Arc::clone(&self.config),
             Arc::clone(&self.user_manager),
-            Arc::clone(&self.logger),
             Arc::clone(&self.file_logger),
         ).await {
             Ok(()) => IpcResponse::success(id, "FTP server started"),
@@ -369,7 +368,6 @@ impl IpcServer {
         match self.server_manager.start_sftp(
             Arc::clone(&self.config),
             Arc::clone(&self.user_manager),
-            Arc::clone(&self.logger),
             Arc::clone(&self.file_logger),
         ).await {
             Ok(()) => IpcResponse::success(id, "SFTP server started"),
@@ -396,7 +394,6 @@ impl IpcServer {
             && let Err(e) = self.server_manager.start_ftp(
                 Arc::clone(&self.config),
                 Arc::clone(&self.user_manager),
-                Arc::clone(&self.logger),
                 Arc::clone(&self.file_logger),
             ).await {
                 return IpcResponse::error(id, &format!("Failed to start FTP: {}", e));
@@ -406,7 +403,6 @@ impl IpcServer {
             && let Err(e) = self.server_manager.start_sftp(
                 Arc::clone(&self.config),
                 Arc::clone(&self.user_manager),
-                Arc::clone(&self.logger),
                 Arc::clone(&self.file_logger),
             ).await {
                 return IpcResponse::error(id, &format!("Failed to start SFTP: {}", e));

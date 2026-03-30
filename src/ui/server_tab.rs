@@ -1,10 +1,10 @@
 use gtk::prelude::*;
-use gtk::{Box, Orientation, Label, Button, Frame};
+use gtk::{Box, Orientation, Label, Button, Frame, CheckButton, Entry, SpinButton, ComboBoxText, Adjustment, FileChooserDialog, FileChooserAction};
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::path::Path;
 use crate::AppState;
-use crate::communication::client::IpcClient;
-use tracing::info;
+use tracing::{info, error};
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -131,7 +131,7 @@ fn create_ftp_config_frame(
         
         let entry = anon_home_clone.clone();
         let status = anon_status_clone.clone();
-        dialog.connect_response(clone!(@strong entry, @strong status, @strong dialog => move |dlg, resp| {
+        dialog.connect_response(clone!(@strong entry, @strong status, @strong dialog => move |dlg: &FileChooserDialog, resp| {
             if resp == gtk::ResponseType::Accept
                 && let Some(path) = dlg.filename() {
                     let path_str = path.to_string_lossy().to_string();
@@ -324,7 +324,7 @@ fn setup_ftp_save_button(
         let welcome = welcome_clone.text().to_string();
         let anon_home = anon_home_clone.text().to_string();
         let max_speed = max_speed_clone.value() as u64;
-        let encoding = encoding_clone.active_text().map(|s| s.to_string()).unwrap_or_else(|| "UTF-8".to_string());
+        let encoding = encoding_clone.active_text().map(|s: gtk::glib::GString| s.to_string()).unwrap_or_else(|| "UTF-8".to_string());
         let masquerade_ip = masquerade_ip_clone.text().to_string();
         let masquerade_ip_opt = if masquerade_ip.trim().is_empty() { None } else { Some(masquerade_ip.trim().to_string()) };
         let max_conn = max_conn_clone.value() as usize;
@@ -512,7 +512,7 @@ fn setup_sftp_save_button(
         let max_auth = max_auth_clone.value() as u32;
         let auth_timeout = auth_timeout_clone.value() as u64;
         let host_key = host_key_clone.text().to_string();
-        let log_level = log_level_clone.active_text().map(|s| s.to_string()).unwrap_or_else(|| "info".to_string());
+        let log_level = log_level_clone.active_text().map(|s: gtk::glib::GString| s.to_string()).unwrap_or_else(|| "info".to_string());
         
         let config_str = {
             if let Ok(s) = state_clone.try_lock() {

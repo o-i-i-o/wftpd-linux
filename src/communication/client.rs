@@ -50,14 +50,16 @@ impl IpcClient {
             }
         })
     }
+}
 
-    pub fn restart_service() -> Result<IpcResponseWrapper> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::RestartService).await?;
-            Ok(IpcResponseWrapper::from(response))
-        })
-    }
+pub fn restart_service() -> Result<IpcResponseWrapper> {
+    with_runtime(async {
+        let response = send_request(IpcCommand::RestartService).await?;
+        Ok(IpcResponseWrapper::from(response))
+    })
+}
 
+impl IpcClient {
     pub fn reload_config() -> Result<()> {
         with_runtime(async {
             let response = send_request(IpcCommand::ReloadConfig).await?;

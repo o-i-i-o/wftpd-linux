@@ -13,6 +13,65 @@ use super::super::utils::{build_mlst_facts, get_file_mtime, safe_resolve_path, e
 use crate::core::file_logger::FileLogInfo;
 
 impl FtpSession {
+    pub async fn cmd_nlst(&mut self, _arg: Option<&str>) -> Result<()> {
+        if !self.authenticated {
+            self.stream.write_all(b"530 Not logged in\r\n").await?;
+            return Ok(());
+        }
+
+        let can_list = {
+            let users = self.user_manager.lock().unwrap();
+            let user = self.current_user.as_ref().and_then(|u| users.get_user(u));
+            user.is_none_or(|u| u.permissions.can_list)
+        };
+        
+        if !can_list {
+            self.stream.write_all(b"550 Permission denied\r\n").await?;
+            return Ok(());
+        }
+
+        self.stream.write_all(b"150 Here comes the directory listing\r\n").await?;
+
+        let cwd = self.cwd.clone();
+        let data_timeout = self.get_data_timeout();
+        let data_result = get_data_connection(
+            self.passive_mode,
+            self.data_port,
+            &self.data_addr,
+            &self.remote_ip,
+            &self.passive_listeners,
+            data_timeout,
+        ).await;
+        
+        match data_result {
+            Ok(mut data_stream) => {
+                let path = Path::new(&cwd);
+                match std::fs::read_dir(path) {
+                    Ok(entries) => {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            // NLST only returns filenames, one per line
+                            let line = format!("{}\r\n", name);
+                            let _ = data_stream.write_all(line.as_bytes()).await;
+                        }
+                    }
+                    Err(e) => {
+                        warn!(directory = %cwd, error = %e, "FTP 读取目录失败");
+                    }
+                }
+                self.cleanup_data_connection().await;
+                self.stream.write_all(b"226 Transfer complete\r\n").await?;
+            }
+            Err(e) => {
+                warn!(error = %e, "FTP 数据连接获取失败");
+                self.cleanup_data_connection().await;
+                self.stream.write_all(b"425 Cannot open data connection\r\n").await?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn cmd_list(&mut self, _arg: Option<&str>) -> Result<()> {
         if !self.authenticated {
             self.stream.write_all(b"530 Not logged in\r\n").await?;

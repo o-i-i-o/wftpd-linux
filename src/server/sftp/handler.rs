@@ -39,6 +39,7 @@ impl SftpHandler {
         users_path: std::path::PathBuf,
         keys_dir: PathBuf,
     ) -> Self {
+        info!("[SFTP HANDLER] Creating new SFTP handler for client {}", client_ip);
         SftpHandler {
             user_manager,
             file_logger,
@@ -141,28 +142,29 @@ impl russh::server::Handler for SftpHandler {
                 None,
                 "AUTH_FAIL",
             );
+            error!("[SFTP AUTH] 用户名格式无效：{}", user);
             return Ok(server::Auth::Reject { 
                 proceed_with_methods: None,
                 partial_success: false,
             });
         }
         
-        debug!(user = %user, ip = %self.client_ip, "[SFTP AUTH] 用户尝试密码认证");
+        info!(user = %user, ip = %self.client_ip, "[SFTP AUTH] 用户尝试密码认证");
         
         let auth_result = {
             match self.user_manager.try_lock() {
                 Ok(mut users) => {
                     // Always reload users from disk to ensure latest data
-                    debug!(users_path = ?self.users_path, "[SFTP AUTH] 重新加载用户配置文件");
+                    info!(users_path = ?self.users_path, "[SFTP AUTH] 重新加载用户配置文件");
                     if let Err(e) = users.reload(&self.users_path) {
                         error!(error = %e, "[SFTP AUTH] 重新加载用户配置失败");
                     }
                     let user_count = users.get_users().len();
-                    debug!(user_count = user_count, "[SFTP AUTH] 当前内存中用户数");
+                    info!(user_count = user_count, "[SFTP AUTH] 当前内存中用户数");
                     
                     // 检查用户是否存在
                     if let Some(u) = users.get_user(user) {
-                        debug!(
+                        info!(
                             user = %user,
                             enabled = u.enabled,
                             home_dir = %u.home_dir,
@@ -172,6 +174,7 @@ impl russh::server::Handler for SftpHandler {
                         warn!(user = %user, "[SFTP AUTH] 未找到用户");
                     }
                     
+                    info!(user = %user, "[SFTP AUTH] 开始验证密码");
                     match users.authenticate(user, password) {
                         Ok(true) => {
                             info!(user = %user, "[SFTP AUTH] 用户密码认证成功");
@@ -185,9 +188,9 @@ impl russh::server::Handler for SftpHandler {
                         },
                     }
                 }
-                Err(_) => {
+                Err(e) => {
                     self.log_warning("Failed to acquire user_manager lock during password auth");
-                    error!("[SFTP AUTH] 获取 UserManager 锁失败");
+                    error!("[SFTP AUTH] 获取 UserManager 锁失败：{}", e);
                     return Ok(server::Auth::Reject { 
                         proceed_with_methods: None,
                         partial_success: false,
@@ -196,8 +199,10 @@ impl russh::server::Handler for SftpHandler {
             }
         };
         
+        info!("[SFTP AUTH] 认证结果：{:?}", auth_result.is_some());
         match auth_result {
             Some(home_dir) => {
+                info!("[SFTP AUTH] 开始验证主目录：{}", home_dir);
                 match self.validate_and_set_home_dir(user, &home_dir).await {
                     Ok(_) => {
                         self.log_client_action(
@@ -206,6 +211,7 @@ impl russh::server::Handler for SftpHandler {
                             Some(user),
                             "LOGIN",
                         );
+                        info!("[SFTP AUTH] 完全认证成功，返回 Accept");
                         Ok(server::Auth::Accept)
                     }
                     Err(err_msg) => {
@@ -215,6 +221,7 @@ impl russh::server::Handler for SftpHandler {
                             Some(user),
                             "LOGIN_FAIL",
                         );
+                        error!("[SFTP AUTH] 主目录验证失败：{}", err_msg);
                         Ok(server::Auth::Reject { 
                             proceed_with_methods: None,
                             partial_success: false,
@@ -229,6 +236,7 @@ impl russh::server::Handler for SftpHandler {
                     Some(user),
                     "AUTH_FAIL",
                 );
+                info!("[SFTP AUTH] 认证失败，返回 Reject");
                 Ok(server::Auth::Reject { 
                     proceed_with_methods: None,
                     partial_success: false,
@@ -395,11 +403,11 @@ impl russh::server::Handler for SftpHandler {
         channel: Channel<Msg>,
         session: &mut Session,
     ) -> Result<bool, Self::Error> {
-        debug!(
+        info!(
             channel_id = ?channel.id(),
             authenticated = self.authenticated,
             username = ?self.username,
-            "[SFTP] channel_open_session requested"
+            "[SFTP CHANNEL] channel_open_session requested"
         );
         
         // 如果已经认证通过，允许打开会话
@@ -407,14 +415,14 @@ impl russh::server::Handler for SftpHandler {
             info!(
                 channel_id = ?channel.id(),
                 username = ?self.username,
-                "[SFTP] Session channel opened successfully"
+                "[SFTP CHANNEL] Session channel opened successfully"
             );
             Ok(true)
         } else {
             warn!(
                 channel_id = ?channel.id(),
                 client_ip = %self.client_ip,
-                "[SFTP] Session channel denied: not authenticated"
+                "[SFTP CHANNEL] Session channel denied: not authenticated"
             );
             Ok(false)
         }
@@ -438,6 +446,8 @@ impl russh::server::Handler for SftpHandler {
         name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        info!("[SFTP] Subsystem request: {}", name);
+        
         if name != "sftp" {
             self.log_warning(&format!("Unknown subsystem request: {}", name));
             let _ = session.channel_failure(channel);
@@ -475,6 +485,7 @@ impl russh::server::Handler for SftpHandler {
             self.client_ip.clone(),
         ))));
         
+        info!("[SFTP] Subsystem request completed successfully");
         Ok(())
     }
 
@@ -506,8 +517,15 @@ impl russh::server::Handler for SftpHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        info!(
+            "[SFTP DATA] Received {} bytes of data on channel {:?}",
+            data.len(),
+            channel
+        );
+        
         if self.sftp_channel == Some(channel)
             && let Some(state) = &self.sftp_state {
+                info!("[SFTP DATA] Processing SFTP protocol data");
                 let response = {
                     let mut sftp_state = state.lock().await;
                     sftp_state.process_sftp_data(data).await
@@ -515,8 +533,15 @@ impl russh::server::Handler for SftpHandler {
                 
                 if let Ok(resp) = response
                     && !resp.is_empty() {
+                        info!("[SFTP DATA] Sending {} bytes response", resp.len());
                         let _ = session.data(channel, resp);
                     }
+            } else {
+                warn!(
+                    "[SFTP DATA] Received data but sftp_channel={:?}, sftp_state={}",
+                    self.sftp_channel,
+                    if self.sftp_state.is_some() { "Some" } else { "None" }
+                );
             }
         Ok(())
     }

@@ -11,14 +11,12 @@ use crate::core::file_logger::FileLogger;
 use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::server_manager::ServerManager;
-use crate::service::ServiceManager;
 use crate::core::tracing_logger::{init_tracing, init_simple};
 
 pub struct AppState {
     pub config: Arc<Mutex<Config>>,
     pub user_manager: Arc<Mutex<UserManager>>,
     pub server_manager: ServerManager,
-    pub service_manager: ServiceManager,
     pub logger: Arc<Mutex<Logger>>,
     pub file_logger: Arc<Mutex<FileLogger>>,
 }
@@ -63,13 +61,11 @@ impl AppState {
         let file_logger = Arc::new(Mutex::new(FileLogger::new(&log_dir, max_log_size)));
         
         let server_manager = ServerManager::new();
-        let service_manager = ServiceManager::new();
         
         Ok(AppState {
             config,
             user_manager,
             server_manager,
-            service_manager,
             logger,
             file_logger,
         })

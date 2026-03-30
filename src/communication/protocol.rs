@@ -21,10 +21,6 @@ pub enum IpcCommand {
     SaveConfig { content: String },
     GetUsers,
     SaveUsers { content: String },
-    StartFtp,
-    StopFtp,
-    StartSftp,
-    StopSftp,
     RestartService,
     GetStatus,
     GetLogs { count: usize },
@@ -38,14 +34,6 @@ pub enum IpcCommand {
     },
     ConfigExists,
     UsersExists,
-    InstallService { binary_path: String },
-    UninstallService,
-    StartSystemService,
-    StopSystemService,
-    RestartSystemService,
-    EnableService,
-    DisableService,
-    GetSystemServiceStatus,
     GetInitialState,
     EnsureUserDirectories,
     GetLogFiles,
@@ -83,7 +71,6 @@ pub enum IpcResult {
     Logs { entries: Vec<LogEntryJson> },
     LogEntry { entry: LogEntryJson },
     Bool { value: bool },
-    ServiceStatus { installed: bool, running: bool, enabled: bool },
     InitialState { config: String, users: String, ftp_running: bool, sftp_running: bool },
     LogFiles { files: Vec<LogFileEntry> },
     FileLogFiles { files: Vec<LogFileEntry> },
@@ -207,17 +194,6 @@ impl IpcResponse {
         Self {
             id,
             result: IpcResult::Bool { value },
-        }
-    }
-
-    pub fn service_status(id: u64, installed: bool, running: bool, enabled: bool) -> Self {
-        Self {
-            id,
-            result: IpcResult::ServiceStatus {
-                installed,
-                running,
-                enabled,
-            },
         }
     }
 

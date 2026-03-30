@@ -55,19 +55,8 @@ pub fn build_ui(app: &Application) {
 
     let state_clone = Arc::clone(&state);
     window.connect_delete_event(move |_, _| {
-        let state_for_stop = Arc::clone(&state_clone);
-        gtk::glib::MainContext::default().spawn_local(async move {
-            let server_manager = {
-                if let Ok(s) = state_for_stop.lock() {
-                    s.server_manager.clone()
-                } else {
-                    return;
-                }
-            };
-            // 使用 tracing 记录日志，不再需要 logger 参数
-            server_manager.stop_ftp().await;
-            server_manager.stop_sftp().await;
-        });
+        // GUI 关闭时不停止后台服务，仅退出界面
+        // wftpd 服务由 systemd 管理，独立于 GUI 运行
         gtk::glib::Propagation::Proceed
     });
 

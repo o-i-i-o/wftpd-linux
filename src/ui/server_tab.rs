@@ -1,14 +1,10 @@
 use gtk::prelude::*;
-use gtk::{
-    Box, Orientation, Label, Button, Entry, Frame, Separator, SpinButton, Adjustment,
-    CheckButton, glib, ComboBoxText, FileChooserDialog, FileChooserAction,
-};
+use gtk::{Box, Orientation, Label, Button, Frame};
 use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::path::Path;
 use crate::AppState;
-use crate::communication::IpcClient;
-use tracing::{info, error};
+use crate::communication::client::IpcClient;
+use tracing::info;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -17,310 +13,48 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     container.set_margin_start(10);
     container.set_margin_end(10);
 
-    let (ftp_status, sftp_status, ftp_btn, sftp_btn) = 
-        create_status_and_control_frame(&container, state);
-    
-    create_ftp_config_frame(&container, state);
-    create_sftp_config_frame(&container, state);
-
-    start_status_monitor(&ftp_status, &sftp_status, &ftp_btn, &sftp_btn);
+    let (_ftp_status, _sftp_status, _ftp_btn, _sftp_btn) = create_server_control_frame(&container, state);
 
     container
 }
 
-fn start_status_monitor(
-    ftp_status: &Label, 
-    sftp_status: &Label, 
-    ftp_btn: &Button, 
-    sftp_btn: &Button
-) {
-    let ftp_status_clone = ftp_status.clone();
-    let sftp_status_clone = sftp_status.clone();
-    let ftp_btn_clone = ftp_btn.clone();
-    let sftp_btn_clone = sftp_btn.clone();
-    
-    let mut last_ftp_status = false;
-    let mut last_sftp_status = false;
-    
-    glib::timeout_add_seconds_local(5, move || {
-        match IpcClient::get_status() {
-            Ok(response) => {
-                if response.ftp_running != last_ftp_status {
-                    last_ftp_status = response.ftp_running;
-                    if response.ftp_running {
-                        ftp_status_clone.set_markup("<span foreground='green'>运行中 ✓</span>");
-                        ftp_btn_clone.set_label("停止");
-                    } else {
-                        ftp_status_clone.set_text("已停止");
-                        ftp_btn_clone.set_label("启动");
-                    }
-                }
-                
-                if response.sftp_running != last_sftp_status {
-                    last_sftp_status = response.sftp_running;
-                    if response.sftp_running {
-                        sftp_status_clone.set_markup("<span foreground='green'>运行中 ✓</span>");
-                        sftp_btn_clone.set_label("停止");
-                    } else {
-                        sftp_status_clone.set_text("已停止");
-                        sftp_btn_clone.set_label("启动");
-                    }
-                }
-            }
-            Err(_) => {
-                if last_ftp_status || last_sftp_status {
-                    last_ftp_status = false;
-                    last_sftp_status = false;
-                    ftp_status_clone.set_markup("<span foreground='gray'>服务未运行</span>");
-                    sftp_status_clone.set_markup("<span foreground='gray'>服务未运行</span>");
-                    ftp_btn_clone.set_label("启动");
-                    sftp_btn_clone.set_label("启动");
-                }
-            }
-        }
-        glib::ControlFlow::Continue
-    });
-}
-
-fn create_status_and_control_frame(
-    container: &Box,
-    state: &Arc<StdMutex<AppState>>,
-) -> (Label, Label, Button, Button) {
-    let frame = Frame::new(Some("服务状态与控制"));
+fn create_server_control_frame(container: &Box, _state: &Arc<StdMutex<AppState>>) -> (Label, Label, Button, Button) {
+    let frame = Frame::new(Some("服务控制"));
     let main_box = Box::new(Orientation::Vertical, 10);
     main_box.set_margin_top(10);
     main_box.set_margin_bottom(10);
     main_box.set_margin_start(10);
     main_box.set_margin_end(10);
 
-    let row1 = Box::new(Orientation::Horizontal, 10);
-    
-    let ftp_label = Label::new(Some("<b>FTP:</b>"));
-    ftp_label.set_use_markup(true);
-    row1.pack_start(&ftp_label, false, false, 0);
-    
-    let ftp_status = Label::new(Some("检测中..."));
-    row1.pack_start(&ftp_status, false, false, 0);
-    
-    let ftp_btn = Button::with_label("启动");
-    row1.pack_start(&ftp_btn, false, false, 0);
-    
-    let restart_ftp_btn = Button::with_label("重启");
-    row1.pack_start(&restart_ftp_btn, false, false, 0);
-    
-    row1.pack_start(&Separator::new(Orientation::Vertical), false, false, 10);
-    
-    let sftp_label = Label::new(Some("<b>SFTP:</b>"));
-    sftp_label.set_use_markup(true);
-    row1.pack_start(&sftp_label, false, false, 0);
-    
-    let sftp_status = Label::new(Some("检测中..."));
-    row1.pack_start(&sftp_status, false, false, 0);
-    
-    let sftp_btn = Button::with_label("启动");
-    row1.pack_start(&sftp_btn, false, false, 0);
-    
-    let restart_sftp_btn = Button::with_label("重启");
-    row1.pack_start(&restart_sftp_btn, false, false, 0);
-    
-    main_box.pack_start(&row1, false, false, 0);
+    // FTP/SFTP 服务启停由 systemd 管理，通过配置文件控制
+    let info_label = Label::new(None);
+    info_label.set_markup(
+        "<b>FTP/SFTP 服务管理说明</b>\n\n\
+         服务启停由 systemd 统一管理，通过配置文件 <tt>/etc/wftpg/config.toml</tt> 控制：\n\n\
+         • <b>启用/禁用 FTP:</b> 修改配置文件中 <tt>[ftp]</tt> 部分的 <tt>enabled = true/false</tt>\n\
+         • <b>启用/禁用 SFTP:</b> 修改配置文件中 <tt>[sftp]</tt> 部分的 <tt>enabled = true/false</tt>\n\n\
+         <b>使用方式:</b>\n\
+         1. 修改配置文件中的 enabled 设置\n\
+         2. 保存配置文件\n\
+         3. 重启服务：<tt>sudo systemctl restart wftpd</tt>\n\
+         4. 查看状态：<tt>systemctl status wftpd</tt>\n\n\
+         <i>注意：修改配置后必须重启服务才能生效</i>"
+    );
+    main_box.pack_start(&info_label, false, false, 0);
+
     frame.add(&main_box);
     container.pack_start(&frame, false, false, 0);
 
-    setup_ftp_toggle_button(state, &ftp_btn, &ftp_status);
-    setup_sftp_toggle_button(state, &sftp_btn, &sftp_status);
-    setup_ftp_restart_button(state, &restart_ftp_btn, &ftp_status, &ftp_btn);
-    setup_sftp_restart_button(state, &restart_sftp_btn, &sftp_status, &sftp_btn);
+    // 创建虚拟的状态标签和按钮（保持接口兼容）
+    let ftp_status = Label::new(Some("FTP 服务由 systemd 管理"));
+    let sftp_status = Label::new(Some("SFTP 服务由 systemd 管理"));
+    let ftp_btn = Button::with_label("查看配置");
+    let sftp_btn = Button::with_label("查看配置");
+    
+    ftp_btn.set_sensitive(false);
+    sftp_btn.set_sensitive(false);
 
     (ftp_status, sftp_status, ftp_btn, sftp_btn)
-}
-
-fn setup_ftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, status: &Label) {
-    let status_clone = status.clone();
-    let button_clone = button.clone();
-    let state_clone = Arc::clone(state);
-    
-    button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone => move |_| {
-        let current_label = button_clone.label().map(|s| s.to_string()).unwrap_or_default();
-        
-        if current_label == "停止" {
-            status_clone.set_text("FTP: 停止中...");
-            let status = status_clone.clone();
-            let _state = Arc::clone(&state_clone);
-            let btn = button_clone.clone();
-            
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                match IpcClient::stop_ftp() {
-                    Ok(response) => {
-                        if response.success {
-                            status.set_text("已停止");
-                            btn.set_label("启动");
-                            // 使用 tracing 记录日志
-                            info!("FTP 服务已停止");
-                        } else {
-                            status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
-                        }
-                    }
-                    Err(e) => {
-                        status.set_markup(&format!("<span foreground='red'>错误 - {}</span>", e));
-                    }
-                }
-            });
-        } else {
-            status_clone.set_text("FTP: 启动中...");
-            let status = status_clone.clone();
-            let _state = Arc::clone(&state_clone);
-            let btn = button_clone.clone();
-            
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                match IpcClient::start_ftp() {
-                    Ok(response) => {
-                        if response.success {
-                            status.set_markup("<span foreground='green'>运行中 ✓</span>");
-                            btn.set_label("停止");
-                            info!("FTP 服务已启动");
-                        } else {
-                            status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
-                        }
-                    }
-                    Err(e) => {
-                        status.set_markup(&format!("<span foreground='red'>错误 - {}</span>", e));
-                    }
-                }
-            });
-        }
-    }));
-}
-
-fn setup_sftp_toggle_button(state: &Arc<StdMutex<AppState>>, button: &Button, status: &Label) {
-    let status_clone = status.clone();
-    let button_clone = button.clone();
-    let state_clone = Arc::clone(state);
-    
-    button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone => move |_| {
-        let current_label = button_clone.label().map(|s| s.to_string()).unwrap_or_default();
-        
-        if current_label == "停止" {
-            status_clone.set_text("SFTP: 停止中...");
-            let status = status_clone.clone();
-            let _state = Arc::clone(&state_clone);
-            let btn = button_clone.clone();
-            
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                match IpcClient::stop_sftp() {
-                    Ok(response) => {
-                        if response.success {
-                            status.set_text("已停止");
-                            btn.set_label("启动");
-                            // 使用 tracing 记录日志
-                            info!("SFTP 服务已停止");
-                        } else {
-                            status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
-                        }
-                    }
-                    Err(e) => {
-                        status.set_markup(&format!("<span foreground='red'>错误 - {}</span>", e));
-                    }
-                }
-            });
-        } else {
-            status_clone.set_text("SFTP: 启动中...");
-            let status = status_clone.clone();
-            let _state = Arc::clone(&state_clone);
-            let btn = button_clone.clone();
-            
-            glib::MainContext::ref_thread_default().spawn_local(async move {
-                match IpcClient::start_sftp() {
-                    Ok(response) => {
-                        if response.success {
-                            status.set_markup("<span foreground='green'>运行中 ✓</span>");
-                            btn.set_label("停止");
-                            info!("SFTP 服务已启动");
-                        } else {
-                            status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
-                        }
-                    }
-                    Err(e) => {
-                        status.set_markup(&format!("<span foreground='red'>错误 - {}</span>", e));
-                    }
-                }
-            });
-        }
-    }));
-}
-
-fn setup_ftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, status: &Label, toggle_btn: &Button) {
-    let status_clone = status.clone();
-    let button_clone = button.clone();
-    let state_clone = Arc::clone(state);
-    let toggle_btn_clone = toggle_btn.clone();
-    
-    button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone, @strong toggle_btn_clone => move |_| {
-        status_clone.set_text("FTP: 重启中...");
-        let status = status_clone.clone();
-        let _state = Arc::clone(&state_clone);
-        let toggle = toggle_btn_clone.clone();
-        
-        glib::MainContext::ref_thread_default().spawn_local(async move {
-            let _ = IpcClient::stop_ftp();
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            
-            match IpcClient::start_ftp() {
-                Ok(response) => {
-                    if response.success {
-                        status.set_markup("<span foreground='green'>运行中 ✓</span>");
-                        toggle.set_label("停止");
-                        // 使用 tracing 记录日志
-                        info!("FTP 服务已重启");
-                    } else {
-                        status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
-                        toggle.set_label("启动");
-                    }
-                }
-                Err(e) => {
-                    status.set_markup(&format!("<span foreground='red'>错误 - {}</span>", e));
-                    toggle.set_label("启动");
-                }
-            }
-        });
-    }));
-}
-
-fn setup_sftp_restart_button(state: &Arc<StdMutex<AppState>>, button: &Button, status: &Label, toggle_btn: &Button) {
-    let status_clone = status.clone();
-    let button_clone = button.clone();
-    let state_clone = Arc::clone(state);
-    let toggle_btn_clone = toggle_btn.clone();
-    
-    button.connect_clicked(clone!(@strong status_clone, @strong button_clone, @strong state_clone, @strong toggle_btn_clone => move |_| {
-        status_clone.set_text("SFTP: 重启中...");
-        let status = status_clone.clone();
-        let _state = Arc::clone(&state_clone);
-        let toggle = toggle_btn_clone.clone();
-        
-        glib::MainContext::ref_thread_default().spawn_local(async move {
-            let _ = IpcClient::stop_sftp();
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            
-            match IpcClient::start_sftp() {
-                Ok(response) => {
-                    if response.success {
-                        status.set_markup("<span foreground='green'>运行中 ✓</span>");
-                        toggle.set_label("停止");
-                        // 使用 tracing 记录日志
-                        info!("SFTP 服务已重启");
-                    } else {
-                        status.set_markup(&format!("<span foreground='red'>{}</span>", response.message));
-                        toggle.set_label("启动");
-                    }
-                }
-                Err(e) => {
-                    status.set_markup(&format!("<span foreground='red'>错误 - {}</span>", e));
-                    toggle.set_label("启动");
-                }
-            }
-        });
-    }));
 }
 
 fn create_ftp_config_frame(

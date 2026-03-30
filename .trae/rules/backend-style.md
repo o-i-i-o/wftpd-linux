@@ -8,6 +8,5 @@
 - 每次修改代码前，必须先阅读cargo.toml文件，学习组件版本文档和api使用方法
 - 新增组件使用cargo add 组件名称 添加到cargo.toml文件中以避免引入错误版本的组件
 - 每次修改代码后，必须执行cargo clippy检查并修复问题，不允许隐藏任何告警信息
-- 测试过程中使用 sudo 运行所有命令，如 sudo systemctl restart wftpd
 - rust 版本0.xx.yy 每次修改代码更新yy一次
 - 测试用ftp/sftp 用户 用户名：123 密码：123456

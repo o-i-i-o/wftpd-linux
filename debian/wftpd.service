@@ -7,8 +7,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/wftpd
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=3
+SuccessExitStatus=143 146
+TimeoutStopSec=10
 
 User=wftpg
 Group=wftpg

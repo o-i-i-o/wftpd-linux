@@ -51,34 +51,6 @@ impl IpcClient {
         })
     }
 
-    pub fn start_ftp() -> Result<IpcResponseWrapper> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::StartFtp).await?;
-            Ok(IpcResponseWrapper::from(response))
-        })
-    }
-
-    pub fn stop_ftp() -> Result<IpcResponseWrapper> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::StopFtp).await?;
-            Ok(IpcResponseWrapper::from(response))
-        })
-    }
-
-    pub fn start_sftp() -> Result<IpcResponseWrapper> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::StartSftp).await?;
-            Ok(IpcResponseWrapper::from(response))
-        })
-    }
-
-    pub fn stop_sftp() -> Result<IpcResponseWrapper> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::StopSftp).await?;
-            Ok(IpcResponseWrapper::from(response))
-        })
-    }
-
     pub fn restart_service() -> Result<IpcResponseWrapper> {
         with_runtime(async {
             let response = send_request(IpcCommand::RestartService).await?;
@@ -238,111 +210,11 @@ pub fn write_audit_log(user: &str, action: &str, target: &str, details: &str) ->
 }
 
 #[derive(Debug, Clone)]
-pub struct ServiceStatus {
-    pub installed: bool,
-    pub running: bool,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone)]
 pub struct InitialState {
     pub config: String,
     pub users: String,
     pub ftp_running: bool,
     pub sftp_running: bool,
-}
-
-pub fn install_service(binary_path: &str) -> Result<()> {
-    let binary_path = binary_path.to_string();
-    with_runtime(async move {
-        let response = send_request(IpcCommand::InstallService { binary_path }).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn uninstall_service() -> Result<()> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::UninstallService).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn start_system_service() -> Result<()> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::StartSystemService).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn stop_system_service() -> Result<()> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::StopSystemService).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn restart_system_service() -> Result<()> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::RestartSystemService).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn enable_service() -> Result<()> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::EnableService).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn disable_service() -> Result<()> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::DisableService).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn get_system_service_status() -> Result<ServiceStatus> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::GetSystemServiceStatus).await?;
-        match response.result {
-            IpcResult::ServiceStatus { installed, running, enabled } => Ok(ServiceStatus {
-                installed,
-                running,
-                enabled,
-            }),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
 }
 
 pub fn get_initial_state() -> Result<InitialState> {

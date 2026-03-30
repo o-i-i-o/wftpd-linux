@@ -164,11 +164,6 @@ setup_permissions() {
         chown root:root /usr/bin/wftp-gui
     fi
     
-    if [ -f /usr/libexec/wftpg-dbus ]; then
-        chmod 755 /usr/libexec/wftpg-dbus
-        chown root:root /usr/libexec/wftpg-dbus
-    fi
-    
     if [ -f /usr/share/polkit-1/actions/com.wftpg.pkexec.policy ]; then
         chmod 644 /usr/share/polkit-1/actions/com.wftpg.pkexec.policy
         chown root:root /usr/share/polkit-1/actions/com.wftpg.pkexec.policy
@@ -177,16 +172,6 @@ setup_permissions() {
     if [ -f /lib/systemd/system/wftpd.service ]; then
         chmod 644 /lib/systemd/system/wftpd.service
         chown root:root /lib/systemd/system/wftpd.service
-    fi
-    
-    if [ -f /lib/systemd/system/wftpg-dbus.service ]; then
-        chmod 644 /lib/systemd/system/wftpg-dbus.service
-        chown root:root /lib/systemd/system/wftpg-dbus.service
-    fi
-    
-    if [ -f /etc/dbus-1/system.d/com.wftpg-dbus.conf ]; then
-        chmod 644 /etc/dbus-1/system.d/com.wftpg-dbus.conf
-        chown root:root /etc/dbus-1/system.d/com.wftpg-dbus.conf
     fi
 }
 
@@ -212,12 +197,6 @@ generate_ssh_host_key() {
 enable_services() {
     if command -v systemctl > /dev/null 2>&1; then
         systemctl daemon-reload > /dev/null 2>&1 || true
-        
-        if [ -f /lib/systemd/system/wftpg-dbus.service ]; then
-            systemctl enable wftpg-dbus > /dev/null 2>&1 || true
-            systemctl start wftpg-dbus > /dev/null 2>&1 || true
-            echo "已启用并启动 wftpg-dbus 服务"
-        fi
     fi
 }
 
@@ -239,9 +218,8 @@ case "$1" in
         echo "========================================"
         echo ""
         echo "程序组成:"
-        echo "  wftp-gui    - GUI管理界面"
+        echo "  wftp-gui    - GUI 管理界面"
         echo "  wftpd       - 后台服务程序"
-        echo "  wftpg-dbus  - D-Bus配置服务"
         echo ""
         echo "启动方式:"
         echo "  1. GUI: 应用程序菜单 -> WFTPG"

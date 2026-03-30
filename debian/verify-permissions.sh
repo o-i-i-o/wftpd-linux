@@ -77,7 +77,7 @@ echo ""
 
 # 检查可执行文件权限
 echo "4. 检查可执行文件权限..."
-EXEC_FILES=("/usr/bin/wftpd" "/usr/bin/wftp-gui" "/usr/libexec/wftpg-dbus")
+EXEC_FILES=("/usr/bin/wftpd" "/usr/bin/wftp-gui")
 
 for file in "${EXEC_FILES[@]}"; do
     if [ -f "$file" ]; then

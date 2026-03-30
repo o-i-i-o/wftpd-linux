@@ -296,8 +296,6 @@ mkdir -p "${DEB_DIR}/var/lib/wftpg"
 mkdir -p "${DEB_DIR}/var/lib/wftpg/ssh"
 mkdir -p "${DEB_DIR}/var/lib/wftpg/share"
 mkdir -p "${DEB_DIR}/usr/share/${PACKAGE_NAME}"
-mkdir -p "${DEB_DIR}/etc/dbus-1/system.d"
-mkdir -p "${DEB_DIR}/usr/share/dbus-1/system-services"
 
 log_info "[4/9] 复制可执行文件..."
 
@@ -312,14 +310,15 @@ if [ -f "${TARGET_DIR}/wftpd" ]; then
     cp "${TARGET_DIR}/wftpd" "${DEB_DIR}/usr/bin/"
     chmod 755 "${DEB_DIR}/usr/bin/wftpd"
     chown root:root "${DEB_DIR}/usr/bin/wftpd"
-    log_info "  已复制: wftpd (后台服务程序)"
+    log_info "  已复制：wftpd (后台服务程序)"
 fi
 
-if [ -f "${TARGET_DIR}/wftpg-dbus" ]; then
-    cp "${TARGET_DIR}/wftpg-dbus" "${DEB_DIR}/usr/libexec/"
-    chmod 755 "${DEB_DIR}/usr/libexec/wftpg-dbus"
-    chown root:root "${DEB_DIR}/usr/libexec/wftpg-dbus"
-    log_info "  已复制: wftpg-dbus (D-Bus配置服务)"
+# 复制服务管理工具
+if [ -f "${SCRIPT_DIR}/wftpgctl" ]; then
+    cp "${SCRIPT_DIR}/wftpgctl" "${DEB_DIR}/usr/bin/"
+    chmod 755 "${DEB_DIR}/usr/bin/wftpgctl"
+    chown root:root "${DEB_DIR}/usr/bin/wftpgctl"
+    log_info "  已复制：wftpgctl (服务管理工具)"
 fi
 
 log_info "[5/9] 复制桌面文件..."
@@ -374,35 +373,17 @@ else
     log_warning "  未安装ImageMagick，跳过PNG图标生成"
 fi
 
-log_info "[7/9] 复制PolicyKit和Systemd配置..."
+log_info "[7/9] 复制 PolicyKit 和 Systemd 配置..."
 if [ -f "${SCRIPT_DIR}/com.wftpg.pkexec.policy" ]; then
     cp "${SCRIPT_DIR}/com.wftpg.pkexec.policy" "${DEB_DIR}/usr/share/polkit-1/actions/"
     chmod 644 "${DEB_DIR}/usr/share/polkit-1/actions/com.wftpg.pkexec.policy"
-    log_info "  已复制: com.wftpg.pkexec.policy"
+    log_info "  已复制：com.wftpg.pkexec.policy"
 fi
 
 if [ -f "${SCRIPT_DIR}/wftpd.service" ]; then
     cp "${SCRIPT_DIR}/wftpd.service" "${DEB_DIR}/lib/systemd/system/"
     chmod 644 "${DEB_DIR}/lib/systemd/system/wftpd.service"
-    log_info "  已复制: wftpd.service"
-fi
-
-if [ -f "${SCRIPT_DIR}/wftpg-dbus.service" ]; then
-    cp "${SCRIPT_DIR}/wftpg-dbus.service" "${DEB_DIR}/lib/systemd/system/"
-    chmod 644 "${DEB_DIR}/lib/systemd/system/wftpg-dbus.service"
-    log_info "  已复制: wftpg-dbus.service"
-fi
-
-if [ -f "${SCRIPT_DIR}/com.wftpg-dbus.conf" ]; then
-    cp "${SCRIPT_DIR}/com.wftpg-dbus.conf" "${DEB_DIR}/etc/dbus-1/system.d/"
-    chmod 644 "${DEB_DIR}/etc/dbus-1/system.d/com.wftpg-dbus.conf"
-    log_info "  已复制: com.wftpg-dbus.conf"
-fi
-
-if [ -f "${SCRIPT_DIR}/com.wftpg.service" ]; then
-    cp "${SCRIPT_DIR}/com.wftpg.service" "${DEB_DIR}/usr/share/dbus-1/system-services/"
-    chmod 644 "${DEB_DIR}/usr/share/dbus-1/system-services/com.wftpg.service"
-    log_info "  已复制: com.wftpg.service (D-Bus服务声明)"
+    log_info "  已复制：wftpd.service"
 fi
 
 log_info "[8/9] 创建配置文件模板..."

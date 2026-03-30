@@ -13,13 +13,6 @@ case "$1" in
             if systemctl is-enabled --quiet wftpd 2>/dev/null; then
                 systemctl disable wftpd 2>/dev/null || true
             fi
-            
-            if systemctl is-active --quiet wftpg-dbus 2>/dev/null; then
-                systemctl stop wftpg-dbus 2>/dev/null || true
-            fi
-            if systemctl is-enabled --quiet wftpg-dbus 2>/dev/null; then
-                systemctl disable wftpg-dbus 2>/dev/null || true
-            fi
         fi
         ;;
     

@@ -15,13 +15,11 @@ use crate::core::config::Config;
 use crate::core::users::UserManager;
 use crate::core::logger::Logger;
 use crate::core::file_logger::FileLogger;
-use crate::service::ServiceManager;
 
 pub struct IpcServer {
     config: Arc<std::sync::Mutex<Config>>,
     user_manager: Arc<std::sync::Mutex<UserManager>>,
     server_manager: ServerManager,
-    service_manager: ServiceManager,
     logger: Arc<std::sync::Mutex<Logger>>,
     file_logger: Arc<std::sync::Mutex<FileLogger>>,
     log_sender: broadcast::Sender<LogEntryJson>,
@@ -32,7 +30,6 @@ impl IpcServer {
         config: Arc<std::sync::Mutex<Config>>,
         user_manager: Arc<std::sync::Mutex<UserManager>>,
         server_manager: ServerManager,
-        service_manager: ServiceManager,
         logger: Arc<std::sync::Mutex<Logger>>,
         file_logger: Arc<std::sync::Mutex<FileLogger>>,
     ) -> Self {
@@ -42,7 +39,6 @@ impl IpcServer {
             config,
             user_manager,
             server_manager,
-            service_manager,
             logger,
             file_logger,
             log_sender,
@@ -88,7 +84,6 @@ impl IpcServer {
             config: Arc::clone(&self.config),
             user_manager: Arc::clone(&self.user_manager),
             server_manager: self.server_manager.clone(),
-            service_manager: ServiceManager::new(),
             logger: Arc::clone(&self.logger),
             file_logger: Arc::clone(&self.file_logger),
             log_sender: self.log_sender.clone(),
@@ -176,10 +171,6 @@ impl IpcServer {
             IpcCommand::SaveConfig { content } => self.handle_save_config(request.id, content).await,
             IpcCommand::GetUsers => self.handle_get_users(request.id).await,
             IpcCommand::SaveUsers { content } => self.handle_save_users(request.id, content).await,
-            IpcCommand::StartFtp => self.handle_start_ftp(request.id).await,
-            IpcCommand::StopFtp => self.handle_stop_ftp(request.id).await,
-            IpcCommand::StartSftp => self.handle_start_sftp(request.id).await,
-            IpcCommand::StopSftp => self.handle_stop_sftp(request.id).await,
             IpcCommand::RestartService => self.handle_restart_service(request.id).await,
             IpcCommand::GetStatus => self.handle_get_status(request.id).await,
             IpcCommand::GetLogs { count } => self.handle_get_logs(request.id, count).await,
@@ -190,14 +181,6 @@ impl IpcServer {
             }
             IpcCommand::ConfigExists => self.handle_config_exists(request.id).await,
             IpcCommand::UsersExists => self.handle_users_exists(request.id).await,
-            IpcCommand::InstallService { binary_path } => self.handle_install_service(request.id, &binary_path).await,
-            IpcCommand::UninstallService => self.handle_uninstall_service(request.id).await,
-            IpcCommand::StartSystemService => self.handle_start_system_service(request.id).await,
-            IpcCommand::StopSystemService => self.handle_stop_system_service(request.id).await,
-            IpcCommand::RestartSystemService => self.handle_restart_system_service(request.id).await,
-            IpcCommand::EnableService => self.handle_enable_service(request.id).await,
-            IpcCommand::DisableService => self.handle_disable_service(request.id).await,
-            IpcCommand::GetSystemServiceStatus => self.handle_get_system_service_status(request.id).await,
             IpcCommand::GetInitialState => self.handle_get_initial_state(request.id).await,
             IpcCommand::EnsureUserDirectories => self.handle_ensure_user_directories(request.id).await,
             IpcCommand::GetLogFiles => self.handle_get_log_files(request.id).await,
@@ -348,67 +331,22 @@ impl IpcServer {
         }
     }
 
-    async fn handle_start_ftp(&self, id: u64) -> IpcResponse {
-        match self.server_manager.start_ftp(
-            Arc::clone(&self.config),
-            Arc::clone(&self.user_manager),
-            Arc::clone(&self.file_logger),
-        ).await {
-            Ok(()) => IpcResponse::success(id, "FTP server started"),
-            Err(e) => IpcResponse::error(id, &format!("Failed to start FTP: {}", e)),
-        }
-    }
-
-    async fn handle_stop_ftp(&self, id: u64) -> IpcResponse {
-        self.server_manager.stop_ftp().await;
-        IpcResponse::success(id, "FTP server stopped")
-    }
-
-    async fn handle_start_sftp(&self, id: u64) -> IpcResponse {
-        match self.server_manager.start_sftp(
-            Arc::clone(&self.config),
-            Arc::clone(&self.user_manager),
-            Arc::clone(&self.file_logger),
-        ).await {
-            Ok(()) => IpcResponse::success(id, "SFTP server started"),
-            Err(e) => IpcResponse::error(id, &format!("Failed to start SFTP: {}", e)),
-        }
-    }
-
-    async fn handle_stop_sftp(&self, id: u64) -> IpcResponse {
-        self.server_manager.stop_sftp().await;
-        IpcResponse::success(id, "SFTP server stopped")
-    }
-
     async fn handle_restart_service(&self, id: u64) -> IpcResponse {
-        self.server_manager.stop_ftp().await;
-        self.server_manager.stop_sftp().await;
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        
+        // 重启服务时根据配置文件的 enabled 设置自动启动 FTP/SFTP
         let (ftp_enabled, sftp_enabled) = {
             let cfg = self.config.lock().unwrap();
             (cfg.ftp.enabled, cfg.sftp.enabled)
         };
         
-        if ftp_enabled
-            && let Err(e) = self.server_manager.start_ftp(
-                Arc::clone(&self.config),
-                Arc::clone(&self.user_manager),
-                Arc::clone(&self.file_logger),
-            ).await {
-                return IpcResponse::error(id, &format!("Failed to start FTP: {}", e));
-            }
+        info!(
+            ftp_enabled = ftp_enabled,
+            sftp_enabled = sftp_enabled,
+            "[SERVICE] 重启服务，将根据配置启动 FTP/SFTP"
+        );
         
-        if sftp_enabled
-            && let Err(e) = self.server_manager.start_sftp(
-                Arc::clone(&self.config),
-                Arc::clone(&self.user_manager),
-                Arc::clone(&self.file_logger),
-            ).await {
-                return IpcResponse::error(id, &format!("Failed to start SFTP: {}", e));
-            }
-        
-        IpcResponse::success(id, "Service restarted")
+        // 注意：服务启停由 systemd 管理，这里只返回成功响应
+        // 实际的服务重启通过 systemctl restart wftpd 实现
+        IpcResponse::success(id, "Service restart requested - use systemctl restart wftpd")
     }
 
     async fn handle_get_status(&self, id: u64) -> IpcResponse {
@@ -487,65 +425,6 @@ impl IpcServer {
 
     async fn handle_users_exists(&self, id: u64) -> IpcResponse {
         IpcResponse::bool_value(id, Path::new(USERS_PATH).exists())
-    }
-
-    async fn handle_install_service(&self, id: u64, binary_path: &str) -> IpcResponse {
-        match self.service_manager.install_service(binary_path) {
-            Ok(_) => {
-                let _ = self.service_manager.reload_daemon();
-                IpcResponse::success(id, "Service installed successfully")
-            }
-            Err(e) => IpcResponse::error(id, &format!("Failed to install service: {}", e)),
-        }
-    }
-
-    async fn handle_uninstall_service(&self, id: u64) -> IpcResponse {
-        match self.service_manager.uninstall_service() {
-            Ok(_) => IpcResponse::success(id, "Service uninstalled successfully"),
-            Err(e) => IpcResponse::error(id, &format!("Failed to uninstall service: {}", e)),
-        }
-    }
-
-    async fn handle_start_system_service(&self, id: u64) -> IpcResponse {
-        match self.service_manager.start_service() {
-            Ok(_) => IpcResponse::success(id, "Service started successfully"),
-            Err(e) => IpcResponse::error(id, &format!("Failed to start service: {}", e)),
-        }
-    }
-
-    async fn handle_stop_system_service(&self, id: u64) -> IpcResponse {
-        match self.service_manager.stop_service() {
-            Ok(_) => IpcResponse::success(id, "Service stopped successfully"),
-            Err(e) => IpcResponse::error(id, &format!("Failed to stop service: {}", e)),
-        }
-    }
-
-    async fn handle_restart_system_service(&self, id: u64) -> IpcResponse {
-        match self.service_manager.restart_service() {
-            Ok(_) => IpcResponse::success(id, "Service restarted successfully"),
-            Err(e) => IpcResponse::error(id, &format!("Failed to restart service: {}", e)),
-        }
-    }
-
-    async fn handle_enable_service(&self, id: u64) -> IpcResponse {
-        match self.service_manager.enable_service() {
-            Ok(_) => IpcResponse::success(id, "Service enabled successfully"),
-            Err(e) => IpcResponse::error(id, &format!("Failed to enable service: {}", e)),
-        }
-    }
-
-    async fn handle_disable_service(&self, id: u64) -> IpcResponse {
-        match self.service_manager.disable_service() {
-            Ok(_) => IpcResponse::success(id, "Service disabled successfully"),
-            Err(e) => IpcResponse::error(id, &format!("Failed to disable service: {}", e)),
-        }
-    }
-
-    async fn handle_get_system_service_status(&self, id: u64) -> IpcResponse {
-        let installed = self.service_manager.service_exists();
-        let running = self.service_manager.is_service_running();
-        let enabled = self.service_manager.is_service_enabled();
-        IpcResponse::service_status(id, installed, running, enabled)
     }
 
     async fn handle_get_initial_state(&self, id: u64) -> IpcResponse {

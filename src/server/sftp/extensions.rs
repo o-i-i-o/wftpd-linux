@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 use tracing::warn;
+use nix::sys::statvfs::Statvfs;
 
 use super::state::SftpState;
 use super::packet::*;
@@ -40,8 +41,7 @@ fn log_io_error(operation: &str, path: &Path, error: &std::io::Error) {
     warn!(operation = operation, path = %path.display(), error = %error, "[SFTP] Operation failed");
 }
 
-#[cfg(unix)]
-fn build_statvfs_reply(id: u32, stats: &nix::sys::statvfs::Statvfs) -> Vec<u8> {
+fn build_statvfs_reply(id: u32, stats: &Statvfs) -> Vec<u8> {
     let bsize: u64 = stats.block_size();
     let frsize: u64 = stats.fragment_size();
     let blocks: u64 = stats.blocks();
@@ -157,34 +157,25 @@ impl SftpState {
                 return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid statvfs packet: path data truncated", ""));
             }
         
-        #[cfg(unix)]
-        {
-            let full_path = match self.resolve_path(&path) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
-                }
-            };
-
-            use nix::sys::statvfs::statvfs;
-            match statvfs(&full_path) {
-                Ok(stats) => Ok(build_statvfs_reply(id, &stats)),
-                Err(e) => {
-                    let (status, msg) = match e {
-                        nix::errno::Errno::ENOENT => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
-                        nix::errno::Errno::EACCES => (SSH_FX_PERMISSION_DENIED, "Permission denied"),
-                        nix::errno::Errno::ENOTDIR => (SSH_FX_FAILURE, "Not a directory"),
-                        _ => (SSH_FX_FAILURE, "Failed to get filesystem stats"),
-                    };
-                    Ok(build_status_packet(id, status, msg, ""))
-                }
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
             }
-        }
+        };
 
-        #[cfg(not(unix))]
-        {
-            let _ = path;
-            Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "statvfs not supported on this platform", ""))
+        use nix::sys::statvfs::statvfs;
+        match statvfs(&full_path) {
+            Ok(stats) => Ok(build_statvfs_reply(id, &stats)),
+            Err(e) => {
+                let (status, msg) = match e {
+                    nix::errno::Errno::ENOENT => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
+                    nix::errno::Errno::EACCES => (SSH_FX_PERMISSION_DENIED, "Permission denied"),
+                    nix::errno::Errno::ENOTDIR => (SSH_FX_FAILURE, "Not a directory"),
+                    _ => (SSH_FX_FAILURE, "Failed to get filesystem stats"),
+                };
+                Ok(build_status_packet(id, status, msg, ""))
+            }
         }
     }
 
@@ -209,34 +200,25 @@ impl SftpState {
                 return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid fstatvfs packet: handle data truncated", ""));
             }
 
-        #[cfg(unix)]
-        {
-            use nix::sys::statvfs::fstatvfs;
+        use nix::sys::statvfs::fstatvfs;
 
-            match self.handles.get(&handle_str) {
-                Some(handle) if !handle.is_dir => {
-                    match fstatvfs(&handle.file) {
-                        Ok(stats) => Ok(build_statvfs_reply(id, &stats)),
-                        Err(e) => {
-                            let (status, msg) = match e {
-                                nix::errno::Errno::ENOENT => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
-                                nix::errno::Errno::EACCES => (SSH_FX_PERMISSION_DENIED, "Permission denied"),
-                                nix::errno::Errno::ENOTDIR => (SSH_FX_FAILURE, "Not a directory"),
-                                _ => (SSH_FX_FAILURE, "Failed to get filesystem stats"),
-                            };
-                            Ok(build_status_packet(id, status, msg, ""))
-                        }
+        match self.handles.get(&handle_str) {
+            Some(handle) if !handle.is_dir => {
+                match fstatvfs(&handle.file) {
+                    Ok(stats) => Ok(build_statvfs_reply(id, &stats)),
+                    Err(e) => {
+                        let (status, msg) = match e {
+                            nix::errno::Errno::ENOENT => (SSH_FX_NO_SUCH_FILE, "No such file or directory"),
+                            nix::errno::Errno::EACCES => (SSH_FX_PERMISSION_DENIED, "Permission denied"),
+                            nix::errno::Errno::ENOTDIR => (SSH_FX_FAILURE, "Not a directory"),
+                            _ => (SSH_FX_FAILURE, "Failed to get filesystem stats"),
+                        };
+                        Ok(build_status_packet(id, status, msg, ""))
                     }
                 }
-                Some(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Handle does not reference a file", "")),
-                None => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
             }
-        }
-
-        #[cfg(not(unix))]
-        {
-            let _ = handle_str;
-            Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "fstatvfs not supported on this platform", ""))
+            Some(_) => Ok(build_status_packet(id, SSH_FX_FAILURE, "Handle does not reference a file", "")),
+            None => Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid handle", "")),
         }
     }
 
@@ -589,49 +571,40 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        #[cfg(unix)]
-        {
-            let src_full = match self.resolve_path(&src_path) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Source path resolution failed: {}", e), ""));
-                }
-            };
-            let dst_full = match self.resolve_path(&dst_path) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Destination path resolution failed: {}", e), ""));
-                }
-            };
-
-            match tokio::fs::hard_link(&src_full, &dst_full).await {
-                Ok(_) => {
-                    if let Ok(mut fl) = self.file_logger.try_lock() {
-                        fl.log(FileLogInfo {
-                            username: self.username.as_deref().unwrap_or("anonymous"),
-                            client_ip: &self.client_ip,
-                            operation: "HARDLINK",
-                            file_path: &format!("{} -> {}", src_full.to_string_lossy(), dst_full.to_string_lossy()),
-                            file_size: 0,
-                            protocol: "SFTP",
-                            success: true,
-                            message: "硬链接创建成功",
-                        });
-                    }
-                    Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
-                }
-                Err(e) => {
-                    log_io_error("HARDLINK", &src_full, &e);
-                    let (status, msg) = io_error_to_sftp_status(&e);
-                    Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
-                }
+        let src_full = match self.resolve_path(&src_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Source path resolution failed: {}", e), ""));
             }
-        }
+        };
+        let dst_full = match self.resolve_path(&dst_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Destination path resolution failed: {}", e), ""));
+            }
+        };
 
-        #[cfg(not(unix))]
-        {
-            let _ = (src_path, dst_path);
-            Ok(build_status_packet(id, SSH_FX_OP_UNSUPPORTED, "Hardlinks not supported on this platform", ""))
+        match tokio::fs::hard_link(&src_full, &dst_full).await {
+            Ok(_) => {
+                if let Ok(mut fl) = self.file_logger.try_lock() {
+                    fl.log(FileLogInfo {
+                        username: self.username.as_deref().unwrap_or("anonymous"),
+                        client_ip: &self.client_ip,
+                        operation: "HARDLINK",
+                        file_path: &format!("{} -> {}", src_full.to_string_lossy(), dst_full.to_string_lossy()),
+                        file_size: 0,
+                        protocol: "SFTP",
+                        success: true,
+                        message: "硬链接创建成功",
+                    });
+                }
+                Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
+            }
+            Err(e) => {
+                log_io_error("HARDLINK", &src_full, &e);
+                let (status, msg) = io_error_to_sftp_status(&e);
+                Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
+            }
         }
     }
 

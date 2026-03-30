@@ -12,7 +12,7 @@ use crate::core::logger::Logger;
 use crate::core::users::UserManager;
 use crate::core::server_manager::ServerManager;
 use crate::service::ServiceManager;
-use crate::core::tracing_logger::init_tracing;
+use crate::core::tracing_logger::{init_tracing, init_simple};
 
 pub struct AppState {
     pub config: Arc<Mutex<Config>>,
@@ -24,7 +24,17 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// 创建 AppState（服务端使用，会初始化文件日志）
     pub fn new() -> anyhow::Result<Self> {
+        Self::new_with_logging(true)
+    }
+    
+    /// 创建 AppState（前端使用，只使用控制台日志，不写入文件）
+    pub fn new_for_gui() -> anyhow::Result<Self> {
+        Self::new_with_logging(false)
+    }
+    
+    fn new_with_logging(enable_file_log: bool) -> anyhow::Result<Self> {
         let config_path = Config::get_config_path();
         let config = Arc::new(Mutex::new(Config::load(&config_path)?));
         
@@ -42,7 +52,12 @@ impl AppState {
             )
         };
         
-        init_tracing(&log_dir, &log_level, max_log_files, enable_json)?;
+        if enable_file_log {
+            init_tracing(&log_dir, &log_level, max_log_files, enable_json)?;
+        } else {
+            // 前端只使用简单的控制台日志，不写入文件
+            init_simple()?;
+        }
         
         let logger = Arc::new(Mutex::new(Logger::new(&log_dir, max_log_size, max_log_files)));
         let file_logger = Arc::new(Mutex::new(FileLogger::new(&log_dir, max_log_size)));

@@ -129,32 +129,15 @@ pub fn build_attrs(is_dir: bool, size: u64) -> Vec<u8> {
 
 #[allow(dead_code)]
 pub fn build_attrs_from_metadata(metadata: &std::fs::Metadata) -> Vec<u8> {
+    use std::os::unix::fs::MetadataExt;
+    
     let mut attrs = Vec::new();
     let flags: u32 = 0x00000001 | 0x00000002 | 0x00000004 | 0x00000008 | 0x00000010;
     attrs.extend_from_slice(&flags.to_be_bytes());
     attrs.extend_from_slice(&metadata.len().to_be_bytes());
-    
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        attrs.extend_from_slice(&metadata.uid().to_be_bytes());
-        attrs.extend_from_slice(&metadata.gid().to_be_bytes());
-        attrs.extend_from_slice(&metadata.mode().to_be_bytes());
-    }
-    
-    #[cfg(not(unix))]
-    {
-        let uid: u32 = 1000;
-        let gid: u32 = 1000;
-        attrs.extend_from_slice(&uid.to_be_bytes());
-        attrs.extend_from_slice(&gid.to_be_bytes());
-        let permissions = if metadata.is_dir() {
-            0o40755u32
-        } else {
-            0o100644u32
-        };
-        attrs.extend_from_slice(&permissions.to_be_bytes());
-    }
+    attrs.extend_from_slice(&metadata.uid().to_be_bytes());
+    attrs.extend_from_slice(&metadata.gid().to_be_bytes());
+    attrs.extend_from_slice(&metadata.mode().to_be_bytes());
     
     let atime: u32 = metadata.accessed()
         .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as u32)

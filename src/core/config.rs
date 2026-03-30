@@ -92,6 +92,7 @@ pub struct LoggingConfig {
     pub max_log_files: usize,
     pub log_to_file: bool,
     pub log_to_gui: bool,
+    #[serde(default)]
     pub enable_json: bool,
 }
 

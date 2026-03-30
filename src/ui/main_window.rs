@@ -9,14 +9,35 @@ use super::security_tab;
 use super::service_tab;
 use super::log_tab;
 use super::file_log_tab;
-use super::utils::{setup_window_for_uos, show_error_dialog};
+use super::utils::setup_window_for_uos;
 
 pub fn build_ui(app: &Application) {
-    let state = match AppState::new() {
+    // 前端使用 new_for_gui()，不直接写入日志文件，通过 IPC 从 wftpd 获取日志
+    let state = match AppState::new_for_gui() {
         Ok(s) => Arc::new(StdMutex::new(s)),
         Err(e) => {
             eprintln!("Failed to initialize application state: {}", e);
-            show_error_dialog(&format!("初始化失败: {}", e));
+            // 创建一个临时窗口来显示错误对话框
+            let window = ApplicationWindow::builder()
+                .application(app)
+                .title("WFTPG - 错误")
+                .default_width(400)
+                .default_height(200)
+                .build();
+            window.present();
+            
+            let error_msg = format!("初始化失败: {}", e);
+            let dialog = gtk::MessageDialog::new(
+                Some(&window),
+                gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+                gtk::MessageType::Error,
+                gtk::ButtonsType::Ok,
+                &error_msg,
+            );
+            dialog.set_title("启动错误");
+            dialog.run();
+            dialog.close();
+            window.close();
             return;
         }
     };

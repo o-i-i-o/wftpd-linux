@@ -628,20 +628,9 @@ pub fn format_mtime_rfc3659(metadata: &std::fs::Metadata) -> String {
 }
 
 pub fn get_unix_mode(metadata: &std::fs::Metadata) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = metadata.permissions().mode();
-        format!("{:04o}", mode & 0o7777)
-    }
-    #[cfg(not(unix))]
-    {
-        if metadata.is_dir() {
-            "0755".to_string()
-        } else {
-            "0644".to_string()
-        }
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let mode = metadata.permissions().mode();
+    format!("{:04o}", mode & 0o7777)
 }
 
 pub fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {

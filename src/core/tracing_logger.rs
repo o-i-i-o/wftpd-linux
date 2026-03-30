@@ -11,7 +11,7 @@ use anyhow::Result;
 use std::path::Path;
 use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::{
-    fmt::{self, format::FmtSpan},
+    fmt::{self, format::FmtSpan, time::ChronoLocal},
     layer::{Layer, SubscriberExt},
     reload::{self, Handle},
     Registry,
@@ -60,6 +60,7 @@ pub fn init_tracing(
             .with_thread_names(false)
             .with_line_number(true)
             .with_span_events(FmtSpan::CLOSE)
+            .with_timer(ChronoLocal::rfc_3339())
             .json()
             .boxed()
     } else {
@@ -71,6 +72,7 @@ pub fn init_tracing(
             .with_thread_names(false)
             .with_line_number(true)
             .with_span_events(FmtSpan::CLOSE)
+            .with_timer(ChronoLocal::rfc_3339())
             .boxed()
     };
 
@@ -86,6 +88,7 @@ pub fn init_tracing(
         .with_thread_ids(false)
         .with_thread_names(false)
         .with_line_number(false)
+        .with_timer(ChronoLocal::rfc_3339())
         .json()
         .with_filter(
             Targets::new()
@@ -99,6 +102,7 @@ pub fn init_tracing(
         .with_thread_ids(false)
         .with_thread_names(false)
         .with_line_number(false)
+        .with_timer(ChronoLocal::rfc_3339())
         .with_filter(
             Targets::new()
                 .with_target("file_ops", LevelFilter::OFF)

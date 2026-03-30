@@ -1,5 +1,5 @@
 {
-  "start_time": "2026-03-30T09:41:32.924086",
+  "start_time": "2026-03-30T11:58:15.842086",
   "ftp": {
     "total": 17,
     "passed": 10,
@@ -42,7 +42,7 @@
     "passed": 0,
     "failed": 1,
     "success_rate": "0.00%",
-    "duration_seconds": 0.05,
+    "duration_seconds": 0.04,
     "errors": [
       {
         "test": "SFTP 连接",
@@ -56,5 +56,5 @@
     "total_failed": 8,
     "success_rate": "55.56%"
   },
-  "end_time": "2026-03-30T09:41:35.392278"
+  "end_time": "2026-03-30T11:58:18.312298"
 }

@@ -244,6 +244,8 @@ impl SftpServer {
                                         keys_dir,
                                     );
 
+                                    info!("Spawning SFTP connection handler for {}", client_ip);
+                                    
                                     if let Err(e) = russh::server::run_stream(config, socket, handler).await {
                                         let error_msg = format!("{}", e);
                                         if error_msg.contains("Disconnected") || error_msg.contains("Connection reset") {

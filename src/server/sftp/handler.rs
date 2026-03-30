@@ -1,7 +1,7 @@
 use anyhow::Result;
 use russh::*;
 use russh::keys::*;
-use russh::server::Msg;
+use russh::server::{Msg, Session};
 use russh::ChannelId;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -128,6 +128,12 @@ impl russh::server::Handler for SftpHandler {
         user: &str,
         password: &str,
     ) -> Result<server::Auth, Self::Error> {
+        info!(
+            user = %user,
+            client_ip = %self.client_ip,
+            "[SFTP] Password authentication requested"
+        );
+        
         if !is_safe_username(user) {
             self.log_client_action(
                 "SFTP",
@@ -236,6 +242,12 @@ impl russh::server::Handler for SftpHandler {
         user: &str,
         public_key: &PublicKey,
     ) -> Result<server::Auth, Self::Error> {
+        info!(
+            user = %user,
+            client_ip = %self.client_ip,
+            "[SFTP] Public key authentication requested"
+        );
+        
         if !is_safe_username(user) {
             self.log_client_action(
                 "SFTP",
@@ -380,17 +392,51 @@ impl russh::server::Handler for SftpHandler {
 
     async fn channel_open_session(
         &mut self,
-        _channel: Channel<Msg>,
-        _session: &mut server::Session,
+        channel: Channel<Msg>,
+        session: &mut Session,
     ) -> Result<bool, Self::Error> {
-        Ok(self.authenticated)
+        debug!(
+            channel_id = ?channel.id(),
+            authenticated = self.authenticated,
+            username = ?self.username,
+            "[SFTP] channel_open_session requested"
+        );
+        
+        // 如果已经认证通过，允许打开会话
+        if self.authenticated {
+            info!(
+                channel_id = ?channel.id(),
+                username = ?self.username,
+                "[SFTP] Session channel opened successfully"
+            );
+            Ok(true)
+        } else {
+            warn!(
+                channel_id = ?channel.id(),
+                client_ip = %self.client_ip,
+                "[SFTP] Session channel denied: not authenticated"
+            );
+            Ok(false)
+        }
+    }
+
+    async fn auth_succeeded(
+        &mut self,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        info!(
+            username = ?self.username,
+            client_ip = %self.client_ip,
+            "[SFTP] Authentication succeeded, session established"
+        );
+        Ok(())
     }
 
     async fn subsystem_request(
         &mut self,
         channel: ChannelId,
         name: &str,
-        session: &mut server::Session,
+        session: &mut Session,
     ) -> Result<(), Self::Error> {
         if name != "sftp" {
             self.log_warning(&format!("Unknown subsystem request: {}", name));
@@ -441,7 +487,7 @@ impl russh::server::Handler for SftpHandler {
         _pix_width: u32,
         _pix_height: u32,
         _modes: &[(Pty, u32)],
-        _session: &mut server::Session,
+        _session: &mut Session,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -449,7 +495,7 @@ impl russh::server::Handler for SftpHandler {
     async fn shell_request(
         &mut self,
         _channel: ChannelId,
-        _session: &mut server::Session,
+        _session: &mut Session,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -458,7 +504,7 @@ impl russh::server::Handler for SftpHandler {
         &mut self,
         channel: ChannelId,
         data: &[u8],
-        session: &mut server::Session,
+        session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.sftp_channel == Some(channel)
             && let Some(state) = &self.sftp_state {
@@ -478,7 +524,7 @@ impl russh::server::Handler for SftpHandler {
     async fn channel_eof(
         &mut self,
         channel: ChannelId,
-        _session: &mut server::Session,
+        _session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.sftp_channel == Some(channel)
             && let Some(state) = &self.sftp_state {
@@ -498,7 +544,7 @@ impl russh::server::Handler for SftpHandler {
     async fn channel_close(
         &mut self,
         channel: ChannelId,
-        _session: &mut server::Session,
+        _session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.sftp_channel == Some(channel) {
             if let Some(state) = &self.sftp_state {

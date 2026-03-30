@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use rustls::ServerConfig;
-use rustls_pemfile::{certs, private_key};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -40,11 +39,10 @@ impl TlsConfig {
         let mut cert_reader = BufReader::new(cert_file);
         let mut key_reader = BufReader::new(key_file);
 
-        let cert_chain = certs(&mut cert_reader)
-            .collect::<Result<Vec<_>, _>>()
+        let cert_chain = parse_certs(&mut cert_reader)
             .context("Failed to read certificates")?;
 
-        let private_key = private_key(&mut key_reader)
+        let private_key = parse_private_key(&mut key_reader)
             .context("Failed to read private key")?
             .ok_or_else(|| anyhow::anyhow!("No private key found in file"))?;
 
@@ -93,4 +91,42 @@ impl TlsConfig {
 pub fn load_tls_config(cert_path: &str, key_path: &str) -> Result<Arc<ServerConfig>> {
     let config = TlsConfig::new(true, cert_path.to_string(), key_path.to_string(), false);
     config.load_server_config()
+}
+
+fn parse_certs(reader: &mut impl Read) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+    let mut cert_data = Vec::new();
+    reader.read_to_end(&mut cert_data)?;
+    
+    let pem_items = pem::parse_many(&cert_data)
+        .context("Failed to parse PEM data")?;
+    
+    let mut certs = Vec::new();
+    for pem_obj in pem_items {
+        if pem_obj.tag() == "CERTIFICATE" {
+            certs.push(rustls::pki_types::CertificateDer::from(pem_obj.contents().to_vec()));
+        }
+    }
+    
+    Ok(certs)
+}
+
+fn parse_private_key(reader: &mut impl Read) -> Result<Option<rustls::pki_types::PrivateKeyDer<'static>>> {
+    let mut key_data = Vec::new();
+    reader.read_to_end(&mut key_data)?;
+    
+    let pem_items = pem::parse_many(&key_data)
+        .context("Failed to parse PEM private key")?;
+    
+    for pem_obj in pem_items {
+        let tag = pem_obj.tag();
+        
+        // 支持多种私钥格式
+        if tag == "PRIVATE KEY" || tag == "RSA PRIVATE KEY" || tag == "EC PRIVATE KEY" {
+            // 使用 PrivatePkcs8KeyDer 包装，然后转换为 PrivateKeyDer
+            let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(pem_obj.contents().to_vec());
+            return Ok(Some(key_der.into()));
+        }
+    }
+    
+    Ok(None)
 }

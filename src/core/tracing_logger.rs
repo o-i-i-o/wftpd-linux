@@ -49,7 +49,7 @@ pub fn init_tracing(
 
     let (non_blocking_audit, guard_audit) = non_blocking(audit_appender);
 
-    let (reload_filter, reload_handle) = reload::Layer::new(filter);
+    let (reload_filter, reload_handle) = reload::Layer::new(filter.clone());
 
     let program_layer = if enable_json {
         fmt::layer()
@@ -77,7 +77,7 @@ pub fn init_tracing(
     };
 
     let program_layer = program_layer.with_filter(
-        Targets::new()
+        filter
             .with_target("file_ops", LevelFilter::OFF)
     );
 

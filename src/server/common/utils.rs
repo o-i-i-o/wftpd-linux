@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-use tracing::{warn, error};
+use tracing::{warn, error, debug};
+use anyhow::{bail, Result};
 
 use crate::core::error::{WftpgError, WftpgResult};
 
@@ -747,7 +748,7 @@ pub async fn safe_open_file_at_async(home_dir: &str, relative_path: &str) -> Wft
     
     for (i, component) in components.iter().enumerate() {
         if *component == ".." {
-            warn!("路径遍历攻击被阻止: 相对路径中包含 '..'");
+            warn!("路径遍历攻击被阻止：相对路径中包含 '..'");
             for fd in fds_to_close {
                 nix::unistd::close(fd).ok();
             }
@@ -762,6 +763,7 @@ pub async fn safe_open_file_at_async(home_dir: &str, relative_path: &str) -> Wft
         }
         
         let is_last = i == components.len() - 1;
+        // 关键安全改进：始终使用 O_NOFOLLOW 防止符号链接攻击
         let flags = if is_last {
             OFlag::O_RDONLY | OFlag::O_NOFOLLOW
         } else {
@@ -780,7 +782,7 @@ pub async fn safe_open_file_at_async(home_dir: &str, relative_path: &str) -> Wft
                 }
                 nix::unistd::close(current_fd).ok();
                 return Err(WftpgError::PathResolveError(
-                    format!("无法访问路径组件: {}", component)
+                    format!("无法访问路径组件：{}", component)
                 ));
             }
         }
@@ -792,4 +794,160 @@ pub async fn safe_open_file_at_async(home_dir: &str, relative_path: &str) -> Wft
     
     let std_file = std::fs::File::from(current_fd);
     Ok(tokio::fs::File::from_std(std_file))
+}
+
+/// 🔒 严格验证路径是否在 chroot 监狱内
+///
+/// 这个函数比 safe_resolve_path 更严格，它会：
+/// 1. canonicalize 路径（解析所有符号链接）
+/// 2. 检查规范化后的路径是否在 home 目录内
+/// 3. 逐段检查路径组件，防止符号链接逃逸
+///
+/// # Arguments
+/// * `path` - 要验证的路径
+/// * `home_dir` - chroot 根目录（用户家目录）
+///
+/// # Returns
+/// * `Ok(PathBuf)` - 规范化后的绝对路径
+/// * `Err` - 如果路径逃逸或无效
+pub async fn validate_path_within_chroot(path: &str, home_dir: &str) -> Result<PathBuf> {
+    debug!("Validating path: {:?} within chroot: {:?}", path, home_dir);
+    
+    let home_canon = tokio::fs::canonicalize(home_dir).await
+        .map_err(|e| anyhow::anyhow!("Cannot canonicalize home directory: {}", e))?;
+    
+    // 首先解析路径
+    let resolved = if Path::new(path).is_absolute() {
+        // 对于绝对路径，去掉前导 / 并连接到 home 目录
+        let relative = path.trim_start_matches('/');
+        if relative.is_empty() {
+            home_canon.clone()
+        } else {
+            home_canon.join(relative)
+        }
+    } else {
+        home_canon.join(path)
+    };
+    
+    // 关键：canonicalize 以解析所有符号链接
+    let canon_path = match tokio::fs::canonicalize(&resolved).await {
+        Ok(p) => p,
+        Err(e) => {
+            // 如果路径不存在，尝试部分 canonicalize
+            debug!("Path does not exist, attempting partial canonicalization: {}", e);
+            // 对于不存在的路径，我们仍然可以检查其父目录
+            if let Some(parent) = resolved.parent() {
+                let parent_canon = tokio::fs::canonicalize(parent).await
+                    .unwrap_or_else(|_| parent.to_path_buf());
+                
+                if !parent_canon.starts_with(&home_canon) {
+                    bail!("Parent path escapes chroot: {:?}", parent_canon);
+                }
+            }
+            // 返回原始解析路径（未完全 canonicalize）
+            resolved
+        }
+    };
+    
+    // 严格检查：规范化后的路径必须在 home 目录内
+    if !canon_path.starts_with(&home_canon) {
+        warn!(
+            "SECURITY: Path escape attempt detected! Resolved: {:?}, Home: {:?}",
+            canon_path, home_canon
+        );
+        bail!("Path escapes chroot jail: {:?}", canon_path);
+    }
+    
+    // 逐段检查祖先路径，确保没有符号链接指向外部
+    let mut current: &Path = &canon_path;
+    while let Some(ancestor) = current.parent() {
+        if ancestor == home_canon {
+            break;
+        }
+        
+        // 检查这个祖先是否是符号链接
+        if let Ok(meta) = tokio::fs::symlink_metadata(ancestor).await {
+            if meta.file_type().is_symlink() {
+                let link_target = tokio::fs::read_link(ancestor).await?;
+                debug!("Checking symlink ancestor: {:?} -> {:?}", ancestor, link_target);
+                
+                // 如果符号链接目标是绝对的，必须在 home 内
+                if link_target.is_absolute() && !link_target.starts_with(&home_canon) {
+                    bail!(
+                        "Symlink ancestor {:?} points outside chroot to {:?}",
+                        ancestor, link_target
+                    );
+                }
+            }
+        }
+        
+        current = ancestor;
+    }
+    
+    debug!("Path validation successful: {:?}", canon_path);
+    Ok(canon_path)
+}
+
+/// 🔒 验证路径是否可以安全创建（用于 MKDIR、CREATE 等操作）
+///
+/// 检查新路径是否会在创建后导致安全问题
+pub async fn validate_path_for_creation(path: &str, home_dir: &str) -> Result<PathBuf> {
+    debug!("Validating path for creation: {:?} within chroot: {:?}", path, home_dir);
+    
+    let home_canon = tokio::fs::canonicalize(home_dir).await
+        .map_err(|e| anyhow::anyhow!("Cannot canonicalize home directory: {}", e))?;
+    
+    // 解析目标路径
+    let target_path = if Path::new(path).is_absolute() {
+        let relative = path.trim_start_matches('/');
+        if relative.is_empty() {
+            bail!("Cannot create root directory");
+        }
+        home_canon.join(relative)
+    } else {
+        home_canon.join(path)
+    };
+    
+    // 检查路径本身（即使不存在）
+    if target_path.starts_with(&home_canon) {
+        // 还需要检查所有存在的祖先组件
+        for ancestor in target_path.ancestors() {
+            if ancestor == target_path {
+                continue; // 跳过目标本身（因为它不存在）
+            }
+            
+            if let Ok(meta) = tokio::fs::metadata(ancestor).await {
+                if meta.file_type().is_symlink() {
+                    bail!("Cannot create file under symlink ancestor: {:?}", ancestor);
+                }
+            } else {
+                break; // 祖先不存在，停止检查
+            }
+        }
+        Ok(target_path)
+    } else {
+        bail!("Creation path escapes chroot: {:?}", target_path)
+    }
+}
+
+/// 🔒 为 FTP 提供的带 cwd 的路径验证函数
+///
+/// # Arguments
+/// * `cwd` - 当前工作目录
+/// * `home_dir` - 用户主目录（chroot 根目录）
+/// * `path` - 要解析的路径（可以是相对或绝对）
+pub async fn validate_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Result<PathBuf> {
+    // 如果是绝对路径，直接验证
+    if path.starts_with('/') {
+        return validate_path_within_chroot(path, home_dir).await;
+    }
+    
+    // 如果是相对路径，先连接到 cwd
+    let full_path = if path.is_empty() || path == "." {
+        cwd.to_string()
+    } else {
+        format!("{}/{}", cwd.trim_end_matches('/'), path)
+    };
+    
+    validate_path_within_chroot(&full_path, home_dir).await
 }

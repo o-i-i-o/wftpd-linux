@@ -117,27 +117,6 @@ impl SftpServer {
         error!("SFTP: {}", message);
     }
 
-    #[allow(dead_code)]
-    fn log_warning(&self, message: &str) {
-        warn!("SFTP: {}", message);
-    }
-
-    #[allow(dead_code)]
-    fn log_client_action(&self, action: &str, message: &str, client_ip: &str, username: Option<&str>, log_type: &str) {
-        if let Ok(mut file_log) = self.file_logger.try_lock() {
-            file_log.log(crate::core::file_logger::FileLogInfo {
-                username: username.unwrap_or("unknown"),
-                client_ip,
-                operation: action,
-                file_path: message,
-                file_size: 0,
-                protocol: "SFTP",
-                success: true,
-                message: log_type,
-            });
-        }
-    }
-
     pub async fn start(&self) -> Result<()> {
         let (bind_ip, sftp_port, host_key_path, _max_connections, max_auth_attempts, auth_timeout, idle_timeout) = {
             match self.config.try_lock() {

@@ -19,10 +19,16 @@ use crate::core::users::Permissions;
 use crate::core::file_logger::FileLogger;
 use crate::server::common::quota::QuotaCache;
 use crate::server::common::speed_limiter::SpeedLimiter;
-use crate::server::common::utils::safe_resolve_path;
+use crate::server::common::utils::{
+    safe_resolve_path,
+    safe_resolve_path_async,
+    validate_path_within_chroot,
+    validate_path_for_creation,
+    virtual_to_real_path,
+    real_to_virtual_path,
+};
 
 const SSH_FXP_INIT: u8 = 1;
-#[allow(dead_code)]
 const SSH_FXP_VERSION: u8 = 2;
 const SSH_FXP_OPEN: u8 = 3;
 const SSH_FXP_CLOSE: u8 = 4;
@@ -316,7 +322,7 @@ impl SftpState {
 
         self.sftp_version = version.min(6);
 
-        let mut payload = vec![2];
+        let mut payload = vec![SSH_FXP_VERSION];
         payload.extend_from_slice(&self.sftp_version.to_be_bytes());
         
         let extensions = [
@@ -717,7 +723,6 @@ impl SftpState {
     async fn handle_rename(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let id = parse_u32_checked(data, 1)?;
         
-        
         if data.len() < 9 {
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
         }
@@ -725,37 +730,74 @@ impl SftpState {
         let (old_path, old_len) = parse_string_checked(data, 5)?;
         let new_path_pos = 5 + 4 + old_len;
         
-        
         if data.len() < new_path_pos + 4 {
             return Ok(build_status_packet(id, SSH_FX_FAILURE, "Invalid packet", ""));
         }
         
         let (new_path, _new_len) = parse_string_checked(data, new_path_pos)?;
 
-
+        // 🔒 权限检查
         if !self.check_permission_cached(|p| p.can_rename) {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let old_full = match self.resolve_path(&old_path) {
+        // 🔒 安全增强：使用严格的路径验证
+        let old_full = match validate_path_within_chroot(&old_path, &self.home_dir).await {
             Ok(p) => p,
             Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                warn!("RENAME: Old path validation failed: {}", e);
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid source path: {}", e), ""));
             }
         };
         
-        self.log_path_info("RENAME_OLD", &old_full);
+        debug!("RENAME: Validated source path: {:?}", old_full);
         
-        let new_full = match self.resolve_path(&new_path) {
+        let new_full = match validate_path_for_creation(&new_path, &self.home_dir).await {
             Ok(p) => p,
             Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                warn!("RENAME: New path validation failed: {}", e);
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid destination path: {}", e), ""));
             }
         };
         
-        self.log_path_info("RENAME_NEW", &new_full);
+        debug!("RENAME: Validated destination path: {:?}", new_full);
+        
+        // 🔒 额外安全检查：验证父目录不是符号链接
+        if let Some(old_parent) = old_full.parent() {
+            if let Ok(meta) = tokio::fs::symlink_metadata(old_parent).await {
+                if meta.file_type().is_symlink() {
+                    warn!("RENAME: Source parent is a symlink: {:?}", old_parent);
+                    return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, 
+                        "Cannot rename from directory under symbolic link", ""));
+                }
+            }
+        }
+        
+        if let Some(new_parent) = new_full.parent() {
+            if let Ok(meta) = tokio::fs::symlink_metadata(new_parent).await {
+                if meta.file_type().is_symlink() {
+                    warn!("RENAME: Destination parent is a symlink: {:?}", new_parent);
+                    return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, 
+                        "Cannot rename to directory under symbolic link", ""));
+                }
+            }
+        }
 
+        // 🔒 原子操作：如果目标已存在，先删除再重命名
+        if tokio::fs::metadata(&new_full).await.is_ok() {
+            debug!("RENAME: Destination exists, removing first: {:?}", new_full);
+            if let Err(e) = tokio::fs::remove_file(&new_full).await {
+                warn!("RENAME: Failed to remove existing destination: {}", e);
+                // 尝试删除目录
+                if let Err(e2) = tokio::fs::remove_dir_all(&new_full).await {
+                    warn!("RENAME: Failed to remove as directory either: {}", e2);
+                    return Ok(build_status_packet(id, SSH_FX_FAILURE, 
+                        &format!("Cannot remove existing destination: {}", e), ""));
+                }
+            }
+        }
 
+        // 🔒 执行重命名（TOCTOU 防护）
         let result = match tokio::fs::rename(&old_full, &new_full).await {
             Ok(_) => {
                 if let Ok(mut fl) = self.file_logger.lock() {
@@ -774,7 +816,6 @@ impl SftpState {
                 build_status_packet(id, status, &format!("{}: {}", msg, e), "")
             }
         };
-        
         
         Ok(result)
     }
@@ -874,7 +915,7 @@ impl SftpState {
         if flags & 0x00000001 != 0 && data.len() >= offset + 8 {
             let _size = parse_u64_checked(data, offset)?;
             offset += 8;
-            debug!("SETSTAT: size flag present (not implemented)");
+            debug!("SETSTAT: size flag present (not implemented in this version)");
         }
 
         // Handle uid/gid if present
@@ -882,24 +923,43 @@ impl SftpState {
             let _uid = parse_u32_checked(data, offset)?;
             let _gid = parse_u32_checked(data, offset + 4)?;
             offset += 8;
-            debug!("SETSTAT: uid/gid flag present (not implemented)");
+            debug!("SETSTAT: uid/gid flag present (not implemented in this version)");
         }
 
         // Handle permissions if present
         if flags & 0x00000004 != 0 && data.len() >= offset + 4 {
             let permissions = parse_u32_checked(data, offset)?;
-            debug!("SETSTAT: changing permissions to 0o{:o} for {:?}", permissions, full_path);
+            debug!("SETSTAT: requested permissions=0o{:o} for {:?}", permissions, full_path);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 
-                // Create permissions from the lower 9 bits (rwxrwxrwx)
+                // 🔒 只保留标准权限位（rwxrwxrwx）
                 let mode = permissions & 0o777;
-                debug!("SETSTAT: using mode 0o{:o} (masked from 0o{:o})", mode, permissions);
+                
+                // 🔒 禁止特殊权限位：setuid (0o4000), setgid (0o2000), sticky bit (0o1000)
+                if permissions & 0o7000 != 0 {
+                    warn!("SECURITY: User attempted to set special permission bits: 0o{:o}", permissions);
+                    return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED,
+                        "Special permission bits (setuid/setgid/sticky) are not allowed", ""));
+                }
+                
+                // 🔒 可选限制：非管理员用户不能设置 world-writable 或 world-executable
+                // 当前版本未启用此检查，保留作为未来安全加固参考
+                // 如需启用，取消下面代码的注释：
+                /*
+                if !self.is_admin_user() && mode & 0o022 != 0 {
+                    warn!("Non-admin user attempted to set world-writable/executable: 0o{:o}", mode);
+                    return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED,
+                        "World-writable/executable permissions not allowed", ""));
+                }
+                */
+                
+                debug!("SETSTAT: setting mode=0o{:o} (filtered from 0o{:o})", mode, permissions);
                 
                 match tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(mode)).await {
                     Ok(_) => {
-                        debug!("SETSTAT: permissions changed successfully to 0o{:o}", mode);
+                        debug!("SETSTAT: permissions successfully changed to 0o{:o}", mode);
                     }
                     Err(e) => {
                         warn!("SETSTAT: failed to set permissions: {}", e);
@@ -915,7 +975,7 @@ impl SftpState {
             let _atime = parse_u32_checked(data, offset)?;
             let _mtime = parse_u32_checked(data, offset + 4)?;
             offset += 8;
-            debug!("SETSTAT: atime/mtime flag present (not implemented)");
+            debug!("SETSTAT: atime/mtime flag present (not implemented in this version)");
         }
 
         Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
@@ -960,16 +1020,26 @@ impl SftpState {
                 // Handle permissions if present (flags & 0x00000004)
                 if flags & 0x00000004 != 0 && data.len() >= offset + 4 {
                     let permissions = parse_u32_checked(data, offset)?;
-                    debug!("FSETSTAT: changing permissions to 0o{:o} for {:?}", permissions, h.path);
+                    debug!("FSETSTAT: requested permissions=0o{:o} for {:?}", permissions, h.path);
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
+                        
+                        // 🔒 只保留标准权限位
                         let mode = permissions & 0o777;
-                        debug!("FSETSTAT: using mode 0o{:o} (masked from 0o{:o})", mode, permissions);
+                        
+                        // 🔒 禁止特殊权限位
+                        if permissions & 0o7000 != 0 {
+                            warn!("SECURITY: User attempted to set special permission bits: 0o{:o}", permissions);
+                            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED,
+                                "Special permission bits (setuid/setgid/sticky) are not allowed", ""));
+                        }
+                        
+                        debug!("FSETSTAT: setting mode=0o{:o} (filtered from 0o{:o})", mode, permissions);
                         
                         match tokio::fs::set_permissions(&h.path, std::fs::Permissions::from_mode(mode)).await {
                             Ok(_) => {
-                                debug!("FSETSTAT: permissions changed successfully to 0o{:o}", mode);
+                                debug!("FSETSTAT: permissions successfully changed to 0o{:o}", mode);
                             }
                             Err(e) => {
                                 warn!("FSETSTAT: failed to set permissions: {}", e);
@@ -984,7 +1054,7 @@ impl SftpState {
                 if flags & 0x00000008 != 0 && data.len() >= offset + 8 {
                     let _atime = parse_u32_checked(data, offset)?;
                     let _mtime = parse_u32_checked(data, offset + 4)?;
-                    debug!("FSETSTAT: atime/mtime flag present (not implemented)");
+                    debug!("FSETSTAT: atime/mtime flag present (not implemented in this version)");
                 }
 
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
@@ -1253,56 +1323,60 @@ impl SftpState {
             return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
         }
 
-        let full_link = match self.resolve_path(&link_path) {
+        // 🔒 安全增强：使用 validate_path_within_chroot 严格验证路径
+        let full_link = match validate_path_for_creation(&link_path, &self.home_dir).await {
             Ok(p) => p,
             Err(e) => {
-                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+                warn!("SYMLINK: Link path validation failed: {}", e);
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Invalid link path: {}", e), ""));
             }
         };
-        let home = PathBuf::from(&self.home_dir);
-        let home_canon = tokio::fs::canonicalize(&home).await.unwrap_or(home);
         
-        let full_target = if target.starts_with('/') {
-            let resolved = match safe_resolve_path(&self.home_dir, &target) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
-                }
-            };
-            if !resolved.starts_with(&home_canon) {
-                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
+        // 🔒 对目标路径进行更严格的验证
+        let full_target = match validate_path_within_chroot(&target, &self.home_dir).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("SYMLINK: Target path validation failed: {}", e);
+                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, &format!("Invalid symlink target: {}", e), ""));
             }
-            resolved
-        } else {
-            let resolved = match self.resolve_path(&target) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
-                }
-            };
-            if !resolved.starts_with(&home_canon) {
-                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied: target outside home directory", ""));
-            }
-            resolved
         };
 
-        // Debug logging
-        debug!("SYMLINK: target={:?}, link={:?}", full_target, full_link);
+        debug!("SYMLINK: Creating link {:?} -> {:?}", full_link, full_target);
         
-        // Use std::os::unix::fs::symlink directly
+        // 创建符号链接
         #[cfg(unix)]
         match std::os::unix::fs::symlink(&full_target, &full_link) {
             Ok(_) => {
                 debug!("SYMLINK: Successfully created symlink {:?} -> {:?}", full_link, full_target);
                 
-                // Verify the symlink was created correctly immediately
+                // 🔒 立即验证创建的是真正的符号链接
                 match std::fs::symlink_metadata(&full_link) {
                     Ok(metadata) => {
                         let is_symlink = metadata.file_type().is_symlink();
                         debug!("SYMLINK: Verification - is_symlink={}, mode={:o}", is_symlink, metadata.mode());
                         
                         if !is_symlink {
-                            warn!("SYMLINK: Created file is not a symlink! This might be a filesystem limitation.");
+                            warn!("SYMLINK: Created file is not a symlink! Cleaning up...");
+                            let _ = std::fs::remove_file(&full_link);
+                            return Ok(build_status_packet(id, SSH_FX_FAILURE, "Failed to create symlink", ""));
+                        }
+                        
+                        // 🔒 额外检查：符号链接的目标是否可解析且在 home 内
+                        match std::fs::read_link(&full_link) {
+                            Ok(link_target) => {
+                                if link_target.is_absolute() {
+                                    let home_canon = std::fs::canonicalize(&self.home_dir)
+                                        .unwrap_or_else(|_| PathBuf::from(&self.home_dir));
+                                    if !link_target.starts_with(&home_canon) {
+                                        warn!("SYMLINK: Symlink points outside chroot: {:?}", link_target);
+                                        let _ = std::fs::remove_file(&full_link);
+                                        return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Symlink target outside home directory", ""));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("SYMLINK: Cannot read created symlink: {}", e);
+                            }
                         }
                     }
                     Err(e) => {

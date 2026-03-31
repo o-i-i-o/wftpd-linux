@@ -47,17 +47,3 @@ pub fn set_window_icon(window: &ApplicationWindow) {
         }
     }
 }
-
-#[allow(dead_code)]
-pub fn show_error_dialog(message: &str) {
-    let dialog = gtk::MessageDialog::new(
-        None::<&gtk::Window>,
-        gtk::DialogFlags::MODAL,
-        gtk::MessageType::Error,
-        gtk::ButtonsType::Ok,
-        message,
-    );
-    dialog.set_title("错误");
-    dialog.run();
-    dialog.close();
-}

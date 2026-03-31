@@ -3,7 +3,7 @@ use std::path::Path;
 use tracing::{info, debug, warn, error};
 
 use super::super::handler::FtpSession;
-use super::super::utils::{safe_resolve_path, get_file_mtime_raw};
+use super::super::utils::{safe_resolve_path, get_file_mtime_raw, validate_path_with_cwd};
 
 impl FtpSession {
     pub async fn cmd_dele(&mut self, arg: Option<&str>) -> Result<()> {

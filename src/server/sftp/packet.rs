@@ -6,14 +6,6 @@ pub const SSH_FX_NO_SUCH_FILE: u32 = 2;
 pub const SSH_FX_PERMISSION_DENIED: u32 = 3;
 pub const SSH_FX_FAILURE: u32 = 4;
 
-#[allow(dead_code)]
-pub const SSH_FX_BAD_MESSAGE: u32 = 5;
-
-#[allow(dead_code)]
-pub const SSH_FX_NO_CONNECTION: u32 = 6;
-
-#[allow(dead_code)]
-pub const SSH_FX_CONNECTION_LOST: u32 = 7;
 pub const SSH_FX_OP_UNSUPPORTED: u32 = 8;
 
 pub fn parse_u32(data: &[u8], offset: usize) -> u32 {
@@ -30,7 +22,6 @@ pub fn parse_u32_checked(data: &[u8], offset: usize) -> Result<u32> {
     Ok(u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]))
 }
 
-#[allow(dead_code)]
 pub fn parse_u64_checked(data: &[u8], offset: usize) -> Result<u64> {
     if offset + 8 > data.len() {
         anyhow::bail!("Insufficient data for u64 at offset {}", offset);
@@ -41,17 +32,9 @@ pub fn parse_u64_checked(data: &[u8], offset: usize) -> Result<u64> {
     ]))
 }
 
-#[allow(dead_code)]
-pub fn parse_string(data: &[u8], offset: usize) -> Result<String> {
-    if offset + 4 > data.len() {
-        return Ok(String::new());
-    }
-    let len = parse_u32(data, offset) as usize;
-    if offset + 4 + len > data.len() {
-        return Ok(String::new());
-    }
-    Ok(String::from_utf8_lossy(&data[offset + 4..offset + 4 + len]).to_string())
-}
+
+
+
 
 #[allow(dead_code)]
 pub fn parse_string_checked(data: &[u8], offset: usize) -> Result<(String, usize)> {

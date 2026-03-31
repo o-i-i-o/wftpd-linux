@@ -40,6 +40,9 @@ impl SftpHandler {
         keys_dir: PathBuf,
     ) -> Self {
         info!("[SFTP HANDLER] Creating new SFTP handler for client {}", client_ip);
+        // [DEBUG] 添加详细的连接信息
+        tracing::debug!("[SFTP DEBUG] Handler created - users_path={:?}, keys_dir={:?}", users_path, keys_dir);
+        
         SftpHandler {
             user_manager,
             file_logger,
@@ -129,6 +132,9 @@ impl russh::server::Handler for SftpHandler {
         user: &str,
         password: &str,
     ) -> Result<server::Auth, Self::Error> {
+        // [DEBUG] 添加详细的认证日志
+        tracing::debug!("[SFTP AUTH DEBUG] auth_password called - user={}, password_len={}", user, password.len());
+        
         info!(
             user = %user,
             client_ip = %self.client_ip,
@@ -151,6 +157,9 @@ impl russh::server::Handler for SftpHandler {
         
         info!(user = %user, ip = %self.client_ip, "[SFTP AUTH] 用户尝试密码认证");
         
+        // [DEBUG] 打印用户管理器状态
+        tracing::debug!("[SFTP AUTH DEBUG] users_path={:?}", self.users_path);
+        
         let auth_result = {
             match self.user_manager.try_lock() {
                 Ok(mut users) => {
@@ -161,6 +170,11 @@ impl russh::server::Handler for SftpHandler {
                     }
                     let user_count = users.get_users().len();
                     info!(user_count = user_count, "[SFTP AUTH] 当前内存中用户数");
+                    
+                    // [DEBUG] 打印所有用户列表
+                    for (username, user) in users.get_users().iter() {
+                        tracing::debug!("[SFTP AUTH DEBUG] Available user: {}, enabled={}, home={}", username, user.enabled, user.home_dir);
+                    }
                     
                     // 检查用户是否存在
                     if let Some(u) = users.get_user(user) {
@@ -437,6 +451,8 @@ impl russh::server::Handler for SftpHandler {
             client_ip = %self.client_ip,
             "[SFTP] Authentication succeeded, session established"
         );
+        // [DEBUG] 添加详细的认证成功日志
+        tracing::debug!("[SFTP DEBUG] auth_succeeded called - authenticated={}, username={:?}", self.authenticated, self.username);
         Ok(())
     }
 
@@ -447,6 +463,8 @@ impl russh::server::Handler for SftpHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         info!("[SFTP] Subsystem request: {}", name);
+        // [DEBUG] 添加详细的子系统请求日志
+        tracing::debug!("[SFTP DEBUG] subsystem_request - name={}, authenticated={}, home_dir={:?}", name, self.authenticated, self.home_dir);
         
         if name != "sftp" {
             self.log_warning(&format!("Unknown subsystem request: {}", name));

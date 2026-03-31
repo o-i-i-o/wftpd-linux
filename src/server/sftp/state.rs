@@ -810,7 +810,34 @@ impl SftpState {
     }
 
     async fn handle_lstat(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        self.handle_stat(data).await
+        let id = parse_u32_checked(data, 1)?;
+        let (path, _) = parse_string_checked(data, 5)?;
+
+        if !self.check_permission_cached(|p| p.can_read) {
+            return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, "Permission denied", ""));
+        }
+
+        let full_path = match self.resolve_path(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(build_status_packet(id, SSH_FX_FAILURE, &format!("Path resolution failed: {}", e), ""));
+            }
+        };
+        self.log_path_info("LSTAT", &full_path);
+
+        // Use symlink_metadata to get information about the symlink itself
+        match tokio::fs::symlink_metadata(&full_path).await {
+            Ok(metadata) => {
+                let mut payload = vec![105];
+                payload.extend_from_slice(&id.to_be_bytes());
+                payload.extend_from_slice(&build_attrs(metadata.is_dir(), metadata.len()));
+                Ok(build_packet(&payload))
+            }
+            Err(e) => {
+                let (status, msg) = io_error_to_sftp_status(&e);
+                Ok(build_status_packet(id, status, msg, ""))
+            }
+        }
     }
 
     async fn handle_setstat(&mut self, data: &[u8]) -> Result<Vec<u8>> {
@@ -834,14 +861,56 @@ impl SftpState {
         }
 
         let flags = parse_u32_checked(data, attrs_offset)?;
+        debug!("SETSTAT: path={}, flags=0x{:08x}", full_path.display(), flags);
 
-        if flags & 0x00000004 != 0 && data.len() >= attrs_offset + 4 + 8 + 8 + 4 {
-            let permissions = parse_u32_checked(data, attrs_offset + 4 + 8 + 8)?;
+        // SSH_FILEXFER_ATTR_SIZE = 0x00000001
+        // SSH_FILEXFER_ATTR_UIDGID = 0x00000002
+        // SSH_FILEXFER_ATTR_PERMISSIONS = 0x00000004
+        // SSH_FILEXFER_ATTR_ACMODTIME = 0x00000008
+
+        let mut offset = attrs_offset + 4;
+
+        // Handle size if present
+        if flags & 0x00000001 != 0 && data.len() >= offset + 8 {
+            let _size = parse_u64_checked(data, offset)?;
+            offset += 8;
+            debug!("SETSTAT: size flag present (not implemented)");
+        }
+
+        // Handle uid/gid if present
+        if flags & 0x00000002 != 0 && data.len() >= offset + 8 {
+            let _uid = parse_u32_checked(data, offset)?;
+            let _gid = parse_u32_checked(data, offset + 4)?;
+            offset += 8;
+            debug!("SETSTAT: uid/gid flag present (not implemented)");
+        }
+
+        // Handle permissions if present
+        if flags & 0x00000004 != 0 && data.len() >= offset + 4 {
+            let permissions = parse_u32_checked(data, offset)?;
+            debug!("SETSTAT: changing permissions to 0o{:o} for {:?}", permissions, full_path);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(permissions)).await;
+                match tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(permissions)).await {
+                    Ok(_) => {
+                        debug!("SETSTAT: permissions changed successfully");
+                    }
+                    Err(e) => {
+                        warn!("SETSTAT: failed to set permissions: {}", e);
+                        let (status, msg) = io_error_to_sftp_status(&e);
+                        return Ok(build_status_packet(id, status, msg, ""));
+                    }
+                }
             }
+        }
+
+        // Handle atime/mtime if present
+        if flags & 0x00000008 != 0 && data.len() >= offset + 8 {
+            let _atime = parse_u32_checked(data, offset)?;
+            let _mtime = parse_u32_checked(data, offset + 4)?;
+            offset += 8;
+            debug!("SETSTAT: atime/mtime flag present (not implemented)");
         }
 
         Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
@@ -1173,7 +1242,8 @@ impl SftpState {
             resolved
         };
 
-        match std::os::unix::fs::symlink(&full_target, &full_link) {
+        // Use tokio's symlink for async operation
+        match tokio::fs::symlink(&full_target, &full_link).await {
             Ok(_) => {
                 if let Ok(mut fl) = self.file_logger.lock() {
                     fl.log(crate::core::file_logger::FileLogInfo {
@@ -1187,9 +1257,11 @@ impl SftpState {
                         message: "符号链接创建成功",
                     });
                 }
+                info!(username = ?self.username, link = ?full_link, target = ?full_target, "SFTP symlink created");
                 Ok(build_status_packet(id, SSH_FX_OK, "OK", ""))
             }
             Err(e) => {
+                warn!(username = ?self.username, link = ?full_link, target = ?full_target, error = %e, "SFTP symlink failed");
                 let (status, msg) = io_error_to_sftp_status(&e);
                 Ok(build_status_packet(id, status, &format!("{}: {}", msg, e), ""))
             }

@@ -1329,8 +1329,8 @@ mod tests {
             home.to_string_lossy().into_owned(),
             Some("tester".to_string()),
             Arc::new(StdMutex::new(users)),
-            Arc::new(StdMutex::new(Logger::new(&log_dir.to_string_lossy(), 1024 * 1024, 3))),
             Arc::new(StdMutex::new(FileLogger::new(&log_dir.to_string_lossy(), 1024 * 1024))),
+            Arc::new(QuotaCache::new()),
             "127.0.0.1".to_string(),
         )
     }

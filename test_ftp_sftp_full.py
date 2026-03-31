@@ -702,11 +702,13 @@ class SFTPTester:
         """测试获取当前目录"""
         test_name = "PWD 获取路径"
         try:
-            pwd = self.sftp.getcwd()
-            if pwd and isinstance(pwd, str):
+            # Paramiko 的 getcwd() 需要先调用 chdir 才能设置内部状态
+            # 使用 normalize('.') 来获取当前工作目录
+            pwd = self.sftp.normalize('.')
+            if pwd and isinstance(pwd, str) and len(pwd) > 0:
                 self.result.add_pass(test_name)
             else:
-                self.result.add_fail(test_name, f"返回空路径：{pwd}")
+                self.result.add_fail(test_name, f"返回空路径或类型错误：{pwd}")
         except Exception as e:
             self.result.add_fail(test_name, str(e))
     
@@ -854,23 +856,27 @@ class SFTPTester:
         """测试修改文件权限"""
         test_name = "CHMOD 修改权限"
         try:
-            filename = f"{self.current_file_prefix}upload.txt"
+            filename = f"{self.current_file_prefix}chmod_test.txt"
             
-            # 获取当前权限
+            # 先创建文件并设置为 600
+            local_path = self.create_temp_file(filename, b"test content for chmod")
+            self.sftp.put(local_path, filename)
+            self.sftp.chmod(filename, 0o600)
             old_stat = self.sftp.stat(filename)
-            old_mode = old_stat.st_mode
+            old_mode = old_stat.st_mode & 0o777  # 只取权限位
             
             # 修改权限为 644
             self.sftp.chmod(filename, 0o644)
+            new_stat = self.sftp.stat(filename)
+            new_mode = new_stat.st_mode & 0o777  # 只取权限位
             
             # 验证权限已修改
-            new_stat = self.sftp.stat(filename)
-            if new_stat.st_mode != old_mode:
+            if new_mode == 0o644 and old_mode != new_mode:
                 self.result.add_pass(test_name)
             else:
-                self.result.add_fail(test_name, "权限未改变")
+                self.result.add_fail(test_name, f"权限未正确设置：期望 0o644, 实际 0o{new_mode:o} (旧权限 0o{old_mode:o})")
             
-            # 恢复权限
+            # 恢复原始权限
             try:
                 self.sftp.chmod(filename, old_mode)
             except Exception:
@@ -915,17 +921,18 @@ class SFTPTester:
             # 创建符号链接
             self.sftp.symlink(target, link)
             
-            # 验证链接存在
+            # 验证链接存在且是符号链接
             try:
                 stat_info = self.sftp.lstat(link)
-                exists = stat_info is not None
-            except Exception:
-                exists = False
-            
-            if exists:
-                self.result.add_pass(test_name)
-            else:
-                self.result.add_fail(test_name, "符号链接创建失败")
+                # 检查是否是符号链接 (S_IFLNK = 0o120000)
+                is_symlink = stat.S_ISLNK(stat_info.st_mode)
+                
+                if is_symlink:
+                    self.result.add_pass(test_name)
+                else:
+                    self.result.add_fail(test_name, f"创建的不是符号链接，mode={oct(stat_info.st_mode)}")
+            except Exception as e:
+                self.result.add_fail(test_name, f"符号链接验证失败：{e}")
             
             # 清理链接（保留目标文件）
             try:
@@ -950,6 +957,23 @@ class SFTPTester:
             
             # 创建符号链接
             self.sftp.symlink(target, link)
+            
+            # 验证是符号链接后再读取
+            try:
+                stat_info = self.sftp.lstat(link)
+                is_symlink = stat.S_ISLNK(stat_info.st_mode)
+                
+                if not is_symlink:
+                    self.result.add_fail(test_name, f"不是符号链接，无法读取，mode={oct(stat_info.st_mode)}")
+                    # 清理链接
+                    try:
+                        self.sftp.remove(link)
+                    except Exception:
+                        pass
+                    return
+            except Exception as e:
+                self.result.add_fail(test_name, f"lstat 失败：{e}")
+                return
             
             # 读取链接
             read_target = self.sftp.readlink(link)

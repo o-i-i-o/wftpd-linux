@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-03-31T11:49:50.902960",
+  "timestamp": "2026-03-31T12:54:14.854371",
   "config": {
     "host": "127.0.0.1",
     "ftp_port": 2121,
@@ -18,18 +18,14 @@
   "sftp": {
     "type": "SFTP",
     "total": 15,
-    "passed": 10,
-    "failed": 5,
-    "success_rate": "66.67%",
-    "duration_seconds": 0.13,
+    "passed": 11,
+    "failed": 4,
+    "success_rate": "73.33%",
+    "duration_seconds": 0.14,
     "errors": [
       {
-        "test": "PWD 获取路径",
-        "reason": "返回空路径：None"
-      },
-      {
         "test": "CHMOD 修改权限",
-        "reason": "权限未改变"
+        "reason": "权限未正确设置：期望 0o644, 实际 0o644 (旧权限 0o644)"
       },
       {
         "test": "RENAME 重命名",
@@ -47,8 +43,8 @@
   },
   "overall": {
     "total_tests": 32,
-    "total_passed": 27,
-    "total_failed": 5,
-    "success_rate": "84.38%"
+    "total_passed": 28,
+    "total_failed": 4,
+    "success_rate": "87.50%"
   }
 }

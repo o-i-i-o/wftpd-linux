@@ -415,7 +415,7 @@ impl russh::server::Handler for SftpHandler {
     async fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,
-        session: &mut Session,
+        _session: &mut Session,
     ) -> Result<bool, Self::Error> {
         info!(
             channel_id = ?channel.id(),
@@ -444,7 +444,7 @@ impl russh::server::Handler for SftpHandler {
 
     async fn auth_succeeded(
         &mut self,
-        session: &mut Session,
+        _session: &mut Session,
     ) -> Result<(), Self::Error> {
         info!(
             username = ?self.username,

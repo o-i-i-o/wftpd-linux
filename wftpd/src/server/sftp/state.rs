@@ -21,11 +21,8 @@ use crate::server::common::quota::QuotaCache;
 use crate::server::common::speed_limiter::SpeedLimiter;
 use crate::server::common::utils::{
     safe_resolve_path,
-    safe_resolve_path_async,
     validate_path_within_chroot,
     validate_path_for_creation,
-    virtual_to_real_path,
-    real_to_virtual_path,
 };
 
 const SSH_FXP_INIT: u8 = 1;
@@ -763,24 +760,20 @@ impl SftpState {
         debug!("RENAME: Validated destination path: {:?}", new_full);
         
         // 🔒 额外安全检查：验证父目录不是符号链接
-        if let Some(old_parent) = old_full.parent() {
-            if let Ok(meta) = tokio::fs::symlink_metadata(old_parent).await {
-                if meta.file_type().is_symlink() {
-                    warn!("RENAME: Source parent is a symlink: {:?}", old_parent);
-                    return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, 
-                        "Cannot rename from directory under symbolic link", ""));
-                }
-            }
+        if let Some(old_parent) = old_full.parent()
+            && let Ok(meta) = tokio::fs::symlink_metadata(old_parent).await
+            && meta.file_type().is_symlink() {
+                warn!("RENAME: Source parent is a symlink: {:?}", old_parent);
+                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, 
+                    "Cannot rename from directory under symbolic link", ""));
         }
         
-        if let Some(new_parent) = new_full.parent() {
-            if let Ok(meta) = tokio::fs::symlink_metadata(new_parent).await {
-                if meta.file_type().is_symlink() {
-                    warn!("RENAME: Destination parent is a symlink: {:?}", new_parent);
-                    return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, 
-                        "Cannot rename to directory under symbolic link", ""));
-                }
-            }
+        if let Some(new_parent) = new_full.parent()
+            && let Ok(meta) = tokio::fs::symlink_metadata(new_parent).await
+            && meta.file_type().is_symlink() {
+                warn!("RENAME: Destination parent is a symlink: {:?}", new_parent);
+                return Ok(build_status_packet(id, SSH_FX_PERMISSION_DENIED, 
+                    "Cannot rename to directory under symbolic link", ""));
         }
 
         // 🔒 原子操作：如果目标已存在，先删除再重命名
@@ -974,7 +967,6 @@ impl SftpState {
         if flags & 0x00000008 != 0 && data.len() >= offset + 8 {
             let _atime = parse_u32_checked(data, offset)?;
             let _mtime = parse_u32_checked(data, offset + 4)?;
-            offset += 8;
             debug!("SETSTAT: atime/mtime flag present (not implemented in this version)");
         }
 
@@ -1494,7 +1486,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::core::file_logger::FileLogger;
-    use crate::core::logger::Logger;
+
     use crate::core::users::{Permissions, UserManager};
 
     struct TestDir {
@@ -1570,12 +1562,7 @@ mod tests {
         (status, message)
     }
 
-    fn parse_handle(packet: &[u8]) -> String {
-        let payload = payload(packet);
-        assert_eq!(payload[0], 102);
-        let handle_len = parse_u32(payload, 5) as usize;
-        String::from_utf8_lossy(&payload[9..9 + handle_len]).into_owned()
-    }
+
 
     fn build_string_field(value: &str) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -1644,6 +1631,7 @@ mod tests {
         let target_path = dir.path().join("target.bin");
         let file = tokio::fs::OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(&target_path)
             .await

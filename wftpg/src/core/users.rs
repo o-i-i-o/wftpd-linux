@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
 use chrono::{DateTime, Utc};
@@ -10,6 +10,7 @@ use std::fmt;
 use std::fs;
 use tracing::{info, debug, warn, error};
 use std::path::Path;
+use rand::thread_rng;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
@@ -141,7 +142,8 @@ impl UserManager {
     }
 
     fn hash_password(password: &str) -> Result<String> {
-        let salt = SaltString::generate(&mut OsRng);
+        let mut rng = thread_rng();
+        let salt = SaltString::generate(&mut rng);
         let argon2 = Argon2::default();
         let hash = argon2
             .hash_password(password.as_bytes(), &salt)

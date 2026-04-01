@@ -148,7 +148,7 @@ impl FtpSession {
                         if user.home_dir.trim().is_empty() {
                             self.file_logger.lock().unwrap().log(
                                 crate::core::file_logger::FileLogInfo {
-                                    username: &username,
+                                    username,
                                     client_ip: &self.remote_ip,
                                     operation: "LOGIN_FAIL",
                                     file_path: "-",
@@ -167,7 +167,7 @@ impl FtpSession {
                         if !home.exists() {
                             self.file_logger.lock().unwrap().log(
                                 crate::core::file_logger::FileLogInfo {
-                                    username: &username,
+                                    username,
                                     client_ip: &self.remote_ip,
                                     operation: "LOGIN_FAIL",
                                     file_path: "-",
@@ -184,7 +184,7 @@ impl FtpSession {
                         if !home.is_dir() {
                             self.file_logger.lock().unwrap().log(
                                 crate::core::file_logger::FileLogInfo {
-                                    username: &username,
+                                    username,
                                     client_ip: &self.remote_ip,
                                     operation: "LOGIN_FAIL",
                                     file_path: "-",
@@ -203,7 +203,7 @@ impl FtpSession {
                             Err(e) => {
                                 self.file_logger.lock().unwrap().log(
                                     crate::core::file_logger::FileLogInfo {
-                                        username: &username,
+                                        username,
                                         client_ip: &self.remote_ip,
                                         operation: "LOGIN_FAIL",
                                         file_path: "-",
@@ -225,7 +225,7 @@ impl FtpSession {
                         self.stream.write_all(b"230 User logged in\r\n").await?;
                         self.file_logger.lock().unwrap().log(
                             crate::core::file_logger::FileLogInfo {
-                                username: &username,
+                                username,
                                 client_ip: &self.remote_ip,
                                 operation: "LOGIN",
                                 file_path: "-",
@@ -252,7 +252,7 @@ impl FtpSession {
                     } else {
                         self.file_logger.lock().unwrap().log(
                             crate::core::file_logger::FileLogInfo {
-                                username: &username,
+                                username,
                                 client_ip: &self.remote_ip,
                                 operation: "AUTH_FAIL",
                                 file_path: "-",

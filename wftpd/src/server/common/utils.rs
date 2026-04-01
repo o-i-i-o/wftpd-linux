@@ -866,8 +866,8 @@ pub async fn validate_path_within_chroot(path: &str, home_dir: &str) -> Result<P
         }
         
         // 检查这个祖先是否是符号链接
-        if let Ok(meta) = tokio::fs::symlink_metadata(ancestor).await {
-            if meta.file_type().is_symlink() {
+        if let Ok(meta) = tokio::fs::symlink_metadata(ancestor).await
+            && meta.file_type().is_symlink() {
                 let link_target = tokio::fs::read_link(ancestor).await?;
                 debug!("Checking symlink ancestor: {:?} -> {:?}", ancestor, link_target);
                 
@@ -878,7 +878,6 @@ pub async fn validate_path_within_chroot(path: &str, home_dir: &str) -> Result<P
                         ancestor, link_target
                     );
                 }
-            }
         }
         
         current = ancestor;

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 use tracing::{info, warn, error};
 
 use crate::core::config::Config;
@@ -19,10 +19,6 @@ use crate::server::common::quota::QuotaCache;
 
 use super::handler::SftpHandler;
 
-const MAX_ACCEPT_RETRIES: u32 = 10;
-const INITIAL_BACKOFF_MS: u64 = 100;
-const MAX_BACKOFF_MS: u64 = 5000;
-
 #[derive(Clone)]
 pub struct SftpServer {
     config: Arc<StdMutex<Config>>,
@@ -30,7 +26,6 @@ pub struct SftpServer {
     file_logger: Arc<StdMutex<FileLogger>>,
     running: Arc<AtomicBool>,
     shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
-    connection_semaphore: Arc<Semaphore>,
     users_path: PathBuf,
     keys_dir: PathBuf,
     quota_cache: Arc<QuotaCache>,
@@ -64,10 +59,6 @@ impl SftpServer {
         user_manager: Arc<StdMutex<UserManager>>,
         file_logger: Arc<StdMutex<FileLogger>>,
     ) -> Self {
-        let max_connections = config.try_lock()
-            .map(|c| c.security.max_connections)
-            .unwrap_or(100);
-        
         let quota_cache = Arc::new(QuotaCache::new());
         
         SftpServer {
@@ -76,7 +67,6 @@ impl SftpServer {
             file_logger,
             running: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
-            connection_semaphore: Arc::new(Semaphore::new(max_connections)),
             users_path: Config::get_users_path(),
             keys_dir: PathBuf::from("/etc/wftpg/keys"),
             quota_cache,
@@ -90,10 +80,6 @@ impl SftpServer {
         users_path: PathBuf,
         keys_dir: PathBuf,
     ) -> Self {
-        let max_connections = config.try_lock()
-            .map(|c| c.security.max_connections)
-            .unwrap_or(100);
-        
         let quota_cache = Arc::new(QuotaCache::new());
         
         SftpServer {
@@ -102,7 +88,6 @@ impl SftpServer {
             file_logger,
             running: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(Mutex::new(None)),
-            connection_semaphore: Arc::new(Semaphore::new(max_connections)),
             users_path,
             keys_dir,
             quota_cache,
@@ -174,7 +159,7 @@ impl SftpServer {
         
         // Start server in a separate task for shutdown support
         let running_clone = Arc::clone(&self.running);
-        let shutdown_rx = {
+        {
             let mut tx = self.shutdown_tx.lock().await;
             tx.take()
         };

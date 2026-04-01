@@ -36,5 +36,4 @@ log_dir = "/var/log/wftpg"
 log_level = "info"
 max_log_size = 10485760
 max_log_files = 10
-enable_gui_logging = true
 enable_json = false

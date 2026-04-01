@@ -1,0 +1,27 @@
+# Iced Demo Git 忽略文件
+
+# 编译产物
+target/
+**/target/
+
+# Cargo 锁文件（可选，根据项目需求决定是否忽略）
+# Cargo.lock
+
+# 字体文件（体积较大，根据需要决定是否提交）
+fonts/*.ttf
+fonts/*.ttc
+fonts/*.otf
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log

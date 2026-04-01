@@ -8,7 +8,10 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 use tracing::info;
+
+use crate::communication::protocol::LogEntryJson;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileLogEntry {
@@ -37,6 +40,17 @@ pub struct FileLogInfo<'a> {
 pub struct FileLogger {
     buffer: Arc<Mutex<VecDeque<FileLogEntry>>>,
     max_buffer_size: usize,
+    log_sender: Option<broadcast::Sender<LogEntryJson>>,
+}
+
+impl Clone for FileLogger {
+    fn clone(&self) -> Self {
+        Self {
+            buffer: Arc::clone(&self.buffer),
+            max_buffer_size: self.max_buffer_size,
+            log_sender: self.log_sender.clone(),
+        }
+    }
 }
 
 impl FileLogger {
@@ -44,6 +58,15 @@ impl FileLogger {
         FileLogger {
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(2000))),
             max_buffer_size: 2000,
+            log_sender: None,
+        }
+    }
+
+    pub fn with_log_sender(log_sender: broadcast::Sender<LogEntryJson>) -> Self {
+        FileLogger {
+            buffer: Arc::new(Mutex::new(VecDeque::with_capacity(2000))),
+            max_buffer_size: 2000,
+            log_sender: Some(log_sender),
         }
     }
 
@@ -59,6 +82,20 @@ impl FileLogger {
             success: info.success,
             message: info.message.to_string(),
         };
+
+        // 推送到前端（如果启用了 GUI 日志）
+        if let Some(ref sender) = self.log_sender {
+            let log_entry_json = LogEntryJson {
+                timestamp: entry.timestamp.to_rfc3339(),
+                level: "INFO".to_string(),
+                source: "文件操作".to_string(),
+                message: format!("{} {} {}", entry.username, entry.operation, entry.file_path),
+                client_ip: Some(entry.client_ip.clone()),
+                username: Some(entry.username.clone()),
+                action: Some(entry.operation.clone()),
+            };
+            let _ = sender.send(log_entry_json);
+        }
 
         {
             let mut buffer = self.buffer.lock().unwrap();

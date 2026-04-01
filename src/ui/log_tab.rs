@@ -85,17 +85,10 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     box_.pack_start(&row2, false, false, 0);
 
     let row3 = Box::new(Orientation::Horizontal, 5);
-    let log_to_file_cb = CheckButton::with_label("记录到文件");
+    let log_to_gui_cb = CheckButton::with_label("启用前端日志显示");
     if let Ok(s) = state.try_lock()
         && let Ok(config) = s.config.try_lock() {
-            log_to_file_cb.set_active(config.logging.log_to_file);
-        }
-    row3.pack_start(&log_to_file_cb, false, false, 0);
-
-    let log_to_gui_cb = CheckButton::with_label("显示在界面");
-    if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            log_to_gui_cb.set_active(config.logging.log_to_gui);
+            log_to_gui_cb.set_active(config.logging.enable_gui_logging);
         }
     row3.pack_start(&log_to_gui_cb, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
@@ -106,12 +99,10 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     let log_level_clone = log_level_combo.clone();
     let max_size_clone = max_size_spin.clone();
     let max_files_clone = max_files_spin.clone();
-    let log_to_file_clone = log_to_file_cb.clone();
-    let log_to_gui_clone = log_to_gui_cb.clone();
+    let enable_gui_clone = log_to_gui_cb.clone();
     save_btn.connect_clicked(
         clone!(@strong state_clone, @strong log_dir_clone, @strong log_level_clone,
-               @strong max_size_clone, @strong max_files_clone, @strong log_to_file_clone,
-               @strong log_to_gui_clone => move |_| {
+               @strong max_size_clone, @strong max_files_clone, @strong enable_gui_clone => move |_| {
             let state = Arc::clone(&state_clone);
             let log_dir = log_dir_clone.text().to_string();
             let log_level = log_level_clone.active_id()
@@ -119,8 +110,7 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
                 .unwrap_or_else(|| "info".to_string());
             let max_size = (max_size_clone.value() as u64) * 1024 * 1024;
             let max_files = max_files_clone.value() as usize;
-            let log_to_file = log_to_file_clone.is_active();
-            let log_to_gui = log_to_gui_clone.is_active();
+            let enable_gui = enable_gui_clone.is_active();
             
             glib::MainContext::ref_thread_default().spawn_local(async move {
                 if let Ok(s) = state.try_lock()
@@ -129,8 +119,7 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
                         config.logging.log_level = log_level;
                         config.logging.max_log_size = max_size;
                         config.logging.max_log_files = max_files;
-                        config.logging.log_to_file = log_to_file;
-                        config.logging.log_to_gui = log_to_gui;
+                        config.logging.enable_gui_logging = enable_gui;
                         let _ = config.save(&crate::core::config::Config::get_config_path());
                         info!("Logging configuration saved");
                     }
@@ -285,55 +274,56 @@ fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TreeView
     tree
 }
 
-fn populate_log_store(store: &ListStore, _state: &Arc<StdMutex<AppState>>, source: &str) {
+fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source: &str) {
+    use std::sync::mpsc;
+    
     store.clear();
     
-    if source == "current" {
-        // 使用 tracing-appender 的日志文件
-        // TODO: 可以实现从最近的日志文件中读取
-        // 暂时显示提示信息
-        let iter = store.append();
-        store.set_value(&iter, 0, &Local::now().format("%Y-%m-%d %H:%M:%S").to_string().to_value());
-        store.set_value(&iter, 1, &"INFO".to_string().to_value());
-        store.set_value(&iter, 2, &"系统".to_value());
-        store.set_value(&iter, 3, &"日志将记录到 /var/log/wftpg/ 目录下的文件中".to_value());
-        store.set_value(&iter, 4, &"-".to_value());
-        store.set_value(&iter, 5, &"tracing".to_value());
-    } else {
-        match fs::read_to_string(source) {
-            Ok(content) => {
-                // 读取 tracing 生成的 JSON 日志文件
-                for line in content.lines().rev().take(500) {
-                    if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-                        let iter = store.append();
-                        let timestamp = entry.get("timestamp")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("-");
-                        let level = entry.get("level")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("INFO");
-                        let target = entry.get("target")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("系统");
-                        let message = entry.get("message")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("-");
-                        
-                        store.set_value(&iter, 0, &timestamp.to_value());
-                        store.set_value(&iter, 1, &level.to_value());
-                        store.set_value(&iter, 2, &target.to_value());
-                        store.set_value(&iter, 3, &message.to_value());
-                        store.set_value(&iter, 4, &"-".to_value());
-                        store.set_value(&iter, 5, &"tracing".to_value());
-                    }
+    // 显示加载中提示
+    let loading_iter = store.append();
+    store.set_value(&loading_iter, 3, &"正在加载日志...".to_value());
+    
+    let source_string = source.to_string();
+    
+    // 创建 channel 用于在线程间通信
+    let (tx, rx) = mpsc::channel();
+    
+    // 在新线程中执行阻塞的 IPC 调用
+    std::thread::spawn(move || {
+        let result: Result<Vec<_>, _> = if source_string == "current" {
+            crate::communication::client::IpcClient::get_logs(500)
+        } else {
+            crate::communication::client::get_log_file_content(&source_string, 500)
+        };
+        let _ = tx.send(result);
+    });
+    
+    // 使用 glib 的超时轮询检查结果
+    let store_weak = store.clone();
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        if let Ok(result) = rx.try_recv() {
+            // IPC 完成，更新 UI
+            if let Ok(entries) = result {
+                store_weak.clear();
+                for entry in entries.into_iter().rev() {
+                    let iter = store_weak.append();
+                    store_weak.set_value(&iter, 0, &entry.timestamp.to_value());
+                    store_weak.set_value(&iter, 1, &entry.level.to_value());
+                    store_weak.set_value(&iter, 2, &entry.source.to_value());
+                    store_weak.set_value(&iter, 3, &entry.message.to_value());
+                    store_weak.set_value(&iter, 4, &entry.client_ip.unwrap_or_else(|| "-".to_string()).to_value());
+                    store_weak.set_value(&iter, 5, &entry.action.unwrap_or_else(|| "-".to_string()).to_value());
                 }
+            } else if let Err(e) = result {
+                store_weak.clear();
+                let iter = store_weak.append();
+                store_weak.set_value(&iter, 3, &format!("❌ 无法获取日志：{}", e).to_value());
             }
-            Err(e) => {
-                let iter = store.append();
-                store.set_value(&iter, 3, &format!("无法读取日志文件: {}", e).to_value());
-            }
+            glib::ControlFlow::Break // 停止定时器
+        } else {
+            glib::ControlFlow::Continue // 继续等待
         }
-    }
+    });
 }
 
 fn setup_button_handlers(

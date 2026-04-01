@@ -19,7 +19,7 @@ use crate::core::file_logger::FileLogger;
 pub struct IpcServer {
     config: Arc<std::sync::Mutex<Config>>,
     user_manager: Arc<std::sync::Mutex<UserManager>>,
-    server_manager: ServerManager,
+    server_manager: Arc<ServerManager>,
     logger: Arc<std::sync::Mutex<Logger>>,
     file_logger: Arc<std::sync::Mutex<FileLogger>>,
     log_sender: broadcast::Sender<LogEntryJson>,
@@ -29,7 +29,7 @@ impl IpcServer {
     pub fn new(
         config: Arc<std::sync::Mutex<Config>>,
         user_manager: Arc<std::sync::Mutex<UserManager>>,
-        server_manager: ServerManager,
+        server_manager: Arc<ServerManager>,
         logger: Arc<std::sync::Mutex<Logger>>,
         file_logger: Arc<std::sync::Mutex<FileLogger>>,
     ) -> Self {
@@ -58,7 +58,7 @@ impl IpcServer {
         }
         
         let listener = UnixListener::bind(socket_path)?;
-        fs::set_permissions(socket_path, fs::Permissions::from_mode(0o660))?;
+        fs::set_permissions(socket_path, fs::Permissions::from_mode(0o666))?;
         
         info!(socket_path = %SOCKET_PATH, "IPC server listening");
         
@@ -187,8 +187,8 @@ impl IpcServer {
             IpcCommand::GetLogFileContent { path, count } => self.handle_get_log_file_content(request.id, &path, count).await,
             IpcCommand::GetFileLogFiles => self.handle_get_file_log_files(request.id).await,
             IpcCommand::GetFileLogFileContent { path, count } => self.handle_get_file_log_file_content(request.id, &path, count).await,
-            IpcCommand::SaveLogConfig { log_dir, log_level, max_log_size, max_log_files, log_to_file, log_to_gui } => {
-                self.handle_save_log_config(request.id, &log_dir, &log_level, max_log_size, max_log_files, log_to_file, log_to_gui).await
+            IpcCommand::SaveLogConfig { log_dir, log_level, max_log_size, max_log_files, _log_to_file, enable_gui_logging } => {
+                self.handle_save_log_config(request.id, &log_dir, &log_level, max_log_size, max_log_files, _log_to_file, enable_gui_logging).await
             }
             IpcCommand::SetupDirectoryPermissions { path } => self.handle_setup_directory_permissions(request.id, &path).await,
             IpcCommand::CreateUserDirectory { path } => self.handle_create_user_directory(request.id, &path).await,
@@ -648,16 +648,15 @@ impl IpcServer {
         log_level: &str, 
         max_log_size: u64, 
         max_log_files: usize, 
-        log_to_file: bool, 
-        log_to_gui: bool
+        _log_to_file: bool, 
+        enable_gui_logging: bool
     ) -> IpcResponse {
         let mut config = self.config.lock().unwrap().clone();
         config.logging.log_dir = log_dir.to_string();
         config.logging.log_level = log_level.to_string();
         config.logging.max_log_size = max_log_size;
         config.logging.max_log_files = max_log_files;
-        config.logging.log_to_file = log_to_file;
-        config.logging.log_to_gui = log_to_gui;
+        config.logging.enable_gui_logging = enable_gui_logging;
         
         match config.save(&Config::get_config_path()) {
             Ok(()) => {

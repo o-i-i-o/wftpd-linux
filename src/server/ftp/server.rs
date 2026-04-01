@@ -54,7 +54,7 @@ impl FtpServer {
             } else {
                 (None, None)
             };
-            (tls.0, tls.1, cfg.server.max_connections, cfg.security.max_login_attempts, cfg.security.ban_duration)
+            (tls.0, tls.1, cfg.security.max_connections, cfg.security.max_login_attempts, cfg.security.ban_duration)
         };
         
         let login_tracker = Arc::new(LoginTracker::new(max_login_attempts, ban_duration));
@@ -86,7 +86,7 @@ impl FtpServer {
         let tls_server_config = tls_config.load_server_config()?;
         let (max_connections, max_login_attempts, ban_duration) = {
             let cfg = config.lock().unwrap();
-            (cfg.server.max_connections, cfg.security.max_login_attempts, cfg.security.ban_duration)
+            (cfg.security.max_connections, cfg.security.max_login_attempts, cfg.security.ban_duration)
         };
         let login_tracker = Arc::new(LoginTracker::new(max_login_attempts, ban_duration));
         let quota_cache = Arc::new(QuotaCache::new());
@@ -110,7 +110,7 @@ impl FtpServer {
     pub async fn start(&self) -> Result<()> {
         let (bind_ip, ftp_port) = {
             let cfg = self.config.lock().unwrap();
-            (cfg.server.bind_ip.clone(), cfg.server.ftp_port)
+            (cfg.ftp.bind_ip.clone(), cfg.ftp.port)
         };
         let bind_addr = format!("{}:{}", bind_ip, ftp_port);
         

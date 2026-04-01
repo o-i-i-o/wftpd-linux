@@ -188,7 +188,7 @@ impl FtpSession {
         loop {
             let idle_timeout = {
                 let cfg = self.config.lock().unwrap();
-                cfg.server.idle_timeout
+                cfg.security.idle_timeout
             };
             
             let read_result = timeout(

@@ -46,11 +46,34 @@ async fn run_service_async() -> Result<()> {
     init_tracing(&log_dir, &log_level, max_log_files, enable_json)?;
     
     let logger = Arc::new(std::sync::Mutex::new(Logger::new(&log_dir, max_log_size, max_log_files)));
-    let file_logger = Arc::new(std::sync::Mutex::new(FileLogger::new(&log_dir, max_log_size)));
+    let server_manager = Arc::new(ServerManager::new());
     
-    let server_manager = ServerManager::new();
+    // 先创建临时的 FileLogger 和 IPC 服务器来获取 log_sender
+    let temp_file_logger = Arc::new(std::sync::Mutex::new(FileLogger::new(&log_dir, max_log_size)));
     
     info!("WFTPG service starting");
+    
+    // 创建临时 IPC 服务器获取 log_sender
+    let temp_ipc = IpcServer::new(
+        Arc::clone(&config),
+        Arc::clone(&user_manager),
+        Arc::clone(&server_manager),
+        Arc::clone(&logger),
+        temp_file_logger,
+    );
+    
+    // 从 IPC 服务器获取 log_sender 并创建真正的 FileLogger
+    let log_sender = temp_ipc.get_log_sender();
+    let file_logger = Arc::new(std::sync::Mutex::new(FileLogger::with_log_sender(log_sender)));
+    
+    // 创建正式的 IPC 服务器
+    let ipc_server = IpcServer::new(
+        Arc::clone(&config),
+        Arc::clone(&user_manager),
+        Arc::clone(&server_manager),
+        Arc::clone(&logger),
+        Arc::clone(&file_logger),
+    );
     
     let (ftp_enabled, sftp_enabled) = {
         let cfg = config.lock().unwrap();
@@ -76,15 +99,6 @@ async fn run_service_async() -> Result<()> {
         }
     
     info!("WFTPG service started successfully");
-    
-    // 启动 IPC 服务器，提供配置管理、用户管理、日志查看等功能
-    let ipc_server = IpcServer::new(
-        config,
-        user_manager,
-        server_manager,
-        logger,
-        file_logger,
-    );
     
     let ipc_task = tokio::spawn(async move {
         if let Err(e) = ipc_server.run().await {

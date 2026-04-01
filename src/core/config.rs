@@ -6,7 +6,6 @@ use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub server: ServerConfig,
     pub ftp: FtpConfig,
     pub sftp: SftpConfig,
     pub security: SecurityConfig,
@@ -14,20 +13,12 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerConfig {
-    pub bind_ip: String,
-    pub ftp_port: u16,
-    pub sftp_port: u16,
-    pub max_connections: usize,
-    pub connection_timeout: u64,
-    pub idle_timeout: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FtpConfig {
     pub enabled: bool,
     #[serde(default = "default_bind_ip")]
     pub bind_ip: String,
+    #[serde(default = "default_ftp_port")]
+    pub port: u16,
     pub passive_ports: (u16, u16),
     pub welcome_message: String,
     pub allow_anonymous: bool,
@@ -47,6 +38,10 @@ fn default_bind_ip() -> String {
     "0.0.0.0".to_string()
 }
 
+fn default_ftp_port() -> u16 {
+    21
+}
+
 fn default_encoding() -> String {
     "UTF-8".to_string()
 }
@@ -60,11 +55,17 @@ pub struct SftpConfig {
     pub enabled: bool,
     #[serde(default = "default_bind_ip")]
     pub bind_ip: String,
+    #[serde(default = "default_sftp_port")]
+    pub port: u16,
     pub host_key_path: String,
     pub max_auth_attempts: u32,
     pub auth_timeout: u64,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+}
+
+fn default_sftp_port() -> u16 {
+    22
 }
 
 fn default_log_level() -> String {
@@ -82,6 +83,24 @@ pub struct SecurityConfig {
     pub cert_path: Option<String>,
     #[serde(default)]
     pub key_path: Option<String>,
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    #[serde(default = "default_connection_timeout")]
+    pub connection_timeout: u64,
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout: u64,
+}
+
+fn default_max_connections() -> usize {
+    100
+}
+
+fn default_connection_timeout() -> u64 {
+    300
+}
+
+fn default_idle_timeout() -> u64 {
+    600
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,26 +109,23 @@ pub struct LoggingConfig {
     pub log_level: String,
     pub max_log_size: u64,
     pub max_log_files: usize,
-    pub log_to_file: bool,
-    pub log_to_gui: bool,
+    #[serde(default = "default_true")]
+    pub enable_gui_logging: bool,
     #[serde(default)]
     pub enable_json: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server: ServerConfig {
-                bind_ip: "0.0.0.0".to_string(),
-                ftp_port: 21,
-                sftp_port: 22,
-                max_connections: 100,
-                connection_timeout: 300,
-                idle_timeout: 600,
-            },
             ftp: FtpConfig {
                 enabled: true,
                 bind_ip: "0.0.0.0".to_string(),
+                port: 2121,
                 passive_ports: (50000, 51000),
                 welcome_message: "Welcome to WFTPG FTP Server".to_string(),
                 allow_anonymous: false,
@@ -122,6 +138,7 @@ impl Default for Config {
             sftp: SftpConfig {
                 enabled: true,
                 bind_ip: "0.0.0.0".to_string(),
+                port: 2222,
                 host_key_path: "/var/lib/wftpg/ssh/ssh_host_rsa_key".to_string(),
                 max_auth_attempts: 3,
                 auth_timeout: 60,
@@ -135,14 +152,16 @@ impl Default for Config {
                 require_ssl: false,
                 cert_path: None,
                 key_path: None,
+                max_connections: 100,
+                connection_timeout: 300,
+                idle_timeout: 600,
             },
             logging: LoggingConfig {
                 log_dir: "/var/log/wftpg".to_string(),
                 log_level: "info".to_string(),
                 max_log_size: 10 * 1024 * 1024,
                 max_log_files: 10,
-                log_to_file: true,
-                log_to_gui: true,
+                enable_gui_logging: true,
                 enable_json: false,
             },
         }

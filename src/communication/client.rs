@@ -297,8 +297,8 @@ pub fn save_log_config(
     log_level: &str,
     max_log_size: u64,
     max_log_files: usize,
-    log_to_file: bool,
-    log_to_gui: bool,
+    _log_to_file: bool,
+    enable_gui_logging: bool,
 ) -> Result<()> {
     let log_dir = log_dir.to_string();
     let log_level = log_level.to_string();
@@ -308,8 +308,8 @@ pub fn save_log_config(
             log_level,
             max_log_size,
             max_log_files,
-            log_to_file,
-            log_to_gui,
+            _log_to_file,
+            enable_gui_logging,
         }).await?;
         match response.result {
             IpcResult::Success { .. } => Ok(()),

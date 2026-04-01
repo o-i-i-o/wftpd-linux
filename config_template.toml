@@ -1,0 +1,40 @@
+[ftp]
+enabled = true
+bind_ip = "0.0.0.0"
+port = 2121
+passive_ports = [
+    50000,
+    51000,
+]
+welcome_message = "Welcome to WFTPG FTP Server"
+allow_anonymous = false
+max_speed_kbps = 0
+encoding = "UTF-8"
+data_timeout = 300
+
+[sftp]
+enabled = true
+bind_ip = "0.0.0.0"
+port = 2222
+host_key_path = "/var/lib/wftpg/ssh/ssh_host_rsa_key"
+max_auth_attempts = 3
+auth_timeout = 60
+log_level = "info"
+
+[security]
+allowed_ips = ["0.0.0.0/0"]
+denied_ips = []
+max_login_attempts = 5
+ban_duration = 300
+require_ssl = false
+max_connections = 100
+connection_timeout = 300
+idle_timeout = 600
+
+[logging]
+log_dir = "/var/log/wftpg"
+log_level = "info"
+max_log_size = 10485760
+max_log_files = 10
+enable_gui_logging = true
+enable_json = false

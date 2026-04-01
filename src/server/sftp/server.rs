@@ -65,7 +65,7 @@ impl SftpServer {
         file_logger: Arc<StdMutex<FileLogger>>,
     ) -> Self {
         let max_connections = config.try_lock()
-            .map(|c| c.server.max_connections)
+            .map(|c| c.security.max_connections)
             .unwrap_or(100);
         
         let quota_cache = Arc::new(QuotaCache::new());
@@ -91,7 +91,7 @@ impl SftpServer {
         keys_dir: PathBuf,
     ) -> Self {
         let max_connections = config.try_lock()
-            .map(|c| c.server.max_connections)
+            .map(|c| c.security.max_connections)
             .unwrap_or(100);
         
         let quota_cache = Arc::new(QuotaCache::new());
@@ -122,12 +122,12 @@ impl SftpServer {
             match self.config.try_lock() {
                 Ok(cfg) => (
                     cfg.sftp.bind_ip.clone(),
-                    cfg.server.sftp_port,
+                    cfg.sftp.port,
                     cfg.sftp.host_key_path.clone(),
-                    cfg.server.max_connections,
+                    cfg.security.max_connections,
                     cfg.sftp.max_auth_attempts as usize,
                     Duration::from_secs(cfg.sftp.auth_timeout),
-                    Duration::from_secs(cfg.server.idle_timeout),
+                    Duration::from_secs(cfg.security.idle_timeout),
                 ),
                 Err(_) => {
                     self.log_error("Failed to acquire config lock during startup");

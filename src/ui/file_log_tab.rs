@@ -233,49 +233,58 @@ fn get_operation_display(op: &str) -> String {
 }
 
 fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source: &str) {
+    use std::sync::mpsc;
+    
     store.clear();
     
-    if source == "current" {
-        if let Ok(s) = state.try_lock()
-            && let Ok(file_logger) = s.file_logger.try_lock() {
-                let entries = file_logger.get_recent_logs(500);
+    // 显示加载中提示
+    let loading_iter = store.append();
+    store.set_value(&loading_iter, 4, &"正在加载日志...".to_value());
+    
+    let source_string = source.to_string();
+    
+    // 创建 channel 用于在线程间通信
+    let (tx, rx) = mpsc::channel();
+    
+    // 在新线程中执行阻塞的 IPC 调用
+    std::thread::spawn(move || {
+        let result: Result<Vec<_>, _> = if source_string == "current" {
+            crate::communication::client::get_file_log_file_content("current", 500)
+        } else {
+            crate::communication::client::get_file_log_file_content(&source_string, 500)
+        };
+        let _ = tx.send(result);
+    });
+    
+    // 使用 glib 的超时轮询检查结果
+    let store_weak = store.clone();
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        if let Ok(result) = rx.try_recv() {
+            // IPC 完成，更新 UI
+            if let Ok(entries) = result {
+                store_weak.clear();
                 for entry in entries.into_iter().rev() {
-                    let iter = store.append();
-                    store.set_value(&iter, 0, &entry.timestamp.format("%Y-%m-%d %H:%M:%S").to_string().to_value());
-                    store.set_value(&iter, 1, &entry.username.to_value());
-                    store.set_value(&iter, 2, &entry.client_ip.to_value());
-                    store.set_value(&iter, 3, &get_operation_display(&entry.operation).to_value());
-                    store.set_value(&iter, 4, &entry.file_path.to_value());
-                    store.set_value(&iter, 5, &format_file_size(entry.file_size).to_value());
-                    store.set_value(&iter, 6, &entry.protocol.to_value());
-                    store.set_value(&iter, 7, &if entry.success { "成功" } else { "失败" }.to_value());
-                    store.set_value(&iter, 8, &entry.message.to_value());
+                    let iter = store_weak.append();
+                    store_weak.set_value(&iter, 0, &entry.timestamp.to_value());
+                    store_weak.set_value(&iter, 1, &entry.username.to_value());
+                    store_weak.set_value(&iter, 2, &entry.client_ip.to_value());
+                    store_weak.set_value(&iter, 3, &get_operation_display(&entry.operation).to_value());
+                    store_weak.set_value(&iter, 4, &entry.file_path.to_value());
+                    store_weak.set_value(&iter, 5, &format_file_size(entry.file_size).to_value());
+                    store_weak.set_value(&iter, 6, &entry.protocol.to_value());
+                    store_weak.set_value(&iter, 7, &if entry.success { "成功" } else { "失败" }.to_value());
+                    store_weak.set_value(&iter, 8, &entry.message.to_value());
                 }
+            } else if let Err(e) = result {
+                store_weak.clear();
+                let iter = store_weak.append();
+                store_weak.set_value(&iter, 4, &format!("❌ 无法获取日志：{}", e).to_value());
             }
-    } else {
-        match fs::read_to_string(source) {
-            Ok(content) => {
-                for line in content.lines().rev().take(500) {
-                    if let Ok(entry) = serde_json::from_str::<crate::core::file_logger::FileLogEntry>(line) {
-                        let iter = store.append();
-                        store.set_value(&iter, 0, &entry.timestamp.format("%Y-%m-%d %H:%M:%S").to_string().to_value());
-                        store.set_value(&iter, 1, &entry.username.to_value());
-                        store.set_value(&iter, 2, &entry.client_ip.to_value());
-                        store.set_value(&iter, 3, &get_operation_display(&entry.operation).to_value());
-                        store.set_value(&iter, 4, &entry.file_path.to_value());
-                        store.set_value(&iter, 5, &format_file_size(entry.file_size).to_value());
-                        store.set_value(&iter, 6, &entry.protocol.to_value());
-                        store.set_value(&iter, 7, &if entry.success { "成功" } else { "失败" }.to_value());
-                        store.set_value(&iter, 8, &entry.message.to_value());
-                    }
-                }
-            }
-            Err(e) => {
-                let iter = store.append();
-                store.set_value(&iter, 4, &format!("无法读取日志文件: {}", e).to_value());
-            }
+            glib::ControlFlow::Break // 停止定时器
+        } else {
+            glib::ControlFlow::Continue // 继续等待
         }
-    }
+    });
 }
 
 fn setup_button_handlers(

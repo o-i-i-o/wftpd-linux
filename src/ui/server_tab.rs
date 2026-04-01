@@ -219,7 +219,7 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
             ftp_enabled_cb.set_active(cfg.ftp.enabled);
             anon_cb.set_active(cfg.ftp.allow_anonymous);
             bind_ip_entry.set_text(&cfg.ftp.bind_ip);
-            ftp_port_spin.set_value(cfg.server.ftp_port as f64);
+            ftp_port_spin.set_value(cfg.ftp.port as f64);
             passive_start_spin.set_value(cfg.ftp.passive_ports.0 as f64);
             passive_end_spin.set_value(cfg.ftp.passive_ports.1 as f64);
             welcome_entry.set_text(&cfg.ftp.welcome_message);
@@ -232,8 +232,8 @@ fn load_ftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, CheckButton
             if let Some(ref masq_ip) = cfg.ftp.masquerade_ip {
                 masquerade_ip_entry.set_text(masq_ip);
             }
-            max_conn_spin.set_value(cfg.server.max_connections as f64);
-            idle_timeout_spin.set_value(cfg.server.idle_timeout as f64);
+            max_conn_spin.set_value(cfg.security.max_connections as f64);
+            idle_timeout_spin.set_value(cfg.security.idle_timeout as f64);
         }
 
     validate_anonymous_home(&anon_home_entry, &anon_status_label, anon_cb.is_active());
@@ -363,15 +363,15 @@ fn setup_ftp_save_button(
                     cfg.ftp.enabled = enabled;
                     cfg.ftp.allow_anonymous = anon;
                     cfg.ftp.bind_ip = if bind_ip.is_empty() { "0.0.0.0".to_string() } else { bind_ip };
-                    cfg.server.ftp_port = ftp_port;
+                    cfg.ftp.port = ftp_port;
                     cfg.ftp.passive_ports = (start.min(end), start.max(end));
                     cfg.ftp.welcome_message = welcome;
                     cfg.ftp.anonymous_home = if anon_home.is_empty() { None } else { Some(anon_home) };
                     cfg.ftp.max_speed_kbps = max_speed;
                     cfg.ftp.encoding = encoding.clone();
                     cfg.ftp.masquerade_ip = masquerade_ip_opt;
-                    cfg.server.max_connections = max_conn;
-                    cfg.server.idle_timeout = idle_timeout;
+                    cfg.security.max_connections = max_conn;
+                    cfg.security.idle_timeout = idle_timeout;
                     toml::to_string_pretty(&*cfg).unwrap_or_default()
                 } else { return; }
             } else { return; }
@@ -474,7 +474,7 @@ fn load_sftp_config(state: &Arc<StdMutex<AppState>>) -> (CheckButton, SpinButton
     if let Ok(s) = state.try_lock()
         && let Ok(cfg) = s.config.try_lock() {
             sftp_enabled_cb.set_active(cfg.sftp.enabled);
-            sftp_port_spin.set_value(cfg.server.sftp_port as f64);
+            sftp_port_spin.set_value(cfg.sftp.port as f64);
             max_auth_spin.set_value(cfg.sftp.max_auth_attempts as f64);
             auth_timeout_spin.set_value(cfg.sftp.auth_timeout as f64);
             host_key_entry.set_text(&cfg.sftp.host_key_path);
@@ -518,7 +518,7 @@ fn setup_sftp_save_button(
             if let Ok(s) = state_clone.try_lock() {
                 if let Ok(mut cfg) = s.config.try_lock() {
                     cfg.sftp.enabled = enabled;
-                    cfg.server.sftp_port = sftp_port;
+                    cfg.sftp.port = sftp_port;
                     cfg.sftp.max_auth_attempts = max_auth;
                     cfg.sftp.auth_timeout = auth_timeout;
                     cfg.sftp.host_key_path = host_key;

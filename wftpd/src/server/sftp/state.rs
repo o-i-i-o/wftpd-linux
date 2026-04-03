@@ -317,7 +317,7 @@ impl SftpState {
             3
         };
 
-        self.sftp_version = version.min(6);
+        self.sftp_version = version.min(3);
 
         let mut payload = vec![SSH_FXP_VERSION];
         payload.extend_from_slice(&self.sftp_version.to_be_bytes());

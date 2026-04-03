@@ -133,7 +133,7 @@ impl SftpServer {
         
         // Create russh server configuration
         let config = russh::server::Config {
-            server_id: russh::SshId::Standard(std::borrow::Cow::Borrowed("SSH-2.0-Russh")),
+            server_id: russh::SshId::Standard(std::borrow::Cow::Borrowed("SSH-2.0-OpenSSH_8.9")),
             keys: vec![host_key],
             methods,
             max_auth_attempts,

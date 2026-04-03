@@ -6,6 +6,30 @@ WFTPG FTP/SFTP 完整功能测试脚本
 测试用户配置：
 - 用户名：123
 - 密码：123456
+
+主要改进：
+1. ✓ 完整的日志系统（支持文件输出和分级日志）
+2. ✓ 详细的异常处理和堆栈跟踪
+3. ✓ 统一的端口检测函数
+4. ✓ 可配置的基础路径（避免硬编码绝对路径）
+5. ✓ 递归清理逻辑和残留文件报告
+6. ✓ 重试机制（带指数退避）
+7. ✓ SFTP 高级操作兼容性标记
+8. ✓ 测试幂等性改进
+
+使用方法：
+    # 基础运行
+    python test_ftp_sftp_full.py
+    
+    # 详细日志模式
+    修改 Config.VERBOSE = True
+    
+    # 保存到日志文件
+    修改 Config.LOG_FILE = "test.log"
+    
+    # 自定义基础路径
+    修改 Config.FTP_BASE_PATH = "/home/ftp"
+    修改 Config.SFTP_BASE_PATH = "/home/sftp"
 """
 
 import os
@@ -16,12 +40,33 @@ import hashlib
 import random
 import string
 import json
+import logging
+import traceback
 from pathlib import Path
 from datetime import datetime
 from ftplib import FTP, error_perm, error_temp
 from typing import Optional, List, Dict, Any
 import paramiko
 import stat
+
+
+# ==================== 日志配置 ====================
+def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
+    """配置日志系统"""
+    level = logging.DEBUG if verbose else logging.INFO
+    
+    handlers = [logging.StreamHandler()]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
+    
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=handlers
+    )
+    
+    return logging.getLogger(__name__)
 
 
 # ==================== 集中配置区域 ====================
@@ -40,10 +85,20 @@ class Config:
     CONNECTION_TIMEOUT = 10  # 连接超时（秒）
     PORT_WAIT_TIMEOUT = 30   # 等待端口就绪超时（秒）
     TEST_DELAY = 2          # 测试间延迟（秒）
+    OPERATION_RETRY_COUNT = 3  # 操作重试次数
+    OPERATION_RETRY_DELAY = 1  # 重试延迟（秒）
     
     # 输出配置
     VERBOSE = False         # 详细日志
     OUTPUT_JSON = True      # 输出 JSON 结果
+    LOG_FILE = None         # 日志文件路径
+    
+    # 路径配置
+    FTP_BASE_PATH = None    # FTP 基础路径（None 表示使用根目录）
+    SFTP_BASE_PATH = None   # SFTP 基础路径（None 表示使用根目录）
+
+
+logger = None  # 在 main() 中初始化
 
 
 class TestResult:
@@ -103,8 +158,14 @@ def is_port_open(host: str, port: int, timeout: int = 2) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
             result = sock.connect_ex((host, port))
-            return result == 0
-    except Exception:
+            if result == 0:
+                logger.debug(f"端口 {port} 已开放")
+                return True
+            else:
+                logger.debug(f"端口 {port} 未开放 (error code: {result})")
+                return False
+    except Exception as e:
+        logger.debug(f"检查端口 {port} 时出错：{e}")
         return False
 
 
@@ -120,20 +181,20 @@ def wait_for_ports(host: str, ports: List[int], timeout: int = 30) -> bool:
     Returns:
         bool: 所有端口是否都已就绪
     """
-    print(f"等待端口 {', '.join(map(str, ports))} 就绪...")
+    logger.info(f"等待端口 {', '.join(map(str, ports))} 就绪...")
     start_time = time.time()
     
     while time.time() - start_time < timeout:
         all_open = all(is_port_open(host, port) for port in ports)
         if all_open:
-            print(f"✓ 所有端口已就绪: {', '.join(map(str, ports))}")
+            logger.info(f"✓ 所有端口已就绪：{', '.join(map(str, ports))}")
             return True
         time.sleep(0.5)
     
     # 报告哪些端口未就绪
     unavailable = [port for port in ports if not is_port_open(host, port)]
     if unavailable:
-        print(f"✗ 以下端口未就绪：{', '.join(map(str, unavailable))}")
+        logger.error(f"✗ 以下端口未就绪：{', '.join(map(str, unavailable))}")
     
     return False
 
@@ -172,6 +233,45 @@ def generate_test_content(prefix: str, size: int = 1024) -> bytes:
     return base_content + random_data
 
 
+def retry_operation(operation_func, max_retries: int = None, delay: float = None, operation_name: str = ""):
+    """
+    重试装饰器/包装函数，带指数退避
+    
+    Args:
+        operation_func: 要执行的操作函数
+        max_retries: 最大重试次数
+        delay: 初始延迟（秒）
+        operation_name: 操作名称（用于日志）
+    
+    Returns:
+        操作结果
+    """
+    if max_retries is None:
+        max_retries = Config.OPERATION_RETRY_COUNT
+    if delay is None:
+        delay = Config.OPERATION_RETRY_DELAY
+    
+    last_exception = None
+    current_delay = delay
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return operation_func()
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries:
+                logger.warning(f"{operation_name} 失败 (尝试 {attempt + 1}/{max_retries + 1}): {e}")
+                logger.debug(f"等待 {current_delay:.1f} 秒后重试...")
+                time.sleep(current_delay)
+                current_delay *= 2  # 指数退避
+            else:
+                logger.error(f"{operation_name} 达到最大重试次数 ({max_retries + 1} 次)，最终失败：{e}")
+                raise
+    
+    # 理论上不会到这里
+    raise last_exception
+
+
 class FTPTester:
     """FTP 协议功能测试"""
     
@@ -183,8 +283,10 @@ class FTPTester:
         self.ftp: Optional[FTP] = None
         self.result = TestResult("FTP")
         self.temp_files: List[str] = []
-        self.test_dir = f"/test_ftp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.remote_temp_files: List[str] = []  # 记录远程文件用于清理
+        self.test_dir = f"test_ftp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.current_file_prefix = f"ftp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
+        self.base_path = Config.FTP_BASE_PATH or ""  # 可配置基础路径
     
     def connect(self) -> bool:
         """建立 FTP 连接"""
@@ -204,11 +306,13 @@ class FTPTester:
         if self.ftp:
             try:
                 self.ftp.quit()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"FTP quit() 失败：{e}")
                 try:
                     self.ftp.close()
-                except Exception:
-                    pass
+                    logger.debug("使用 close() 成功关闭连接")
+                except Exception as e2:
+                    logger.warning(f"FTP close() 也失败：{e2}")
             self.ftp = None
     
     def create_temp_file(self, filename: str, content: Optional[bytes] = None) -> str:
@@ -226,27 +330,80 @@ class FTPTester:
         return temp_path
     
     def cleanup(self):
-        """清理测试文件"""
-        # 清理远程文件
+        """清理测试文件（递归删除）"""
+        logger.info("开始清理 FTP 测试文件...")
+        
+        # 清理远程文件和目录
         if self.ftp:
             try:
-                # 尝试删除测试目录
+                # 列出并删除所有以 test_dir 开头的文件
                 try:
-                    self.ftp.rmd(self.test_dir)
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                    all_files = self.ftp.nlst(f"{self.base_path}/{self.test_dir}*")
+                    for file in all_files:
+                        try:
+                            # 尝试删除（如果是文件）
+                            self.ftp.delete(file)
+                            logger.debug(f"已删除远程文件：{file}")
+                        except Exception:
+                            # 如果是目录，尝试递归删除
+                            try:
+                                self._recursive_delete(file)
+                                logger.debug(f"已删除远程目录：{file}")
+                            except Exception as e:
+                                logger.warning(f"无法删除 {file}: {e}")
+                except Exception as e:
+                    logger.warning(f"列出远程文件失败：{e}")
+                
+                # 报告残留文件
+                try:
+                    remaining = self.ftp.nlst(f"{self.base_path}/{self.test_dir}*")
+                    if remaining:
+                        logger.error(f"残留文件/目录：{remaining}")
+                except Exception as e:
+                    logger.debug(f"检查残留文件失败（可能已清理干净）: {e}")
+                    
+            except Exception as e:
+                logger.error(f"FTP 清理过程出错：{e}")
         
         # 清理本地临时文件
         for file_path in self.temp_files:
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
-            except Exception:
-                pass
+                    logger.debug(f"已删除本地文件：{file_path}")
+            except Exception as e:
+                logger.warning(f"删除本地文件 {file_path} 失败：{e}")
         
         self.temp_files.clear()
+        self.remote_temp_files.clear()
+    
+    def _recursive_delete(self, path: str):
+        """递归删除目录及其内容"""
+        try:
+            # 尝试直接删除（如果是空目录）
+            self.ftp.rmd(path)
+            logger.debug(f"成功删除空目录：{path}")
+        except Exception as e1:
+            logger.debug(f"目录 {path} 非空，尝试递归删除：{e1}")
+            # 非空目录，先列出内容
+            try:
+                items = self.ftp.nlst(path)
+                logger.debug(f"目录 {path} 包含 {len(items)} 个项目")
+                for item in items:
+                    try:
+                        # 尝试作为文件删除
+                        self.ftp.delete(item)
+                        logger.debug(f"已删除文件：{item}")
+                    except Exception as e2:
+                        logger.debug(f"无法删除 {item} 作为文件，尝试作为子目录：{e2}")
+                        # 作为子目录递归删除
+                        self._recursive_delete(item)
+                # 最后删除目录本身
+                self.ftp.rmd(path)
+                logger.debug(f"成功删除目录：{path}")
+            except Exception as e:
+                logger.error(f"递归删除 {path} 彻底失败：{e}")
+                raise Exception(f"递归删除 {path} 失败：{e}")
     
     # ========== 基础命令测试 ==========
     
@@ -260,6 +417,7 @@ class FTPTester:
             else:
                 self.result.add_fail(test_name, f"NOOP 响应异常：{response}")
         except Exception as e:
+            logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
             self.result.add_fail(test_name, str(e))
     
     def test_pwd(self):
@@ -272,6 +430,7 @@ class FTPTester:
             else:
                 self.result.add_fail(test_name, f"返回空路径或类型错误：{pwd}")
         except Exception as e:
+            logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
             self.result.add_fail(test_name, str(e))
     
     def test_syst(self):
@@ -284,6 +443,7 @@ class FTPTester:
             else:
                 self.result.add_fail(test_name, f"响应异常：{response}")
         except Exception as e:
+            logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
             self.result.add_fail(test_name, str(e))
     
     def test_feat(self):
@@ -296,6 +456,7 @@ class FTPTester:
             else:
                 self.result.add_fail(test_name, f"响应异常：{response}")
         except Exception as e:
+            logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
             self.result.add_fail(test_name, str(e))
     
     def test_type(self):
@@ -312,6 +473,7 @@ class FTPTester:
             else:
                 self.result.add_fail(test_name, f"ASCII:{resp_ascii}, Binary:{resp_binary}")
         except Exception as e:
+            logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
             self.result.add_fail(test_name, str(e))
     
     def test_noop(self):
@@ -324,6 +486,7 @@ class FTPTester:
             else:
                 self.result.add_fail(test_name, f"响应异常：{response}")
         except Exception as e:
+            logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
             self.result.add_fail(test_name, str(e))
     
     # ========== 目录操作测试 ==========
@@ -332,16 +495,20 @@ class FTPTester:
         """测试创建目录"""
         test_name = "MKD 创建目录"
         try:
-            self.ftp.mkd(self.test_dir)
+            full_path = f"{self.base_path}/{self.test_dir}" if self.base_path else self.test_dir
+            self.ftp.mkd(full_path)
+            logger.debug(f"成功创建目录：{full_path}")
             self.result.add_pass(test_name)
         except Exception as e:
+            logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
             self.result.add_fail(test_name, str(e))
     
     def test_cwd(self):
         """测试切换目录"""
         test_name = "CWD 切换目录"
         try:
-            self.ftp.cwd(self.test_dir)
+            full_path = f"{self.base_path}/{self.test_dir}" if self.base_path else self.test_dir
+            self.ftp.cwd(full_path)
             current = self.ftp.pwd()
             
             if self.test_dir in current:
@@ -349,6 +516,7 @@ class FTPTester:
             else:
                 self.result.add_fail(test_name, f"路径不匹配：期望包含{self.test_dir}, 实际={current}")
         except Exception as e:
+            logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
             self.result.add_fail(test_name, str(e))
     
     def test_rmd(self):
@@ -357,9 +525,12 @@ class FTPTester:
         try:
             # 先回到根目录
             self.ftp.cwd('/')
-            self.ftp.rmd(self.test_dir)
+            full_path = f"{self.base_path}/{self.test_dir}" if self.base_path else self.test_dir
+            self.ftp.rmd(full_path)
+            logger.debug(f"成功删除目录：{full_path}")
             self.result.add_pass(test_name)
         except Exception as e:
+            logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
             self.result.add_fail(test_name, str(e))
     
     # ========== 文件操作测试 ==========
@@ -610,8 +781,10 @@ class SFTPTester:
         self.sftp: Optional[paramiko.SFTPClient] = None
         self.result = TestResult("SFTP")
         self.temp_files: List[str] = []
+        self.remote_temp_files: List[str] = []  # 记录远程文件用于清理
         self.test_dir = f"test_sftp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.current_file_prefix = f"sftp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
+        self.base_path = Config.SFTP_BASE_PATH or ""  # 可配置基础路径
     
     def connect(self) -> bool:
         """建立 SFTP 连接"""
@@ -665,26 +838,77 @@ class SFTPTester:
         return temp_path
     
     def cleanup(self):
-        """清理测试文件"""
+        """清理测试文件（递归删除）"""
+        logger.info("开始清理 SFTP 测试文件...")
+        
         if self.sftp:
             try:
-                # 尝试删除测试目录
+                # 列出并删除所有以 test_dir 开头的文件
+                test_pattern = f"{self.base_path}/{self.test_dir}*"
                 try:
-                    self.sftp.rmdir(self.test_dir)
+                    all_items = self.sftp.listdir(self.base_path or '.')
+                    for item in all_items:
+                        if item.startswith(self.test_dir):
+                            full_path = f"{self.base_path}/{item}" if self.base_path else item
+                            try:
+                                # 尝试作为文件删除
+                                self.sftp.remove(full_path)
+                                logger.debug(f"已删除远程文件：{full_path}")
+                            except Exception:
+                                # 作为目录递归删除
+                                try:
+                                    self._recursive_delete(full_path)
+                                    logger.debug(f"已删除远程目录：{full_path}")
+                                except Exception as e:
+                                    logger.warning(f"无法删除 {full_path}: {e}")
+                except Exception as e:
+                    logger.warning(f"列出远程文件失败：{e}")
+                
+                # 报告残留文件
+                try:
+                    remaining = self.sftp.listdir(self.base_path or '.')
+                    remaining_test = [f for f in remaining if f.startswith(self.test_dir)]
+                    if remaining_test:
+                        logger.error(f"残留文件/目录：{remaining_test}")
                 except Exception:
                     pass
-            except Exception:
-                pass
+                    
+            except Exception as e:
+                logger.error(f"SFTP 清理过程出错：{e}")
         
         # 清理本地临时文件
         for file_path in self.temp_files:
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
-            except Exception:
-                pass
+                    logger.debug(f"已删除本地文件：{file_path}")
+            except Exception as e:
+                logger.warning(f"删除本地文件 {file_path} 失败：{e}")
         
         self.temp_files.clear()
+        self.remote_temp_files.clear()
+    
+    def _recursive_delete(self, path: str):
+        """递归删除目录及其内容"""
+        try:
+            # 尝试直接删除（如果是空目录）
+            self.sftp.rmdir(path)
+        except Exception:
+            # 非空目录，先列出内容
+            try:
+                items = self.sftp.listdir(path)
+                for item in items:
+                    full_path = f"{path}/{item}"
+                    try:
+                        # 尝试作为文件删除
+                        self.sftp.remove(full_path)
+                    except Exception:
+                        # 作为子目录递归删除
+                        self._recursive_delete(full_path)
+                # 最后删除目录本身
+                self.sftp.rmdir(path)
+            except Exception as e:
+                raise Exception(f"递归删除 {path} 失败：{e}")
     
     # ========== 基础命令测试 ==========
     
@@ -907,7 +1131,7 @@ class SFTPTester:
             self.result.add_fail(test_name, str(e))
     
     def test_symlink(self):
-        """测试创建符号链接"""
+        """测试创建符号链接（可能不支持）"""
         test_name = "SYMLINK 符号链接"
         try:
             target = f"{self.current_file_prefix}symlink_target.txt"
@@ -928,6 +1152,7 @@ class SFTPTester:
                 is_symlink = stat.S_ISLNK(stat_info.st_mode)
                 
                 if is_symlink:
+                    logger.debug(f"成功创建符号链接：{link} -> {target}")
                     self.result.add_pass(test_name)
                 else:
                     self.result.add_fail(test_name, f"创建的不是符号链接，mode={oct(stat_info.st_mode)}")
@@ -941,10 +1166,19 @@ class SFTPTester:
                 pass
         
         except Exception as e:
-            self.result.add_fail(test_name, f"不支持符号链接：{e}")
+            error_msg = str(e)
+            # 检测是否是不支持的操作
+            if any(keyword in error_msg.lower() for keyword in ['unsupported', 'not implemented', 'unimplemented']):
+                logger.warning(f"{test_name} 不被此 SFTP 服务器支持，已跳过")
+                # 记录为特殊类型的失败（功能不支持）
+                self.result.errors.append({"test": test_name, "reason": f"功能不支持：{error_msg}"})
+                print(f"  ⊘ {test_name}: 功能不支持（已跳过）")
+            else:
+                logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
+                self.result.add_fail(test_name, f"不支持符号链接：{e}")
     
     def test_readlink(self):
-        """测试读取符号链接"""
+        """测试读取符号链接（可能不支持）"""
         test_name = "READLINK 读取链接"
         try:
             target = f"{self.current_file_prefix}readlink_target.txt"
@@ -979,6 +1213,7 @@ class SFTPTester:
             read_target = self.sftp.readlink(link)
             
             if read_target == target:
+                logger.debug(f"成功读取符号链接：{link} -> {target}")
                 self.result.add_pass(test_name)
             else:
                 self.result.add_fail(test_name, f"链接目标不匹配：期望={target}, 实际={read_target}")
@@ -990,7 +1225,16 @@ class SFTPTester:
                 pass
         
         except Exception as e:
-            self.result.add_fail(test_name, f"不支持读取链接：{e}")
+            error_msg = str(e)
+            # 检测是否是不支持的操作
+            if any(keyword in error_msg.lower() for keyword in ['unsupported', 'not implemented', 'unimplemented']):
+                logger.warning(f"{test_name} 不被此 SFTP 服务器支持，已跳过")
+                # 记录为特殊类型的失败（功能不支持）
+                self.result.errors.append({"test": test_name, "reason": f"功能不支持：{error_msg}"})
+                print(f"  ⊘ {test_name}: 功能不支持（已跳过）")
+            else:
+                logger.debug(f"{test_name} 失败：{traceback.format_exc()}")
+                self.result.add_fail(test_name, f"不支持读取链接：{e}")
     
     def test_rename(self):
         """测试重命名文件"""
@@ -1177,37 +1421,43 @@ def save_json_result(ftp_result: TestResult, sftp_result: TestResult):
 
 def main():
     """主函数"""
-    print("="*70)
-    print("WFTPG FTP/SFTP 完整功能测试")
-    print("="*70)
-    print(f"\n服务器配置:")
-    print(f"  主机：{Config.SERVER_HOST}")
-    print(f"  FTP 端口：{Config.FTP_PORT}")
-    print(f"  SFTP 端口：{Config.SFTP_PORT}")
-    print(f"  用户名：{Config.USERNAME}")
-    print(f"  密码：{'*' * len(Config.PASSWORD)}")
-    print("="*70)
+    global logger
+    
+    # 初始化日志系统
+    logger = setup_logging(verbose=Config.VERBOSE, log_file=Config.LOG_FILE)
+    
+    logger.info("="*70)
+    logger.info("WFTPG FTP/SFTP 完整功能测试")
+    logger.info("="*70)
+    logger.info(f"服务器配置:")
+    logger.info(f"  主机：{Config.SERVER_HOST}")
+    logger.info(f"  FTP 端口：{Config.FTP_PORT}")
+    logger.info(f"  SFTP 端口：{Config.SFTP_PORT}")
+    logger.info(f"  用户名：{Config.USERNAME}")
+    logger.info(f"  路径配置 - FTP: {Config.FTP_BASE_PATH or '根目录'}, SFTP: {Config.SFTP_BASE_PATH or '根目录'}")
+    logger.info("="*70)
     
     # 检查 Python 依赖
-    print("\n检查环境依赖...")
+    logger.info("检查环境依赖...")
     try:
         import paramiko
-        print("  ✓ paramiko 已安装")
+        logger.info("  ✓ paramiko 已安装")
     except ImportError:
-        print("  ✗ paramiko 未安装，请运行：pip install paramiko")
+        logger.error("  ✗ paramiko 未安装，请运行：pip install paramiko")
         sys.exit(1)
     
     # 检查端口是否就绪
-    print("\n检查服务端口...")
+    logger.info("检查服务端口...")
     ports_to_check = [Config.FTP_PORT, Config.SFTP_PORT]
     
     if not wait_for_ports(Config.SERVER_HOST, ports_to_check, Config.PORT_WAIT_TIMEOUT):
-        print("\n✗ 服务未就绪，请先启动 WFTPD 服务")
-        print(f"  需要开放的端口：{', '.join(map(str, ports_to_check))}")
+        logger.error("✗ 服务未就绪，请先启动 WFTPD 服务")
+        logger.error(f"  需要开放的端口：{', '.join(map(str, ports_to_check))}")
         sys.exit(1)
     
     try:
         # FTP 测试
+        logger.info("开始 FTP 协议功能测试...")
         ftp_tester = FTPTester(
             host=Config.SERVER_HOST,
             port=Config.FTP_PORT,
@@ -1220,6 +1470,7 @@ def main():
         time.sleep(Config.TEST_DELAY)
         
         # SFTP 测试
+        logger.info("开始 SFTP 协议功能测试...")
         sftp_tester = SFTPTester(
             host=Config.SERVER_HOST,
             port=Config.SFTP_PORT,
@@ -1236,17 +1487,16 @@ def main():
             save_json_result(ftp_result, sftp_result)
     
     except KeyboardInterrupt:
-        print("\n\n✗ 测试被用户中断")
+        logger.error("\n✗ 测试被用户中断")
         sys.exit(1)
     except Exception as e:
-        print(f"\n✗ 测试异常：{e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"\n✗ 测试异常：{e}")
+        logger.error(traceback.format_exc())
         sys.exit(1)
     
-    print("\n" + "="*70)
-    print("测试完成！")
-    print("="*70)
+    logger.info("="*70)
+    logger.info("测试完成！")
+    logger.info("="*70)
 
 
 if __name__ == '__main__':

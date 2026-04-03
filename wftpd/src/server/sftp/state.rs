@@ -177,33 +177,56 @@ impl SftpState {
 
     pub async fn process_sftp_data(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         self.buffer.extend_from_slice(data);
-        
+
         const MAX_PACKET_SIZE: usize = 256 * 1024;
+        const MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB 最大缓冲区限制
         let mut responses = Vec::new();
-        
+
+        // 防止缓冲区无限增长
+        if self.buffer.len() > MAX_BUFFER_SIZE {
+            warn!(buffer_len = self.buffer.len(), "[SFTP] Buffer size exceeded limit, clearing");
+            self.buffer.clear();
+            return Ok(build_status_packet(0, SSH_FX_FAILURE, "Buffer overflow", ""));
+        }
+
         while self.buffer.len() >= 4 {
             let packet_len = u32::from_be_bytes([
                 self.buffer[0], self.buffer[1], self.buffer[2], self.buffer[3]
             ]) as usize;
-            
-            if packet_len == 0 || packet_len > MAX_PACKET_SIZE {
+
+            // 验证包长度
+            if packet_len == 0 {
+                // 空包，跳过4字节头部继续处理
+                self.buffer.drain(0..4);
+                continue;
+            }
+
+            if packet_len > MAX_PACKET_SIZE {
+                warn!(packet_len = packet_len, "[SFTP] Packet size exceeds maximum");
                 self.buffer.clear();
                 return Ok(build_status_packet(0, SSH_FX_FAILURE, "Invalid packet length", ""));
             }
-            
+
             if self.buffer.len() < 4 + packet_len {
+                // 数据不完整，等待更多数据
                 break;
             }
-            
+
+            // 提取并处理数据包
             let packet: Vec<u8> = self.buffer[4..4 + packet_len].to_vec();
             self.buffer.drain(0..4 + packet_len);
-            
+
             if !packet.is_empty() {
-                let response = self.handle_sftp_packet(&packet).await?;
-                responses.extend(response);
+                match self.handle_sftp_packet(&packet).await {
+                    Ok(response) => responses.extend(response),
+                    Err(e) => {
+                        warn!(error = %e, "[SFTP] Error handling packet");
+                        // 继续处理后续包而不是中断
+                    }
+                }
             }
         }
-        
+
         Ok(responses)
     }
 

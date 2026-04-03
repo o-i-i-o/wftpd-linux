@@ -103,7 +103,7 @@ impl SftpServer {
     }
 
     pub async fn start(&self) -> Result<()> {
-        let (bind_ip, sftp_port, host_key_path, _max_connections, max_auth_attempts, auth_timeout, idle_timeout) = {
+        let (bind_ip, sftp_port, host_key_path, _max_connections, max_auth_attempts, _auth_timeout, idle_timeout) = {
             match self.config.try_lock() {
                 Ok(cfg) => (
                     cfg.sftp.bind_ip.clone(),
@@ -130,16 +130,18 @@ impl SftpServer {
         let mut methods = russh::MethodSet::empty();
         methods.push(MethodKind::Password);
         methods.push(MethodKind::PublicKey);
-        
+
         // Create russh server configuration
+        // 优化连接参数以减少连接等待时间
         let config = russh::server::Config {
-            server_id: russh::SshId::Standard(std::borrow::Cow::Borrowed("SSH-2.0-OpenSSH_8.9")),
+            server_id: russh::SshId::Standard(std::borrow::Cow::Borrowed("SSH-2.0-russh_0.59")),
             keys: vec![host_key],
             methods,
             max_auth_attempts,
             inactivity_timeout: Some(idle_timeout),
-            auth_rejection_time: auth_timeout,
-            auth_rejection_time_initial: Some(auth_timeout),
+            // 减少认证拒绝等待时间，避免客户端长时间等待
+            auth_rejection_time: Duration::from_secs(1),
+            auth_rejection_time_initial: Some(Duration::from_secs(1)),
             ..Default::default()
         };
         

@@ -1,6 +1,6 @@
 [package]
 name = "wftpd"
-version = "2.7.3"
+version = "2.7.4"
 edition = "2024"
 authors = ["WFTPG Developer"]
 description = "WFTPG Backend Server - FTP/SFTP Service Manager"

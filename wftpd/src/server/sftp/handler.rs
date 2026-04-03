@@ -415,7 +415,7 @@ impl russh::server::Handler for SftpHandler {
     async fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,
-        _session: &mut Session,
+        session: &mut Session,
     ) -> Result<bool, Self::Error> {
         info!(
             channel_id = ?channel.id(),
@@ -423,23 +423,19 @@ impl russh::server::Handler for SftpHandler {
             username = ?self.username,
             "[SFTP CHANNEL] channel_open_session requested"
         );
-        
-        // 如果已经认证通过，允许打开会话
-        if self.authenticated {
-            info!(
-                channel_id = ?channel.id(),
-                username = ?self.username,
-                "[SFTP CHANNEL] Session channel opened successfully"
-            );
-            Ok(true)
-        } else {
-            warn!(
-                channel_id = ?channel.id(),
-                client_ip = %self.client_ip,
-                "[SFTP CHANNEL] Session channel denied: not authenticated"
-            );
-            Ok(false)
-        }
+
+        // 允许打开会话通道，认证检查在后续操作中进行
+        // 这是OpenSSH客户端兼容性的关键：必须先允许会话通道
+        info!(
+            channel_id = ?channel.id(),
+            username = ?self.username,
+            "[SFTP CHANNEL] Session channel opened successfully"
+        );
+
+        // 发送通道确认
+        let _ = session.channel_success(channel.id());
+
+        Ok(true)
     }
 
     async fn auth_succeeded(
@@ -516,16 +512,60 @@ impl russh::server::Handler for SftpHandler {
         _pix_width: u32,
         _pix_height: u32,
         _modes: &[(Pty, u32)],
-        _session: &mut Session,
+        session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // OpenSSH客户端有时会请求PTY，即使只使用SFTP
+        // 我们应该拒绝这个请求但保持连接
+        let _ = session.channel_failure(_channel);
         Ok(())
     }
 
     async fn shell_request(
         &mut self,
         _channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // SFTP服务器不支持shell，拒绝请求
+        let _ = session.channel_failure(_channel);
+        Ok(())
+    }
+
+    async fn exec_request(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // 某些客户端可能会尝试执行命令，拒绝但保持连接
+        info!(
+            channel_id = ?channel,
+            command = ?String::from_utf8_lossy(data),
+            "[SFTP] Exec request received and rejected"
+        );
+        let _ = session.channel_failure(channel);
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        _channel: ChannelId,
+        _col_width: u32,
+        _row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // SFTP不需要处理窗口大小变化
+        Ok(())
+    }
+
+    async fn signal(
+        &mut self,
+        _channel: ChannelId,
+        _signal: russh::Sig,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // 处理信号请求
         Ok(())
     }
 

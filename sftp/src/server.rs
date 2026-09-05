@@ -1,6 +1,5 @@
 use anyhow::Result;
 use russh::MethodKind;
-use russh::keys::ssh_key::rand_core::OsRng;
 use russh::keys::*;
 use russh::server::Server;
 use std::net::SocketAddr;
@@ -148,7 +147,7 @@ impl SftpServer {
         // Create russh server configuration
         // 优化连接参数以减少连接等待时间
         let config = russh::server::Config {
-            server_id: russh::SshId::Standard(std::borrow::Cow::Borrowed("SSH-2.0-russh_0.59")),
+            server_id: russh::SshId::Standard(std::borrow::Cow::Borrowed("SSH-2.0-russh_0.63")),
             keys: vec![host_key],
             methods,
             max_auth_attempts,
@@ -263,8 +262,8 @@ impl SftpServer {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let mut rng = OsRng;
-        let key = PrivateKey::random(&mut rng, Algorithm::Ed25519)?;
+        // rand 0.10 移除了 OsRng，russh 0.63 官方示例同样使用 thread_rng
+        let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?;
 
         let openssh = key.to_openssh(ssh_key::LineEnding::default())?;
         tokio::fs::write(&path, openssh.to_string()).await?;

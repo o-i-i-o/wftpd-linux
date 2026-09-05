@@ -226,11 +226,14 @@ impl russh::server::Handler for SftpHandler {
     async fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,
+        reply: russh::server::ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<(), Self::Error> {
         debug!(channel_id = ?channel.id(), "[SFTP CHANNEL] session channel opened");
         self.open_channels.insert(channel.id(), channel);
-        Ok(true)
+        // russh 0.63 起需显式通过 ChannelOpenHandle 接受通道打开请求
+        reply.accept().await;
+        Ok(())
     }
 
     async fn subsystem_request(

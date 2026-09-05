@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use chrono::{DateTime, Utc};
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -165,10 +164,9 @@ impl UserManager {
     }
 
     fn hash_password(password: &str) -> Result<String> {
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let hash = argon2
-            .hash_password(password.as_bytes(), &salt)
+        // password-hash 0.6 起 hash_password 自动生成随机盐，无需外部 RNG
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes())
             .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?
             .to_string();
         Ok(hash)

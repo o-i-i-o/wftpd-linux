@@ -25,7 +25,7 @@ wftpd-sftp = { path = "sftp" }
 # 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "1.0"
+toml = "1.1"
 
 # 异步运行时
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "fs", "signal"] }
@@ -43,16 +43,15 @@ libunftp = { version = "0.23", default-features = false, features = ["ring"] }
 unftp-core = "0.1"
 
 # SFTP/SSH
-russh = "0.59.0"
+russh = "0.63.2"
 russh-sftp = "2.4"
-# russh 0.59 依赖 rsa 0.10-rc，与 pkcs8 0.11 正式版存在 API 不兼容，钉住配套版本
-pkcs8 = { version = "=0.11.0-rc.11", features = ["pem"] }
+
 
 # 加密与安全
-argon2 = "0.5"
-rand = "0.8"
-sha2 = "0.10"
-md-5 = "0.10"
+argon2 = "0.6"
+rand = "0.10"
+sha2 = "0.11"
+md-5 = "0.11"
 hex = "0.4"
 
 # 日志

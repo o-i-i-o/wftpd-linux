@@ -19,5 +19,4 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 ipnet = { workspace = true }
 argon2 = { workspace = true }
-rand = { workspace = true }
 nix = { workspace = true }

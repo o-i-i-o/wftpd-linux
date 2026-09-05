@@ -9,13 +9,10 @@ license.workspace = true
 [dependencies]
 wftpd-common = { workspace = true }
 
-serde = { workspace = true }
-serde_json = { workspace = true }
+libunftp = { workspace = true }
+unftp-core = { workspace = true }
 tokio = { workspace = true }
-tokio-rustls = { workspace = true }
-rustls = { workspace = true }
-socket2 = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
-pem = { workspace = true }
+async-trait = { workspace = true }

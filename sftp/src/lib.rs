@@ -1,14 +1,13 @@
 //! WFTPD SFTP 服务器
 //!
-//! 基于 russh 的 SFTP 协议实现，只依赖 [`wftpd_common`] 提供的
-//! 配置/用户/日志/公共工具，不感知进程模型与前端通信方式。
+//! 基于 russh（SSH 传输层）+ russh-sftp（SFTP 协议层）：
+//! - `handler` 负责 SSH 认证与会话/通道管理
+//! - `ops` 实现 SFTP 协议操作（路径安全、权限、配额、限速、审计）
 
-mod extensions;
 mod handler;
-mod packet;
+mod ops;
 mod server;
-mod state;
 
 pub use handler::SftpHandler;
+pub use ops::SftpFileHandler;
 pub use server::SftpServer;
-pub use state::{SftpFileHandle, SftpState};

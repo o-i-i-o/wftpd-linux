@@ -255,6 +255,36 @@ impl Config {
         Ok(())
     }
 
+    /// 静态版本：供非 Config 持有方（如 FTP 认证桥）复用同一套规则
+    pub fn is_ip_allowed_for(allowed_ips: &[String], denied_ips: &[String], ip: &str) -> bool {
+        if denied_ips
+            .iter()
+            .any(|cidr| match ip_matches_cidr(ip, cidr) {
+                Ok(matches) => matches,
+                Err(e) => {
+                    warn!("Failed to match IP {ip} against denied CIDR {cidr}: {e}");
+                    false
+                }
+            })
+        {
+            return false;
+        }
+
+        if allowed_ips.is_empty() {
+            return true;
+        }
+
+        allowed_ips
+            .iter()
+            .any(|cidr| match ip_matches_cidr(ip, cidr) {
+                Ok(matches) => matches,
+                Err(e) => {
+                    warn!("Failed to match IP {ip} against allowed CIDR {cidr}: {e}");
+                    false
+                }
+            })
+    }
+
     pub fn is_ip_allowed(&self, ip: &str) -> bool {
         if self
             .security

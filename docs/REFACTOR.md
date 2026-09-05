@@ -89,6 +89,60 @@
 
 ---
 
+## 二点五、协议实现切换为成熟库（libunftp / russh-sftp）
+
+v3.0.0 首轮重构后，FTP 与 SFTP 协议仍是手写实现（约 4000 行协议代码）。第二轮重构
+将协议层替换为成熟库：
+
+| 协议 | 之前 | 现在 |
+|------|------|------|
+| FTP/FTPS | 手写命令解析（`commands/` + `handler` + `data_connection` + `tls`） | **libunftp 0.23**（FTPS 内置，`ring` crypto provider） |
+| SFTP | russh 传输层 + 手写包编解码（`packet.rs` + `state.rs` 1793 行 + `extensions.rs`） | **russh 0.59**（传输层不变）+ **russh-sftp 2.4**（SFTP 协议层） |
+
+### 替换方式
+
+FTP（`ftp/` crate，协议代码从 ~2200 行缩减到 ~600 行）：
+
+- `auth.rs`：`unftp_core::auth::Authenticator` 桥——argon2 密码校验（认证前重载
+  users.json）、匿名访问、IP 白/黑名单（libunftp 的 `Credentials` 自带 `source_ip`）；
+  `UserDetailProvider` 把认证主体映射为携带主目录/权限/配额的 `WftpdUser`
+- `storage.rs`：`StorageBackend` 实现——`enter()` 在登录时把会话根切到用户主目录
+  （等价 chroot，路径词法规范化并拒绝 `..` 越界），操作级权限检查、配额、审计日志
+- `server.rs`：libunftp `ServerBuilder` 组装——passive ports/host、greeting、
+  idle timeout、FTPS（`ftps()` + `ftps_required()`）、防爆破
+  （`FailedLoginsPolicy`，UserAndIP 维度）、`shutdown_indicator` 优雅关停
+
+SFTP（`sftp/` crate，协议代码从 ~2600 行缩减到 ~700 行）：
+
+- `handler.rs`：russh `server::Handler`——密码/公钥认证（保留原逻辑与审计），
+  `subsystem_request("sftp")` 时把通道 `into_stream()` 交给 `russh_sftp::server::run`
+- `ops.rs`：`russh_sftp::server::Handler` 实现——路径词法解析（chroot、不跟随
+  符号链接）、权限/配额/限速/审计，`md5sum` / `sha256sum` / `space-available`
+  openssh 扩展，`realpath` 返回 chroot 内虚拟路径
+
+### 功能与行为变化
+
+**增强**：SFTP 的 SYMLINK / READLINK / RENAME 不再是"不支持"（E2E 从 11/15 → 15/15）；
+FTPS 支持（显式 AUTH TLS，证书可配）不再依赖手写 TLS 状态机。
+
+**有意的行为对齐**（与旧实现对齐而非"纠正"）：
+- RMD/RMDIR 递归删除（`remove_dir_all`），与旧实现一致
+- SFTP symlink 参数按实际生态（paramiko/OpenSSH）顺序处理（第一参数=目标，
+  第二参数=链接位置），与 SFTP 规范相反
+- 符号链接目标按 POSIX 语义保存原样字符串，但创建时校验解析后不越出主目录
+
+**降级**（libunftp 当前未提供对应钩子）：
+- `security.max_connections` 不再强制（libunftp listen 自管 accept，无连接数上限钩子）
+- `ftp.max_speed_kbps` 不再对 FTP 生效（SFTP 的用户级 `speed_limit_kbps` 仍生效）
+
+### 验证结果
+
+- E2E 协议回归：**FTP 17/17 + SFTP 15/15 = 32/32（100%）**，超越旧手写实现基线
+  （旧 SFTP 11/15，SYMLINK/READLINK/RENAME/CHMOD 均失败）
+- gRPC 全接口探测（`grpc_probe`）通过；`cargo test` 全绿；clippy/fmt 干净
+
+---
+
 ## 三、工作空间结构（落地结果）
 
 ```
@@ -155,3 +209,61 @@ wftpd-linux/
 - SFTP 的 CHMOD/RENAME/SYMLINK/READLINK 四项与重构前基线一致地失败
   （见 `test_result.json`），属于既有协议实现问题，与本次重构无关，待后续单独修复。
 - deb 打包已适配用户服务模型；`lintian` 提示项可在发布前统一处理。
+
+---
+
+## 二点五、协议实现切换为成熟库（libunftp / russh-sftp）
+
+v3.0.0 首轮重构后，FTP 与 SFTP 协议仍是手写实现（约 4000 行协议代码）。第二轮重构
+将协议层替换为成熟库：
+
+| 协议 | 之前 | 现在 |
+|------|------|------|
+| FTP/FTPS | 手写命令解析（`commands/` + `handler` + `data_connection` + `tls`） | **libunftp 0.23**（FTPS 内置，`ring` crypto provider） |
+| SFTP | russh 传输层 + 手写包编解码（`packet.rs` + `state.rs` 1793 行 + `extensions.rs`） | **russh 0.59**（传输层不变）+ **russh-sftp 2.4**（SFTP 协议层） |
+
+### 替换方式
+
+FTP（`ftp/` crate，协议代码从约 2200 行缩减到约 600 行）：
+
+- `auth.rs`：`unftp_core::auth::Authenticator` 桥——argon2 密码校验（认证前重载
+  users.json）、匿名访问、IP 白/黑名单（libunftp 的 `Credentials` 自带 `source_ip`）；
+  `UserDetailProvider` 把认证主体映射为携带主目录/权限/配额的 `WftpdUser`
+- `storage.rs`：`StorageBackend` 实现——`enter()` 在登录时把会话根切到用户主目录
+  （等价 chroot，路径词法规范化并拒绝 `..` 越界），操作级权限检查、配额、审计日志
+- `server.rs`：libunftp `ServerBuilder` 组装——passive ports/host、greeting、
+  idle timeout、FTPS（`ftps()` + `ftps_required()`）、防爆破
+  （`FailedLoginsPolicy`，UserAndIP 维度）、`shutdown_indicator` 优雅关停
+
+SFTP（`sftp/` crate，协议代码从约 2600 行缩减到约 700 行）：
+
+- `handler.rs`：russh `server::Handler`——密码/公钥认证（保留原逻辑与审计），
+  `subsystem_request("sftp")` 时把通道 `into_stream()` 交给 `russh_sftp::server::run`
+- `ops.rs`：`russh_sftp::server::Handler` 实现——路径词法解析（chroot、不跟随
+  符号链接）、权限/配额/限速/审计，`md5sum` / `sha256sum` / `space-available`
+  openssh 扩展，`realpath` 返回 chroot 内虚拟路径
+
+### 功能与行为变化
+
+增强：
+
+- SFTP 的 SYMLINK / READLINK / RENAME 不再"不支持"，且 E2E 从 11/15 升至 15/15
+- FTPS 支持（显式 AUTH TLS，证书可配、可强制）
+
+有意的行为对齐（与旧实现对齐而非"纠正"）：
+
+- RMD/RMDIR 递归删除（`remove_dir_all`），与旧实现一致
+- SFTP symlink 参数按实际生态（paramiko/OpenSSH）顺序处理：第一参数=目标，
+  第二参数=链接位置（与 SFTP 规范相反，属 paramiko 的已知兼容性怪癖）
+- 符号链接目标按 POSIX 语义保存原样字符串，但创建时校验解析后不越出主目录
+
+降级（libunftp 当前未提供对应钩子）：
+
+- `security.max_connections` 不再强制（libunftp listen 自管 accept，无连接数上限钩子）
+- `ftp.max_speed_kbps` 不再对 FTP 生效（SFTP 的用户级 `speed_limit_kbps` 仍生效）
+
+### 验证结果
+
+- E2E 协议回归：FTP 17/17 + SFTP 15/15 = 32/32（100%），超越旧手写实现基线
+  （旧 SFTP 11/15：SYMLINK/READLINK/RENAME/CHMOD 均失败）
+- gRPC 全接口探测（`grpc_probe`）通过；`cargo test` 全绿；clippy/fmt 干净

@@ -38,12 +38,13 @@ prost = "0.14"
 tonic-build = { version = "0.14", package = "tonic-prost-build" }
 protox = "0.9"
 
-# TLS
-tokio-rustls = "0.26.4"
-rustls = "0.23.37"
+# FTP (libunftp)
+libunftp = { version = "0.23", default-features = false, features = ["ring"] }
+unftp-core = "0.1"
 
 # SFTP/SSH
 russh = "0.59.0"
+russh-sftp = "2.4"
 # russh 0.59 依赖 rsa 0.10-rc，与 pkcs8 0.11 正式版存在 API 不兼容，钉住配套版本
 pkcs8 = { version = "=0.11.0-rc.11", features = ["pem"] }
 
@@ -53,7 +54,6 @@ rand = "0.8"
 sha2 = "0.10"
 md-5 = "0.10"
 hex = "0.4"
-pem = "3.0"
 
 # 日志
 tracing = "0.1"
@@ -69,12 +69,10 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # 网络
 ipnet = "2"
-socket2 = "0.6"
 
 # 系统集成
 libc = "0.2"
 nix = { version = "0.31", features = ["user", "fs", "socket"] }
-fs2 = "0.4"
 
 # GUI
 gtk = "0.18"

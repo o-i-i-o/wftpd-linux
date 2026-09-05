@@ -21,4 +21,3 @@ ipnet = { workspace = true }
 argon2 = { workspace = true }
 rand = { workspace = true }
 nix = { workspace = true }
-fs2 = { workspace = true }

@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-05T13:35:27.315282",
+  "timestamp": "2026-09-05T15:02:35.537375",
   "config": {
     "host": "127.0.0.1",
     "ftp_port": 2121,
@@ -12,39 +12,22 @@
     "passed": 17,
     "failed": 0,
     "success_rate": "100.00%",
-    "duration_seconds": 0.98,
+    "duration_seconds": 0.48,
     "errors": []
   },
   "sftp": {
     "type": "SFTP",
     "total": 15,
-    "passed": 11,
-    "failed": 4,
-    "success_rate": "73.33%",
-    "duration_seconds": 0.6,
-    "errors": [
-      {
-        "test": "CHMOD 修改权限",
-        "reason": "权限未正确设置：期望 0o644, 实际 0o644 (旧权限 0o644)"
-      },
-      {
-        "test": "RENAME 重命名",
-        "reason": "Not a symbolic link"
-      },
-      {
-        "test": "SYMLINK 符号链接",
-        "reason": "不支持符号链接：[Errno 2] No such file or directory: No such file or directory (os error 2)"
-      },
-      {
-        "test": "READLINK 读取链接",
-        "reason": "不支持读取链接：[Errno 2] No such file or directory: No such file or directory (os error 2)"
-      }
-    ]
+    "passed": 15,
+    "failed": 0,
+    "success_rate": "100.00%",
+    "duration_seconds": 0.12,
+    "errors": []
   },
   "overall": {
     "total_tests": 32,
-    "total_passed": 28,
-    "total_failed": 4,
-    "success_rate": "87.50%"
+    "total_passed": 32,
+    "total_failed": 0,
+    "success_rate": "100.00%"
   }
 }

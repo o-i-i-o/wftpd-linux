@@ -1,30 +1,13 @@
 #!/bin/sh
+# wftpg 卸载前脚本（用户态服务模型）
+#
+# 用户服务属于各桌面用户，包卸载时不强制停止；
+# 如需停止请在各用户会话中执行：systemctl --user stop wftpd
+
 set -e
 
 case "$1" in
     remove|deconfigure)
-        update-desktop-database /usr/share/applications 2>/dev/null || true
-        gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
-        
-        if command -v systemctl > /dev/null 2>&1; then
-            if systemctl is-active --quiet wftpd 2>/dev/null; then
-                systemctl stop wftpd 2>/dev/null || true
-            fi
-            if systemctl is-enabled --quiet wftpd 2>/dev/null; then
-                systemctl disable wftpd 2>/dev/null || true
-            fi
-        fi
-        ;;
-    
-    upgrade)
-        ;;
-    
-    failed-upgrade)
-        ;;
-    
-    *)
-        echo "prerm called with unknown argument \`$1'" >&2
-        exit 1
         ;;
 esac
 

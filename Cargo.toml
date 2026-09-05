@@ -1,0 +1,90 @@
+[workspace]
+resolver = "3"
+members = [
+    "common",
+    "proto",
+    "ftp",
+    "sftp",
+    "wftpd",
+    "wftpg",
+]
+
+[workspace.package]
+version = "3.0.0"
+edition = "2024"
+authors = ["WFTPG Developer"]
+license = "MIT"
+
+[workspace.dependencies]
+# 内部 crate
+wftpd-common = { path = "common" }
+wftpd-proto = { path = "proto" }
+wftpd-ftp = { path = "ftp" }
+wftpd-sftp = { path = "sftp" }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.0"
+
+# 异步运行时
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "fs", "signal"] }
+async-trait = "0.1"
+
+# gRPC (tonic over UDS)
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+tonic-build = { version = "0.14", package = "tonic-prost-build" }
+protox = "0.9"
+
+# TLS
+tokio-rustls = "0.26.4"
+rustls = "0.23.37"
+
+# SFTP/SSH
+russh = "0.59.0"
+# russh 0.59 依赖 rsa 0.10-rc，与 pkcs8 0.11 正式版存在 API 不兼容，钉住配套版本
+pkcs8 = { version = "=0.11.0-rc.11", features = ["pem"] }
+
+# 加密与安全
+argon2 = "0.5"
+rand = "0.8"
+sha2 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+pem = "3.0"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "local-time", "chrono"] }
+tracing-appender = "0.2"
+
+# 错误处理
+anyhow = "1"
+thiserror = "2"
+
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+
+# 网络
+ipnet = "2"
+socket2 = "0.6"
+
+# 系统集成
+libc = "0.2"
+nix = { version = "0.31", features = ["user", "fs", "socket"] }
+fs2 = "0.4"
+
+# GUI
+gtk = "0.18"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = 3

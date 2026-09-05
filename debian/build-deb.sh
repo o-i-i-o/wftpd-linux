@@ -211,7 +211,7 @@ PACKAGE_NAME="wftpg"
 if [ -n "$CUSTOM_VERSION" ]; then
     VERSION="$CUSTOM_VERSION"
 else
-    VERSION=$(get_version_from_cargo "${PROJECT_DIR}/Cargo.toml")
+    VERSION=$(grep -m1 "^version = " "${PROJECT_DIR}/Cargo.toml" | sed 's/version = "\(.*\)"/\1/' | tr -d '"' | head -1)
 fi
 
 if [ -z "$TARGET_ARCH" ]; then
@@ -281,20 +281,12 @@ log_info "[3/9] 创建 DEB 包目录结构..."
 DEB_DIR="${BUILD_DIR}/${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}"
 mkdir -p "${DEB_DIR}/DEBIAN"
 mkdir -p "${DEB_DIR}/usr/bin"
-mkdir -p "${DEB_DIR}/usr/libexec"
 mkdir -p "${DEB_DIR}/usr/share/applications"
 mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps"
 mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps"
 mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/48x48/apps"
-mkdir -p "${DEB_DIR}/usr/share/polkit-1/actions"
-mkdir -p "${DEB_DIR}/lib/systemd/system"
+mkdir -p "${DEB_DIR}/usr/lib/systemd/user"
 mkdir -p "${DEB_DIR}/usr/share/doc/${PACKAGE_NAME}"
-mkdir -p "${DEB_DIR}/etc/wftpg"
-mkdir -p "${DEB_DIR}/etc/wftpg/keys"
-mkdir -p "${DEB_DIR}/var/log/wftpg"
-mkdir -p "${DEB_DIR}/var/lib/wftpg"
-mkdir -p "${DEB_DIR}/var/lib/wftpg/ssh"
-mkdir -p "${DEB_DIR}/var/lib/wftpg/share"
 mkdir -p "${DEB_DIR}/usr/share/${PACKAGE_NAME}"
 
 log_info "[4/9] 复制可执行文件..."
@@ -373,75 +365,19 @@ else
     log_warning "  未安装ImageMagick，跳过PNG图标生成"
 fi
 
-log_info "[7/9] 复制 PolicyKit 和 Systemd 配置..."
-if [ -f "${SCRIPT_DIR}/com.wftpg.pkexec.policy" ]; then
-    cp "${SCRIPT_DIR}/com.wftpg.pkexec.policy" "${DEB_DIR}/usr/share/polkit-1/actions/"
-    chmod 644 "${DEB_DIR}/usr/share/polkit-1/actions/com.wftpg.pkexec.policy"
-    log_info "  已复制：com.wftpg.pkexec.policy"
-fi
-
+log_info "[7/9] 复制 systemd 用户服务单元..."
 if [ -f "${SCRIPT_DIR}/wftpd.service" ]; then
-    cp "${SCRIPT_DIR}/wftpd.service" "${DEB_DIR}/lib/systemd/system/"
-    chmod 644 "${DEB_DIR}/lib/systemd/system/wftpd.service"
-    log_info "  已复制：wftpd.service"
+    cp "${SCRIPT_DIR}/wftpd.service" "${DEB_DIR}/usr/lib/systemd/user/"
+    chmod 644 "${DEB_DIR}/usr/lib/systemd/user/wftpd.service"
+    log_info "  已复制：wftpd.service（用户服务，无需 root）"
 fi
 
-log_info "[8/9] 创建配置文件模板..."
-cat > "${DEB_DIR}/etc/wftpg/config.toml.example" << 'EOF'
-# WFTPG 配置文件
-# 复制此文件到 /etc/wftpg/config.toml 进行自定义配置
-
-[server]
-bind_ip = "0.0.0.0"
-ftp_port = 21
-sftp_port = 22
-max_connections = 100
-connection_timeout = 300
-idle_timeout = 600
-
-[ftp]
-enabled = true
-bind_ip = "0.0.0.0"
-default_home = "/var/lib/wftpg/share"
-passive_ports = [50000, 51000]
-welcome_message = "Welcome to WFTPG FTP Server"
-allow_anonymous = false
-max_speed_kbps = 0
-encoding = "UTF-8"
-
-[sftp]
-enabled = true
-bind_ip = "0.0.0.0"
-default_home = "/var/lib/wftpg/share"
-host_key_path = "/var/lib/wftpg/ssh/ssh_host_rsa_key"
-max_auth_attempts = 3
-auth_timeout = 60
-log_level = "info"
-
-[security]
-allowed_ips = ["0.0.0.0/0"]
-denied_ips = []
-max_login_attempts = 5
-ban_duration = 300
-require_ssl = false
-
-[logging]
-log_dir = "/var/log/wftpg"
-log_level = "info"
-max_log_size = 10485760
-max_log_files = 10
-log_to_file = true
-log_to_gui = true
-EOF
-chmod 644 "${DEB_DIR}/etc/wftpg/config.toml.example"
-
-log_info "创建默认用户配置..."
-cat > "${DEB_DIR}/etc/wftpg/users.json.example" << 'EOF'
-{
-  "users": {}
-}
-EOF
-chmod 644 "${DEB_DIR}/etc/wftpg/users.json.example"
+log_info "[8/9] 安装配置模板..."
+if [ -f "${PROJECT_DIR}/config_template.toml" ]; then
+    cp "${PROJECT_DIR}/config_template.toml" "${DEB_DIR}/usr/share/${PACKAGE_NAME}/config_template.toml"
+    chmod 644 "${DEB_DIR}/usr/share/${PACKAGE_NAME}/config_template.toml"
+    log_info "  已复制：config_template.toml（实际配置位于 ~/.config/wftpd/config.toml）"
+fi
 
 log_info "[9/9] 创建DEBIAN控制文件..."
 
@@ -461,7 +397,7 @@ Description-zh_CN: SFTP/FTP图形化管理工具
  使用纯Rust + GTK实现，提供友好的用户界面来管理
  SFTP和FTP服务器。
 Homepage: https://github.com/wftpg/wftpg
-Depends: libgtk-3-0, libc6, policykit-1
+Depends: libgtk-3-0, libc6
 Recommends: openssh-server
 Suggests: proftpd-basic
 Installed-Size: $(du -sk "${DEB_DIR}" | cut -f1)
@@ -495,7 +431,7 @@ ${PACKAGE_NAME} (${VERSION}) stable; urgency=medium
   * Release version ${VERSION}
   * Support SFTP and FTP server management
   * GTK3 GUI interface
-  * PolicyKit integration for root privileges
+  * Per-user systemd service model (no root needed)
   * Multi-architecture support
 
  -- WFTPG Developer <developer@wftpg.com>  ${CHANGELOG_DATE}
@@ -532,26 +468,9 @@ License: MIT
  SOFTWARE.
 EOF
 
-log_info "创建conffiles文件..."
-cat > "${DEB_DIR}/DEBIAN/conffiles" << EOF
-/etc/wftpg/config.toml.example
-EOF
-
 log_info "设置目录权限..."
 chown -R root:root "${DEB_DIR}"
 chmod -R 755 "${DEB_DIR}/usr/bin"
-
-# 配置文件和日志目录设置为 wftpg:wftpg（安装时由 postinst 处理）
-# 先检查目录是否存在，避免权限设置失败
-for dir in "${DEB_DIR}/etc/wftpg" "${DEB_DIR}/etc/wftpg/keys" "${DEB_DIR}/var/log/wftpg" "${DEB_DIR}/var/lib/wftpg" "${DEB_DIR}/var/lib/wftpg/ssh" "${DEB_DIR}/var/lib/wftpg/share"; do
-    if [ -d "$dir" ]; then
-        chmod 755 "$dir"
-    else
-        log_warning "目录不存在，跳过权限设置：$dir"
-    fi
-done
-
-chmod 644 "${DEB_DIR}/etc/wftpg/config.toml.example"
 
 log_info "构建DEB包..."
 mkdir -p "${OUTPUT_DIR}"

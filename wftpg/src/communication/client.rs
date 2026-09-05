@@ -1,344 +1,230 @@
-use anyhow::Result;
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+//! gRPC(tonic over UDS) 客户端封装。
+//!
+//! 函数签名与旧 IPC 客户端保持一致：阻塞式、返回 `anyhow::Result`，
+//! UI 侧在独立线程中调用（见 log_tab / user_tab 等的用法）。
 
-use super::protocol::*;
+use std::sync::OnceLock;
 
-static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+use anyhow::{Result, anyhow};
+use hyper_util::rt::TokioIo;
+use tonic::transport::{Channel, Endpoint};
+use tower::service_fn;
+use wftpd_common::paths;
+use wftpd_common::{FileLogEntryJson, LogEntryJson};
+use wftpd_proto::wftpd::v1::service_selector::Which;
+use wftpd_proto::{
+    ControlClient, GetFileOpLogContentRequest, GetLogFileContentRequest, GetRecentLogsRequest,
+    GetStatusRequest, SaveConfigRequest, SaveUsersRequest, ServiceSelector, WriteAuditLogRequest,
+};
 
-fn next_request_id() -> u64 {
-    REQUEST_ID.fetch_add(1, Ordering::SeqCst)
-}
-
-async fn send_request(command: IpcCommand) -> Result<IpcResponse> {
-    let socket_path = Path::new(SOCKET_PATH);
-    
-    if !socket_path.exists() {
-        return Err(anyhow::anyhow!("IPC socket not found: {}. Is wftpd service running?", SOCKET_PATH));
-    }
-    
-    let stream = UnixStream::connect(socket_path).await?;
-    let (reader, mut writer) = stream.into_split();
-    
-    let request = IpcRequest::new(next_request_id(), command);
-    let request_json = serde_json::to_string(&request)?;
-    writer.write_all(format!("{}\n", request_json).as_bytes()).await?;
-    
-    let mut reader = BufReader::new(reader);
-    let mut response_line = String::new();
-    reader.read_line(&mut response_line).await?;
-    
-    let response: IpcResponse = serde_json::from_str(response_line.trim())?;
-    Ok(response)
-}
-
-pub struct IpcClient;
-
-impl IpcClient {
-    pub fn get_status() -> Result<ServerStatus> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::GetStatus).await?;
-            match response.result {
-                IpcResult::Status { ftp_running, sftp_running } => Ok(ServerStatus {
-                    ftp_running,
-                    sftp_running,
-                }),
-                IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-                _ => Err(anyhow::anyhow!("Unexpected response type")),
-            }
-        })
-    }
-}
-
-pub fn restart_service() -> Result<IpcResponseWrapper> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::RestartService).await?;
-        Ok(IpcResponseWrapper::from(response))
+/// 进程级共享的 tokio Runtime（GTK 主循环不参与异步调度）
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("failed to build tokio runtime")
     })
 }
 
-impl IpcClient {
-    pub fn reload_config() -> Result<()> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::ReloadConfig).await?;
-            match response.result {
-                IpcResult::Success { .. } => Ok(()),
-                IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-                _ => Err(anyhow::anyhow!("Unexpected response type")),
-            }
-        })
+async fn connect() -> Result<ControlClient<Channel>> {
+    let socket_path = paths::socket_path();
+    if !socket_path.exists() {
+        return Err(anyhow!(connect_error_hint()));
     }
 
-    pub fn get_logs(count: usize) -> Result<Vec<LogEntryJson>> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::GetLogs { count }).await?;
-            match response.result {
-                IpcResult::Logs { entries } => Ok(entries),
-                IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-                _ => Err(anyhow::anyhow!("Unexpected response type")),
+    let path = socket_path.clone();
+    let channel = Endpoint::from_static("http://unix")
+        .connect_with_connector(service_fn(move |_: tonic::transport::Uri| {
+            let path = path.clone();
+            async move {
+                let stream = tokio::net::UnixStream::connect(path).await?;
+                Ok::<_, std::io::Error>(TokioIo::new(stream))
             }
-        })
-    }
+        }))
+        .await
+        .map_err(|e| anyhow!("连接 wftpd 失败 ({}): {e}", socket_path.display()))?;
 
-    pub fn config_exists() -> Result<bool> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::ConfigExists).await?;
-            match response.result {
-                IpcResult::Bool { value } => Ok(value),
-                IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-                _ => Err(anyhow::anyhow!("Unexpected response type")),
-            }
-        })
-    }
-
-    pub fn users_exists() -> Result<bool> {
-        with_runtime(async {
-            let response = send_request(IpcCommand::UsersExists).await?;
-            match response.result {
-                IpcResult::Bool { value } => Ok(value),
-                IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-                _ => Err(anyhow::anyhow!("Unexpected response type")),
-            }
-        })
-    }
+    Ok(ControlClient::new(channel))
 }
+
+pub fn connect_error_hint() -> String {
+    format!(
+        "未找到 wftpd 控制套接字 ({}),后端服务可能未运行。可执行: systemctl --user start wftpd",
+        paths::socket_path().display()
+    )
+}
+
+fn run<F, T>(f: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    runtime().block_on(f)
+}
+
+// ===== 服务状态与生命周期 =====
 
 #[derive(Debug, Clone)]
 pub struct ServerStatus {
     pub ftp_running: bool,
     pub sftp_running: bool,
+    pub version: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct IpcResponseWrapper {
-    pub success: bool,
-    pub message: String,
+pub fn get_status() -> Result<ServerStatus> {
+    run(async {
+        let mut client = connect().await?;
+        let response = client.get_status(GetStatusRequest {}).await?;
+        let status = response.into_inner();
+        Ok(ServerStatus {
+            ftp_running: status.ftp_running,
+            sftp_running: status.sftp_running,
+            version: status.version,
+        })
+    })
 }
 
-impl From<IpcResponse> for IpcResponseWrapper {
-    fn from(response: IpcResponse) -> Self {
-        match response.result {
-            IpcResult::Success { message } => Self {
-                success: true,
-                message,
-            },
-            IpcResult::Error { message } => Self {
-                success: false,
-                message,
-            },
-            _ => Self {
-                success: false,
-                message: "Unexpected response type".to_string(),
-            },
-        }
+fn selector(which: Which) -> ServiceSelector {
+    ServiceSelector {
+        which: which as i32,
     }
 }
 
-pub fn with_runtime<F, T>(f: F) -> Result<T>
-where
-    F: std::future::Future<Output = Result<T>>,
-{
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(f)
+fn op_result(reply: wftpd_proto::OpReply) -> Result<()> {
+    if reply.success {
+        Ok(())
+    } else {
+        Err(anyhow!("{}", reply.message))
+    }
 }
 
-pub fn read_config() -> Result<String> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::GetConfig).await?;
-        match response.result {
-            IpcResult::Config { content } => Ok(content),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
+pub fn start_service(which: Which) -> Result<()> {
+    run(async {
+        let mut client = connect().await?;
+        let response = client.start_service(selector(which)).await?;
+        op_result(response.into_inner())
     })
 }
 
+pub fn stop_service(which: Which) -> Result<()> {
+    run(async {
+        let mut client = connect().await?;
+        let response = client.stop_service(selector(which)).await?;
+        op_result(response.into_inner())
+    })
+}
+
+pub fn restart_service(which: Which) -> Result<()> {
+    run(async {
+        let mut client = connect().await?;
+        let response = client.restart_service(selector(which)).await?;
+        op_result(response.into_inner())
+    })
+}
+
+// ===== 配置与用户 =====
+
+/// 保存配置（后端负责校验与落盘），返回规范化后的配置内容
 pub fn write_config(content: &str) -> Result<String> {
     let content = content.to_string();
-    with_runtime(async move {
-        let response = send_request(IpcCommand::SaveConfig { content }).await?;
-        match response.result {
-            IpcResult::ConfigSaved { content, .. } => Ok(content),
-            IpcResult::Success { message } => Err(anyhow::anyhow!("Unexpected success response: {}", message)),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
+    run(async {
+        let mut client = connect().await?;
+        let response = client
+            .save_config(SaveConfigRequest { content })
+            .await
+            .map_err(|e| anyhow!("保存配置失败: {e}"))?;
+        Ok(response.into_inner().content)
     })
 }
 
-pub fn read_users() -> Result<String> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::GetUsers).await?;
-        match response.result {
-            IpcResult::Users { content } => Ok(content),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
+/// 保存用户库（后端负责校验与落盘），返回实际保存的内容
 pub fn write_users(content: &str) -> Result<String> {
     let content = content.to_string();
-    with_runtime(async move {
-        let response = send_request(IpcCommand::SaveUsers { content }).await?;
-        match response.result {
-            IpcResult::UsersSaved { content, .. } => Ok(content),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
+    run(async {
+        let mut client = connect().await?;
+        let response = client
+            .save_users(SaveUsersRequest { content })
+            .await
+            .map_err(|e| anyhow!("保存用户失败: {e}"))?;
+        Ok(response.into_inner().content)
     })
 }
 
 pub fn write_audit_log(user: &str, action: &str, target: &str, details: &str) -> Result<()> {
-    let user = user.to_string();
-    let action = action.to_string();
-    let target = target.to_string();
-    let details = details.to_string();
-    with_runtime(async move {
-        let response = send_request(IpcCommand::WriteAuditLog {
-            user,
-            action,
-            target,
-            details,
-        }).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
+    let request = WriteAuditLogRequest {
+        user: user.to_string(),
+        action: action.to_string(),
+        target: target.to_string(),
+        details: details.to_string(),
+    };
+    run(async {
+        let mut client = connect().await?;
+        let response = client.write_audit_log(request).await?;
+        op_result(response.into_inner())
     })
 }
 
-#[derive(Debug, Clone)]
-pub struct InitialState {
-    pub config: String,
-    pub users: String,
-    pub ftp_running: bool,
-    pub sftp_running: bool,
-}
+// ===== 日志 =====
 
-pub fn get_initial_state() -> Result<InitialState> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::GetInitialState).await?;
-        match response.result {
-            IpcResult::InitialState { config, users, ftp_running, sftp_running } => Ok(InitialState {
-                config,
-                users,
-                ftp_running,
-                sftp_running,
-            }),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
+/// 读取后端内存环形缓冲中的最近日志
+pub fn get_logs(count: usize) -> Result<Vec<LogEntryJson>> {
+    run(async {
+        let mut client = connect().await?;
+        let response = client
+            .get_recent_logs(GetRecentLogsRequest {
+                count: count as u32,
+            })
+            .await
+            .map_err(|e| anyhow!("读取日志失败: {e}"))?;
+        Ok(response
+            .into_inner()
+            .entries
+            .into_iter()
+            .map(Into::into)
+            .collect())
     })
 }
 
-pub fn ensure_user_directories() -> Result<()> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::EnsureUserDirectories).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn get_log_files() -> Result<Vec<LogFileEntry>> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::GetLogFiles).await?;
-        match response.result {
-            IpcResult::LogFiles { files } => Ok(files),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
+/// 读取指定程序日志文件的最后 count 条
 pub fn get_log_file_content(path: &str, count: usize) -> Result<Vec<LogEntryJson>> {
     let path = path.to_string();
-    with_runtime(async move {
-        let response = send_request(IpcCommand::GetLogFileContent { path, count }).await?;
-        match response.result {
-            IpcResult::Logs { entries } => Ok(entries),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
+    run(async {
+        let mut client = connect().await?;
+        let response = client
+            .get_log_file_content(GetLogFileContentRequest {
+                path,
+                count: count as u32,
+            })
+            .await
+            .map_err(|e| anyhow!("读取日志文件失败: {e}"))?;
+        Ok(response
+            .into_inner()
+            .entries
+            .into_iter()
+            .map(Into::into)
+            .collect())
     })
 }
 
-pub fn get_file_log_files() -> Result<Vec<LogFileEntry>> {
-    with_runtime(async {
-        let response = send_request(IpcCommand::GetFileLogFiles).await?;
-        match response.result {
-            IpcResult::FileLogFiles { files } => Ok(files),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
+/// 读取文件操作审计日志；path == "current" 表示内存缓冲中的最新记录
 pub fn get_file_log_file_content(path: &str, count: usize) -> Result<Vec<FileLogEntryJson>> {
     let path = path.to_string();
-    with_runtime(async move {
-        let response = send_request(IpcCommand::GetFileLogFileContent { path, count }).await?;
-        match response.result {
-            IpcResult::FileLogEntries { entries } => Ok(entries),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn save_log_config(
-    log_dir: &str,
-    log_level: &str,
-    max_log_size: u64,
-    max_log_files: usize,
-    _log_to_file: bool,
-    enable_gui_logging: bool,
-) -> Result<()> {
-    let log_dir = log_dir.to_string();
-    let log_level = log_level.to_string();
-    with_runtime(async move {
-        let response = send_request(IpcCommand::SaveLogConfig {
-            log_dir,
-            log_level,
-            max_log_size,
-            max_log_files,
-            _log_to_file,
-            enable_gui_logging,
-        }).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn setup_directory_permissions(path: &str) -> Result<()> {
-    let path = path.to_string();
-    with_runtime(async move {
-        let response = send_request(IpcCommand::SetupDirectoryPermissions { path }).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
-    })
-}
-
-pub fn create_user_directory(path: &str) -> Result<()> {
-    let path = path.to_string();
-    with_runtime(async move {
-        let response = send_request(IpcCommand::CreateUserDirectory { path }).await?;
-        match response.result {
-            IpcResult::Success { .. } => Ok(()),
-            IpcResult::Error { message } => Err(anyhow::anyhow!("{}", message)),
-            _ => Err(anyhow::anyhow!("Unexpected response type")),
-        }
+    run(async {
+        let mut client = connect().await?;
+        let response = client
+            .get_file_op_log_content(GetFileOpLogContentRequest {
+                path,
+                count: count as u32,
+            })
+            .await
+            .map_err(|e| anyhow!("读取文件操作日志失败: {e}"))?;
+        Ok(response
+            .into_inner()
+            .entries
+            .into_iter()
+            .map(Into::into)
+            .collect())
     })
 }

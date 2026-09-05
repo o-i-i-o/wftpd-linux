@@ -1,13 +1,13 @@
-pub mod protocol;
+//! 前后端通信：基于 gRPC(tonic over UDS) 的客户端封装。
+//!
+//! GTK 主线程不宜直接运行异步运行时，这里提供一个进程级共享的 tokio
+//! Runtime，每个调用在该运行时上阻塞执行单次 RPC（与旧 IPC 行为一致，
+//! UI 侧已在独立线程中调用这些函数）。
+
 pub mod client;
 
-pub use protocol::{
-    IpcRequest, IpcResponse, IpcCommand, IpcResult, LogEntryJson, LogFileEntry, FileLogEntryJson,
-    SOCKET_PATH, CONFIG_PATH, USERS_PATH, AUDIT_LOG_PATH,
-};
 pub use client::{
-    IpcClient, ServerStatus, IpcResponseWrapper, with_runtime, read_config, write_config, 
-    read_users, write_users, write_audit_log, get_log_files, get_log_file_content,
-    get_file_log_files, get_file_log_file_content, save_log_config, setup_directory_permissions, 
-    create_user_directory, get_initial_state, ensure_user_directories, restart_service,
+    ServerStatus, connect_error_hint, get_file_log_file_content, get_log_file_content, get_logs,
+    get_status, restart_service, start_service, stop_service, write_audit_log, write_config,
+    write_users,
 };

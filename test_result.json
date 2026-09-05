@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-04-03T13:11:39.856277",
+  "timestamp": "2026-09-05T13:35:27.315282",
   "config": {
     "host": "127.0.0.1",
     "ftp_port": 2121,
@@ -12,7 +12,7 @@
     "passed": 17,
     "failed": 0,
     "success_rate": "100.00%",
-    "duration_seconds": 0.6,
+    "duration_seconds": 0.98,
     "errors": []
   },
   "sftp": {
@@ -21,7 +21,7 @@
     "passed": 11,
     "failed": 4,
     "success_rate": "73.33%",
-    "duration_seconds": 0.15,
+    "duration_seconds": 0.6,
     "errors": [
       {
         "test": "CHMOD 修改权限",

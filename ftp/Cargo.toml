@@ -1,0 +1,21 @@
+[package]
+name = "wftpd-ftp"
+description = "WFTPD FTP 服务器实现"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+wftpd-common = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+socket2 = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+pem = { workspace = true }

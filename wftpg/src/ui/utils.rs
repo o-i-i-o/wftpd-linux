@@ -1,16 +1,16 @@
-use gtk::prelude::*;
 use gtk::ApplicationWindow;
+use gtk::prelude::*;
 
 pub fn setup_window_for_uos(window: &ApplicationWindow) {
     set_window_icon(window);
-    
+
     let display = gtk::gdk::Display::default();
     if let Some(display) = display {
         let monitor = display.primary_monitor();
         if let Some(monitor) = monitor {
             let geometry = monitor.geometry();
             let scale_factor = monitor.scale_factor();
-            
+
             if scale_factor > 1 {
                 let width = (geometry.width() as f32 * 0.7 / scale_factor as f32) as i32;
                 let height = (geometry.height() as f32 * 0.7 / scale_factor as f32) as i32;
@@ -32,15 +32,18 @@ pub fn set_window_icon(window: &ApplicationWindow) {
     for path in &icon_paths {
         let icon_path = std::path::Path::new(path);
         if icon_path.exists()
-            && let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_file(icon_path) {
-                window.set_icon(Some(&pixbuf));
-                return;
-            }
+            && let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_file(icon_path)
+        {
+            window.set_icon(Some(&pixbuf));
+            return;
+        }
     }
 
     if let Some(icon_theme) = gtk::IconTheme::default() {
         for size in [48, 64, 128, 256] {
-            if let Ok(Some(pixbuf)) = icon_theme.load_icon("wftpg", size, gtk::IconLookupFlags::empty()) {
+            if let Ok(Some(pixbuf)) =
+                icon_theme.load_icon("wftpg", size, gtk::IconLookupFlags::empty())
+            {
                 window.set_icon(Some(&pixbuf));
                 return;
             }

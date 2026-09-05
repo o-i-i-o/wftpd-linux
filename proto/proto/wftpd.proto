@@ -1,0 +1,200 @@
+// WFTPD 前后端通信契约
+//
+// 后端 wftpd 通过 UDS（$XDG_RUNTIME_DIR/wftpd/wftpd.sock）提供该服务，
+// 前端 wftp-gui 连接同一套接字进行配置管理、服务控制与日志查看。
+// 前后端以同一桌面用户运行，套接字权限 0600 即可保证隔离。
+
+syntax = "proto3";
+
+package wftpd.v1;
+
+// 控制服务：服务生命周期、配置与用户管理、日志读取/订阅、目录辅助操作
+service Control {
+  // ---- 服务生命周期 ----
+  rpc GetStatus(GetStatusRequest) returns (StatusReply);
+  rpc StartService(ServiceSelector) returns (OpReply);
+  rpc StopService(ServiceSelector) returns (OpReply);
+  rpc RestartService(ServiceSelector) returns (OpReply);
+
+  // ---- 配置与用户 ----
+  rpc GetConfig(GetConfigRequest) returns (ConfigReply);
+  // 保存前会做 TOML 解析与业务校验，校验失败不落盘；
+  // 成功时返回规范化后的配置内容
+  rpc SaveConfig(SaveConfigRequest) returns (ConfigReply);
+  rpc GetUsers(GetUsersRequest) returns (UsersReply);
+  rpc SaveUsers(SaveUsersRequest) returns (UsersReply);
+  rpc GetInitialState(GetInitialStateRequest) returns (InitialStateReply);
+
+  // ---- 目录辅助操作（保证后端是唯一写入者） ----
+  rpc EnsureUserDirectories(EnsureUserDirectoriesRequest) returns (OpReply);
+  rpc CreateUserDirectory(CreateUserDirectoryRequest) returns (OpReply);
+  rpc SetupDirectoryPermissions(SetupDirectoryPermissionsRequest) returns (OpReply);
+
+  // ---- 日志 ----
+  // 读取内存环形缓冲中的最近日志
+  rpc GetRecentLogs(GetRecentLogsRequest) returns (LogsReply);
+  // 服务端流：先推送最近 tail_count 条历史，随后持续推送新日志
+  rpc WatchLogs(WatchLogsRequest) returns (stream LogEvent);
+  // 程序日志文件（tracing-appender 按天滚动）
+  rpc GetLogFiles(GetLogFilesRequest) returns (LogFilesReply);
+  rpc GetLogFileContent(GetLogFileContentRequest) returns (LogsReply);
+  // 文件操作审计日志
+  rpc GetFileOpLogFiles(GetFileOpLogFilesRequest) returns (LogFilesReply);
+  rpc GetFileOpLogContent(GetFileOpLogContentRequest) returns (FileOpLogsReply);
+  rpc SaveLogConfig(SaveLogConfigRequest) returns (OpReply);
+  rpc WriteAuditLog(WriteAuditLogRequest) returns (OpReply);
+}
+
+// ===== 服务生命周期 =====
+
+message GetStatusRequest {}
+
+message StatusReply {
+  bool ftp_running = 1;
+  bool sftp_running = 2;
+  string version = 3;
+  string config_path = 4;
+  string users_path = 5;
+  string socket_path = 6;
+}
+
+message ServiceSelector {
+  enum Which {
+    ALL = 0;
+    FTP = 1;
+    SFTP = 2;
+  }
+  Which which = 1;
+}
+
+message OpReply {
+  bool success = 1;
+  string message = 2;
+}
+
+// ===== 配置与用户 =====
+
+message GetConfigRequest {}
+
+message ConfigReply {
+  // config.toml 原文（TOML），前端使用共享的 wftpd-common 类型解析
+  string content = 1;
+}
+
+message SaveConfigRequest {
+  string content = 1;
+}
+
+message GetUsersRequest {}
+
+message UsersReply {
+  // users.json 原文（JSON）
+  string content = 1;
+}
+
+message SaveUsersRequest {
+  string content = 1;
+}
+
+message GetInitialStateRequest {}
+
+message InitialStateReply {
+  string config = 1;
+  string users = 2;
+  bool ftp_running = 3;
+  bool sftp_running = 4;
+}
+
+// ===== 目录辅助操作 =====
+
+message EnsureUserDirectoriesRequest {}
+
+message CreateUserDirectoryRequest {
+  string path = 1;
+}
+
+message SetupDirectoryPermissionsRequest {
+  string path = 1;
+}
+
+// ===== 日志 =====
+
+message GetRecentLogsRequest {
+  uint32 count = 1;
+}
+
+message LogsReply {
+  repeated LogEntry entries = 1;
+}
+
+message WatchLogsRequest {
+  uint32 tail_count = 1;
+}
+
+message LogEvent {
+  LogEntry entry = 1;
+}
+
+message LogEntry {
+  string timestamp = 1;
+  string level = 2;
+  string source = 3;
+  string message = 4;
+  string client_ip = 5;
+  string username = 6;
+  string action = 7;
+}
+
+message GetLogFilesRequest {}
+
+message LogFilesReply {
+  repeated LogFileInfo files = 1;
+}
+
+message LogFileInfo {
+  string name = 1;
+  string path = 2;
+}
+
+message GetLogFileContentRequest {
+  string path = 1;
+  uint32 count = 2;
+}
+
+message GetFileOpLogFilesRequest {}
+
+message GetFileOpLogContentRequest {
+  string path = 1;
+  uint32 count = 2;
+}
+
+message FileOpLogsReply {
+  repeated FileOpLogEntry entries = 1;
+}
+
+message FileOpLogEntry {
+  string timestamp = 1;
+  string username = 2;
+  string client_ip = 3;
+  string operation = 4;
+  string file_path = 5;
+  uint64 file_size = 6;
+  string protocol = 7;
+  bool success = 8;
+  string message = 9;
+}
+
+message SaveLogConfigRequest {
+  string log_dir = 1;
+  string log_level = 2;
+  uint64 max_log_size = 3;
+  uint32 max_log_files = 4;
+  bool enable_gui_logging = 5;
+}
+
+message WriteAuditLogRequest {
+  string user = 1;
+  string action = 2;
+  string target = 3;
+  string details = 4;
+}

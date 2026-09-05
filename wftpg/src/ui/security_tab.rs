@@ -1,12 +1,12 @@
+use crate::AppState;
+use gtk::glib::clone;
 use gtk::prelude::*;
 use gtk::{
-    Box, Orientation, Label, Button, Entry, Frame, ScrolledWindow, TreeView, ListStore,
-    CellRendererText, TreeViewColumn, SpinButton, Adjustment,
+    Adjustment, Box, Button, CellRendererText, Entry, Frame, Label, ListStore, Orientation,
+    ScrolledWindow, SpinButton, TreeView, TreeViewColumn,
 };
-use gtk::glib::clone;
 use std::sync::{Arc, Mutex as StdMutex};
-use crate::AppState;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -35,17 +35,19 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
     row1.pack_start(&Label::new(Some("最大登录尝试次数:")), false, false, 0);
     let max_attempts_spin = create_spin_button(1.0, 20.0, 1.0);
     if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            max_attempts_spin.set_value(config.security.max_login_attempts as f64);
-        }
+        && let Ok(config) = s.config.try_lock()
+    {
+        max_attempts_spin.set_value(config.security.max_login_attempts as f64);
+    }
     row1.pack_start(&max_attempts_spin, false, false, 0);
 
     row1.pack_start(&Label::new(Some("封禁时长(秒):")), false, false, 0);
     let ban_duration_spin = create_spin_button(60.0, 86400.0, 60.0);
     if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            ban_duration_spin.set_value(config.security.ban_duration as f64);
-        }
+        && let Ok(config) = s.config.try_lock()
+    {
+        ban_duration_spin.set_value(config.security.ban_duration as f64);
+    }
     row1.pack_start(&ban_duration_spin, false, false, 0);
     box_.pack_start(&row1, false, false, 0);
 
@@ -61,7 +63,7 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
         clone!(@strong state_clone, @strong max_attempts_clone, @strong ban_duration_clone => move |_| {
             let max_attempts = max_attempts_clone.value() as u32;
             let ban_duration = ban_duration_clone.value() as u64;
-            
+
             let config_str = {
                 if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut config) = s.config.try_lock() {
@@ -71,7 +73,7 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
                     } else { return; }
                 } else { return; }
             };
-            
+
             match crate::communication::write_config(&config_str) {
                 Ok(saved_content) => {
                     if let Ok(s) = state_clone.try_lock()
@@ -256,7 +258,7 @@ fn create_security_mode_frame(container: &Box) {
     mode_label.set_markup(
         "<b>白名单模式:</b> 仅允许列表中的IP访问服务器\n\
          <b>黑名单模式:</b> 禁止列表中的IP访问服务器\n\
-         <b>优先级:</b> 黑名单优先于白名单"
+         <b>优先级:</b> 黑名单优先于白名单",
     );
     mode_box.pack_start(&mode_label, false, false, 0);
 
@@ -272,66 +274,102 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let ip_entry_clone = widgets.ip_entry.clone();
-    widgets.add_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong ip_entry_clone => move |_| {
-        let ip = ip_entry_clone.text();
-        if !ip.is_empty() {
-            let ip_str = ip.to_string();
-            if !validate_ip_or_cidr(&ip_str) {
-                warn!("Invalid IP or CIDR format: {}", ip_str);
-                return;
-            }
-            let store = store_clone.clone();
-            let ip_entry = ip_entry_clone.clone();
-            let ip_to_add = ip_str.clone();
-            
-            let config_str = {
-                if let Ok(s) = state_clone.try_lock() {
-                    if let Ok(mut config) = s.config.try_lock() {
-                        if !config.security.allowed_ips.contains(&ip_to_add) {
-                            config.security.allowed_ips.push(ip_to_add.clone());
-                        }
-                        toml::to_string_pretty(&*config).unwrap_or_default()
-                    } else { return; }
-                } else { return; }
-            };
-            
-            match crate::communication::write_config(&config_str) {
-                Ok(saved_content) => {
-                    if let Ok(s) = state_clone.try_lock()
-                        && let Ok(mut cfg) = s.config.try_lock()
-                            && let Ok(new_config) = toml::from_str(&saved_content) {
-                                *cfg = new_config;
+    widgets.add_btn.connect_clicked(
+        clone!(@strong state_clone, @strong store_clone, @strong ip_entry_clone => move |_| {
+            let ip = ip_entry_clone.text();
+            if !ip.is_empty() {
+                let ip_str = ip.to_string();
+                if !validate_ip_or_cidr(&ip_str) {
+                    warn!("Invalid IP or CIDR format: {}", ip_str);
+                    return;
+                }
+                let store = store_clone.clone();
+                let ip_entry = ip_entry_clone.clone();
+                let ip_to_add = ip_str.clone();
+
+                let config_str = {
+                    if let Ok(s) = state_clone.try_lock() {
+                        if let Ok(mut config) = s.config.try_lock() {
+                            if !config.security.allowed_ips.contains(&ip_to_add) {
+                                config.security.allowed_ips.push(ip_to_add.clone());
                             }
-                    refresh_whitelist(&store, &state_clone);
-                    ip_entry.set_text("");
-                    info!("IP {} added to whitelist", ip_to_add);
-                }
-                Err(e) => {
-                    error!("Failed to add IP to whitelist: {}", e);
+                            toml::to_string_pretty(&*config).unwrap_or_default()
+                        } else { return; }
+                    } else { return; }
+                };
+
+                match crate::communication::write_config(&config_str) {
+                    Ok(saved_content) => {
+                        if let Ok(s) = state_clone.try_lock()
+                            && let Ok(mut cfg) = s.config.try_lock()
+                                && let Ok(new_config) = toml::from_str(&saved_content) {
+                                    *cfg = new_config;
+                                }
+                        refresh_whitelist(&store, &state_clone);
+                        ip_entry.set_text("");
+                        info!("IP {} added to whitelist", ip_to_add);
+                    }
+                    Err(e) => {
+                        error!("Failed to add IP to whitelist: {}", e);
+                    }
                 }
             }
-        }
-    }));
+        }),
+    );
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let tree_clone = widgets.tree.clone();
-    widgets.delete_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
-        let selection = tree_clone.selection();
-        if let Some((model, iter)) = selection.selected() {
-            let ip: String = model.value(&iter, 0).get().unwrap_or_default();
+    widgets.delete_btn.connect_clicked(
+        clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+            let selection = tree_clone.selection();
+            if let Some((model, iter)) = selection.selected() {
+                let ip: String = model.value(&iter, 0).get().unwrap_or_default();
+                let store = store_clone.clone();
+                let ip_to_remove = ip.clone();
+
+                let config_str = {
+                    if let Ok(s) = state_clone.try_lock() {
+                        if let Ok(mut config) = s.config.try_lock() {
+                            config.security.allowed_ips.retain(|x| x != &ip_to_remove);
+                            toml::to_string_pretty(&*config).unwrap_or_default()
+                        } else { return; }
+                    } else { return; }
+                };
+
+                match crate::communication::write_config(&config_str) {
+                    Ok(saved_content) => {
+                        if let Ok(s) = state_clone.try_lock()
+                            && let Ok(mut cfg) = s.config.try_lock()
+                                && let Ok(new_config) = toml::from_str(&saved_content) {
+                                    *cfg = new_config;
+                                }
+                        refresh_whitelist(&store, &state_clone);
+                        info!("IP {} removed from whitelist", ip_to_remove);
+                    }
+                    Err(e) => {
+                        error!("Failed to remove IP from whitelist: {}", e);
+                    }
+                }
+            }
+        }),
+    );
+
+    let state_clone = Arc::clone(state);
+    let store_clone = widgets.store.clone();
+    widgets.clear_btn.connect_clicked(
+        clone!(@strong state_clone, @strong store_clone => move |_| {
             let store = store_clone.clone();
-            let ip_to_remove = ip.clone();
-            
+
             let config_str = {
                 if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut config) = s.config.try_lock() {
-                        config.security.allowed_ips.retain(|x| x != &ip_to_remove);
+                        config.security.allowed_ips.clear();
                         toml::to_string_pretty(&*config).unwrap_or_default()
                     } else { return; }
                 } else { return; }
             };
-            
+
             match crate::communication::write_config(&config_str) {
                 Ok(saved_content) => {
                     if let Ok(s) = state_clone.try_lock()
@@ -340,140 +378,148 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                                 *cfg = new_config;
                             }
                     refresh_whitelist(&store, &state_clone);
-                    info!("IP {} removed from whitelist", ip_to_remove);
+                    info!("Whitelist cleared");
                 }
                 Err(e) => {
-                    error!("Failed to remove IP from whitelist: {}", e);
+                    error!("Failed to clear whitelist: {}", e);
                 }
             }
-        }
-    }));
+        }),
+    );
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
-    widgets.clear_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
-        let store = store_clone.clone();
-        
-        let config_str = {
-            if let Ok(s) = state_clone.try_lock() {
-                if let Ok(mut config) = s.config.try_lock() {
-                    config.security.allowed_ips.clear();
-                    toml::to_string_pretty(&*config).unwrap_or_default()
-                } else { return; }
-            } else { return; }
-        };
-        
-        match crate::communication::write_config(&config_str) {
-            Ok(saved_content) => {
-                if let Ok(s) = state_clone.try_lock()
-                    && let Ok(mut cfg) = s.config.try_lock()
-                        && let Ok(new_config) = toml::from_str(&saved_content) {
-                            *cfg = new_config;
-                        }
-                refresh_whitelist(&store, &state_clone);
-                info!("Whitelist cleared");
-            }
-            Err(e) => {
-                error!("Failed to clear whitelist: {}", e);
-            }
-        }
-    }));
+    widgets.allow_all_btn.connect_clicked(
+        clone!(@strong state_clone, @strong store_clone => move |_| {
+            let store = store_clone.clone();
 
-    let state_clone = Arc::clone(state);
-    let store_clone = widgets.store.clone();
-    widgets.allow_all_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
-        let store = store_clone.clone();
-        
-        let config_str = {
-            if let Ok(s) = state_clone.try_lock() {
-                if let Ok(mut config) = s.config.try_lock() {
-                    config.security.allowed_ips = vec!["0.0.0.0/0".to_string()];
-                    toml::to_string_pretty(&*config).unwrap_or_default()
+            let config_str = {
+                if let Ok(s) = state_clone.try_lock() {
+                    if let Ok(mut config) = s.config.try_lock() {
+                        config.security.allowed_ips = vec!["0.0.0.0/0".to_string()];
+                        toml::to_string_pretty(&*config).unwrap_or_default()
+                    } else { return; }
                 } else { return; }
-            } else { return; }
-        };
-        
-        match crate::communication::write_config(&config_str) {
-            Ok(saved_content) => {
-                if let Ok(s) = state_clone.try_lock()
-                    && let Ok(mut cfg) = s.config.try_lock()
-                        && let Ok(new_config) = toml::from_str(&saved_content) {
-                            *cfg = new_config;
-                        }
-                refresh_whitelist(&store, &state_clone);
-                info!("Allow all IPs set");
+            };
+
+            match crate::communication::write_config(&config_str) {
+                Ok(saved_content) => {
+                    if let Ok(s) = state_clone.try_lock()
+                        && let Ok(mut cfg) = s.config.try_lock()
+                            && let Ok(new_config) = toml::from_str(&saved_content) {
+                                *cfg = new_config;
+                            }
+                    refresh_whitelist(&store, &state_clone);
+                    info!("Allow all IPs set");
+                }
+                Err(e) => {
+                    error!("Failed to set allow all IPs: {}", e);
+                }
             }
-            Err(e) => {
-                error!("Failed to set allow all IPs: {}", e);
-            }
-        }
-    }));
+        }),
+    );
 }
 
 fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistWidgets) {
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let ip_entry_clone = widgets.ip_entry.clone();
-    widgets.add_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong ip_entry_clone => move |_| {
-        let ip = ip_entry_clone.text();
-        if !ip.is_empty() {
-            let ip_str = ip.to_string();
-            if !validate_ip_or_cidr(&ip_str) {
-                warn!("Invalid IP or CIDR format: {}", ip_str);
-                return;
-            }
-            let store = store_clone.clone();
-            let ip_entry = ip_entry_clone.clone();
-            let ip_to_add = ip_str.clone();
-            
-            let config_str = {
-                if let Ok(s) = state_clone.try_lock() {
-                    if let Ok(mut config) = s.config.try_lock() {
-                        if !config.security.denied_ips.contains(&ip_to_add) {
-                            config.security.denied_ips.push(ip_to_add.clone());
-                        }
-                        toml::to_string_pretty(&*config).unwrap_or_default()
-                    } else { return; }
-                } else { return; }
-            };
-            
-            match crate::communication::write_config(&config_str) {
-                Ok(saved_content) => {
-                    if let Ok(s) = state_clone.try_lock()
-                        && let Ok(mut cfg) = s.config.try_lock()
-                            && let Ok(new_config) = toml::from_str(&saved_content) {
-                                *cfg = new_config;
+    widgets.add_btn.connect_clicked(
+        clone!(@strong state_clone, @strong store_clone, @strong ip_entry_clone => move |_| {
+            let ip = ip_entry_clone.text();
+            if !ip.is_empty() {
+                let ip_str = ip.to_string();
+                if !validate_ip_or_cidr(&ip_str) {
+                    warn!("Invalid IP or CIDR format: {}", ip_str);
+                    return;
+                }
+                let store = store_clone.clone();
+                let ip_entry = ip_entry_clone.clone();
+                let ip_to_add = ip_str.clone();
+
+                let config_str = {
+                    if let Ok(s) = state_clone.try_lock() {
+                        if let Ok(mut config) = s.config.try_lock() {
+                            if !config.security.denied_ips.contains(&ip_to_add) {
+                                config.security.denied_ips.push(ip_to_add.clone());
                             }
-                    refresh_blacklist(&store, &state_clone);
-                    ip_entry.set_text("");
-                    info!("IP {} added to blacklist", ip_to_add);
-                }
-                Err(e) => {
-                    error!("Failed to add IP to blacklist: {}", e);
+                            toml::to_string_pretty(&*config).unwrap_or_default()
+                        } else { return; }
+                    } else { return; }
+                };
+
+                match crate::communication::write_config(&config_str) {
+                    Ok(saved_content) => {
+                        if let Ok(s) = state_clone.try_lock()
+                            && let Ok(mut cfg) = s.config.try_lock()
+                                && let Ok(new_config) = toml::from_str(&saved_content) {
+                                    *cfg = new_config;
+                                }
+                        refresh_blacklist(&store, &state_clone);
+                        ip_entry.set_text("");
+                        info!("IP {} added to blacklist", ip_to_add);
+                    }
+                    Err(e) => {
+                        error!("Failed to add IP to blacklist: {}", e);
+                    }
                 }
             }
-        }
-    }));
+        }),
+    );
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let tree_clone = widgets.tree.clone();
-    widgets.delete_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
-        let selection = tree_clone.selection();
-        if let Some((model, iter)) = selection.selected() {
-            let ip: String = model.value(&iter, 0).get().unwrap_or_default();
+    widgets.delete_btn.connect_clicked(
+        clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+            let selection = tree_clone.selection();
+            if let Some((model, iter)) = selection.selected() {
+                let ip: String = model.value(&iter, 0).get().unwrap_or_default();
+                let store = store_clone.clone();
+                let ip_to_remove = ip.clone();
+
+                let config_str = {
+                    if let Ok(s) = state_clone.try_lock() {
+                        if let Ok(mut config) = s.config.try_lock() {
+                            config.security.denied_ips.retain(|x| x != &ip_to_remove);
+                            toml::to_string_pretty(&*config).unwrap_or_default()
+                        } else { return; }
+                    } else { return; }
+                };
+
+                match crate::communication::write_config(&config_str) {
+                    Ok(saved_content) => {
+                        if let Ok(s) = state_clone.try_lock()
+                            && let Ok(mut cfg) = s.config.try_lock()
+                                && let Ok(new_config) = toml::from_str(&saved_content) {
+                                    *cfg = new_config;
+                                }
+                        refresh_blacklist(&store, &state_clone);
+                        info!("IP {} removed from blacklist", ip_to_remove);
+                    }
+                    Err(e) => {
+                        error!("Failed to remove IP from blacklist: {}", e);
+                    }
+                }
+            }
+        }),
+    );
+
+    let state_clone = Arc::clone(state);
+    let store_clone = widgets.store.clone();
+    widgets.clear_btn.connect_clicked(
+        clone!(@strong state_clone, @strong store_clone => move |_| {
             let store = store_clone.clone();
-            let ip_to_remove = ip.clone();
-            
+
             let config_str = {
                 if let Ok(s) = state_clone.try_lock() {
                     if let Ok(mut config) = s.config.try_lock() {
-                        config.security.denied_ips.retain(|x| x != &ip_to_remove);
+                        config.security.denied_ips.clear();
                         toml::to_string_pretty(&*config).unwrap_or_default()
                     } else { return; }
                 } else { return; }
             };
-            
+
             match crate::communication::write_config(&config_str) {
                 Ok(saved_content) => {
                     if let Ok(s) = state_clone.try_lock()
@@ -482,44 +528,14 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
                                 *cfg = new_config;
                             }
                     refresh_blacklist(&store, &state_clone);
-                    info!("IP {} removed from blacklist", ip_to_remove);
+                    info!("Blacklist cleared");
                 }
                 Err(e) => {
-                    error!("Failed to remove IP from blacklist: {}", e);
+                    error!("Failed to clear blacklist: {}", e);
                 }
             }
-        }
-    }));
-
-    let state_clone = Arc::clone(state);
-    let store_clone = widgets.store.clone();
-    widgets.clear_btn.connect_clicked(clone!(@strong state_clone, @strong store_clone => move |_| {
-        let store = store_clone.clone();
-        
-        let config_str = {
-            if let Ok(s) = state_clone.try_lock() {
-                if let Ok(mut config) = s.config.try_lock() {
-                    config.security.denied_ips.clear();
-                    toml::to_string_pretty(&*config).unwrap_or_default()
-                } else { return; }
-            } else { return; }
-        };
-        
-        match crate::communication::write_config(&config_str) {
-            Ok(saved_content) => {
-                if let Ok(s) = state_clone.try_lock()
-                    && let Ok(mut cfg) = s.config.try_lock()
-                        && let Ok(new_config) = toml::from_str(&saved_content) {
-                            *cfg = new_config;
-                        }
-                refresh_blacklist(&store, &state_clone);
-                info!("Blacklist cleared");
-            }
-            Err(e) => {
-                error!("Failed to clear blacklist: {}", e);
-            }
-        }
-    }));
+        }),
+    );
 }
 
 fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {
@@ -533,11 +549,11 @@ fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {
 
 fn validate_ip_or_cidr(input: &str) -> bool {
     use std::net::{Ipv4Addr, Ipv6Addr};
-    
+
     if input == "0.0.0.0/0" || input == "::/0" {
         return true;
     }
-    
+
     if input.parse::<Ipv4Addr>().is_ok() {
         return true;
     }
@@ -550,28 +566,30 @@ fn validate_ip_or_cidr(input: &str) -> bool {
     if input.parse::<ipnet::Ipv6Net>().is_ok() {
         return true;
     }
-    
+
     false
 }
 
 fn refresh_whitelist(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
     store.clear();
     if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            for ip in &config.security.allowed_ips {
-                let iter = store.append();
-                store.set_value(&iter, 0, &ip.to_value());
-            }
+        && let Ok(config) = s.config.try_lock()
+    {
+        for ip in &config.security.allowed_ips {
+            let iter = store.append();
+            store.set_value(&iter, 0, &ip.to_value());
         }
+    }
 }
 
 fn refresh_blacklist(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
     store.clear();
     if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            for ip in &config.security.denied_ips {
-                let iter = store.append();
-                store.set_value(&iter, 0, &ip.to_value());
-            }
+        && let Ok(config) = s.config.try_lock()
+    {
+        for ip in &config.security.denied_ips {
+            let iter = store.append();
+            store.set_value(&iter, 0, &ip.to_value());
         }
+    }
 }

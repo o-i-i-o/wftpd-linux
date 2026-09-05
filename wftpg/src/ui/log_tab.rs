@@ -1,14 +1,12 @@
+use crate::AppState;
+use gtk::glib::clone;
 use gtk::prelude::*;
 use gtk::{
-    Box, Orientation, Label, Button, ScrolledWindow, Entry, Frame, SpinButton,
-    Adjustment, CheckButton, ComboBoxText, TreeView, ListStore, CellRendererText, 
-    TreeViewColumn, glib,
+    Adjustment, Box, Button, CellRendererText, CheckButton, ComboBoxText, Entry, Frame, Label,
+    ListStore, Orientation, ScrolledWindow, SpinButton, TreeView, TreeViewColumn, glib,
 };
-use gtk::glib::clone;
-use std::sync::{Arc, Mutex as StdMutex};
-use crate::AppState;
 use std::fs;
-use chrono::Local;
+use std::sync::{Arc, Mutex as StdMutex};
 use tracing::info;
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
@@ -20,10 +18,18 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
 
     create_log_config_frame(&container, state);
 
-    let (refresh_btn, clear_btn, auto_refresh_cb, log_file_combo) = create_control_buttons(&container, state);
+    let (refresh_btn, clear_btn, auto_refresh_cb, log_file_combo) =
+        create_control_buttons(&container, state);
     let tree_view = create_log_view(&container, state);
 
-    setup_button_handlers(state, &tree_view, &refresh_btn, &clear_btn, &auto_refresh_cb, &log_file_combo);
+    setup_button_handlers(
+        state,
+        &tree_view,
+        &refresh_btn,
+        &clear_btn,
+        &auto_refresh_cb,
+        &log_file_combo,
+    );
 
     container
 }
@@ -41,9 +47,10 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     let log_dir_entry = Entry::new();
     log_dir_entry.set_hexpand(true);
     if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            log_dir_entry.set_text(&config.logging.log_dir);
-        }
+        && let Ok(config) = s.config.try_lock()
+    {
+        log_dir_entry.set_text(&config.logging.log_dir);
+    }
     row1.pack_start(&log_dir_entry, true, true, 0);
     box_.pack_start(&row1, false, false, 0);
 
@@ -55,41 +62,45 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     log_level_combo.append(Some("warn"), "Warning");
     log_level_combo.append(Some("error"), "Error");
     if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            let level = config.logging.log_level.as_str();
-            let id = match level {
-                "debug" => Some("debug"),
-                "warn" => Some("warn"),
-                "error" => Some("error"),
-                _ => Some("info"),
-            };
-            log_level_combo.set_active_id(id);
-        }
+        && let Ok(config) = s.config.try_lock()
+    {
+        let level = config.logging.log_level.as_str();
+        let id = match level {
+            "debug" => Some("debug"),
+            "warn" => Some("warn"),
+            "error" => Some("error"),
+            _ => Some("info"),
+        };
+        log_level_combo.set_active_id(id);
+    }
     row2.pack_start(&log_level_combo, false, false, 0);
 
     row2.pack_start(&Label::new(Some("最大文件大小(MB):")), false, false, 0);
     let max_size_spin = create_spin_button(1.0, 1000.0, 1.0);
     if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            max_size_spin.set_value((config.logging.max_log_size / (1024 * 1024)) as f64);
-        }
+        && let Ok(config) = s.config.try_lock()
+    {
+        max_size_spin.set_value((config.logging.max_log_size / (1024 * 1024)) as f64);
+    }
     row2.pack_start(&max_size_spin, false, false, 0);
 
     row2.pack_start(&Label::new(Some("最大文件数:")), false, false, 0);
     let max_files_spin = create_spin_button(1.0, 100.0, 1.0);
     if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            max_files_spin.set_value(config.logging.max_log_files as f64);
-        }
+        && let Ok(config) = s.config.try_lock()
+    {
+        max_files_spin.set_value(config.logging.max_log_files as f64);
+    }
     row2.pack_start(&max_files_spin, false, false, 0);
     box_.pack_start(&row2, false, false, 0);
 
     let row3 = Box::new(Orientation::Horizontal, 5);
     let log_to_gui_cb = CheckButton::with_label("启用前端日志显示");
     if let Ok(s) = state.try_lock()
-        && let Ok(config) = s.config.try_lock() {
-            log_to_gui_cb.set_active(config.logging.enable_gui_logging);
-        }
+        && let Ok(config) = s.config.try_lock()
+    {
+        log_to_gui_cb.set_active(config.logging.enable_gui_logging);
+    }
     row3.pack_start(&log_to_gui_cb, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
 
@@ -111,7 +122,7 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
             let max_size = (max_size_clone.value() as u64) * 1024 * 1024;
             let max_files = max_files_clone.value() as usize;
             let enable_gui = enable_gui_clone.is_active();
-            
+
             glib::MainContext::ref_thread_default().spawn_local(async move {
                 if let Ok(s) = state.try_lock()
                     && let Ok(mut config) = s.config.try_lock() {
@@ -120,7 +131,7 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
                         config.logging.max_log_size = max_size;
                         config.logging.max_log_files = max_files;
                         config.logging.enable_gui_logging = enable_gui;
-                        let _ = config.save(&crate::core::config::Config::get_config_path());
+                        let _ = config.save(&wftpd_common::Config::get_config_path());
                         info!("Logging configuration saved");
                     }
             });
@@ -132,11 +143,14 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     container.pack_start(&frame, false, false, 0);
 }
 
-fn create_control_buttons(container: &Box, state: &Arc<StdMutex<AppState>>) -> (Button, Button, CheckButton, ComboBoxText) {
+fn create_control_buttons(
+    container: &Box,
+    state: &Arc<StdMutex<AppState>>,
+) -> (Button, Button, CheckButton, ComboBoxText) {
     let control_box = Box::new(Orientation::Horizontal, 10);
 
     control_box.pack_start(&Label::new(Some("日志文件:")), false, false, 0);
-    
+
     let log_file_combo = ComboBoxText::new();
     log_file_combo.set_hexpand(true);
     populate_log_files(&log_file_combo, state);
@@ -157,7 +171,7 @@ fn create_control_buttons(container: &Box, state: &Arc<StdMutex<AppState>>) -> (
 
 fn populate_log_files(combo: &ComboBoxText, state: &Arc<StdMutex<AppState>>) {
     combo.remove_all();
-    
+
     let log_dir = if let Ok(s) = state.try_lock() {
         if let Ok(config) = s.config.try_lock() {
             config.logging.log_dir.clone()
@@ -169,7 +183,7 @@ fn populate_log_files(combo: &ComboBoxText, state: &Arc<StdMutex<AppState>>) {
     };
 
     combo.append(Some("current"), "当前日志 (内存缓冲)");
-    
+
     if let Ok(entries) = fs::read_dir(&log_dir) {
         let mut log_files: Vec<(String, String)> = entries
             .filter_map(|e| e.ok())
@@ -184,14 +198,14 @@ fn populate_log_files(combo: &ComboBoxText, state: &Arc<StdMutex<AppState>>) {
                 (name, path)
             })
             .collect();
-        
+
         log_files.sort_by(|a, b| b.0.cmp(&a.0));
-        
+
         for (name, path) in log_files {
             combo.append(Some(&path), &name);
         }
     }
-    
+
     combo.set_active_id(Some("current"));
 }
 
@@ -276,28 +290,28 @@ fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TreeView
 
 fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source: &str) {
     use std::sync::mpsc;
-    
+
     store.clear();
-    
+
     // 显示加载中提示
     let loading_iter = store.append();
     store.set_value(&loading_iter, 3, &"正在加载日志...".to_value());
-    
+
     let source_string = source.to_string();
-    
+
     // 创建 channel 用于在线程间通信
     let (tx, rx) = mpsc::channel();
-    
+
     // 在新线程中执行阻塞的 IPC 调用
     std::thread::spawn(move || {
         let result: Result<Vec<_>, _> = if source_string == "current" {
-            crate::communication::client::IpcClient::get_logs(500)
+            crate::communication::client::get_logs(500)
         } else {
             crate::communication::client::get_log_file_content(&source_string, 500)
         };
         let _ = tx.send(result);
     });
-    
+
     // 使用 glib 的超时轮询检查结果
     let store_weak = store.clone();
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
@@ -311,8 +325,19 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
                     store_weak.set_value(&iter, 1, &entry.level.to_value());
                     store_weak.set_value(&iter, 2, &entry.source.to_value());
                     store_weak.set_value(&iter, 3, &entry.message.to_value());
-                    store_weak.set_value(&iter, 4, &entry.client_ip.unwrap_or_else(|| "-".to_string()).to_value());
-                    store_weak.set_value(&iter, 5, &entry.action.unwrap_or_else(|| "-".to_string()).to_value());
+                    store_weak.set_value(
+                        &iter,
+                        4,
+                        &entry
+                            .client_ip
+                            .unwrap_or_else(|| "-".to_string())
+                            .to_value(),
+                    );
+                    store_weak.set_value(
+                        &iter,
+                        5,
+                        &entry.action.unwrap_or_else(|| "-".to_string()).to_value(),
+                    );
                 }
             } else if let Err(e) = result {
                 store_weak.clear();
@@ -359,33 +384,37 @@ fn setup_button_handlers(
     let tree_view_clone = tree_view.clone();
     let auto_refresh_cb_clone = auto_refresh_cb.clone();
     let log_file_combo_clone = log_file_combo.clone();
-    
+
     glib::timeout_add_seconds_local(2, move || {
         if auto_refresh_cb_clone.is_active() {
-            let source = log_file_combo_clone.active_id()
+            let source = log_file_combo_clone
+                .active_id()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "current".to_string());
-            
+
             if source == "current"
                 && let Some(store) = tree_view_clone.model()
-                    && let Ok(store) = store.downcast::<ListStore>() {
-                        populate_log_store(&store, &state_clone, &source);
-                    }
+                && let Ok(store) = store.downcast::<ListStore>()
+            {
+                populate_log_store(&store, &state_clone, &source);
+            }
         }
         glib::ControlFlow::Continue
     });
 
     let state_clone = Arc::clone(state);
     let tree_view_clone = tree_view.clone();
-    log_file_combo.connect_changed(clone!(@strong state_clone, @strong tree_view_clone, @strong log_file_combo => move |_| {
-        let source = log_file_combo.active_id()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "current".to_string());
-        if let Some(store) = tree_view_clone.model()
-            && let Ok(store) = store.downcast::<ListStore>() {
-                populate_log_store(&store, &state_clone, &source);
-            }
-    }));
+    log_file_combo.connect_changed(
+        clone!(@strong state_clone, @strong tree_view_clone, @strong log_file_combo => move |_| {
+            let source = log_file_combo.active_id()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "current".to_string());
+            if let Some(store) = tree_view_clone.model()
+                && let Ok(store) = store.downcast::<ListStore>() {
+                    populate_log_store(&store, &state_clone, &source);
+                }
+        }),
+    );
 }
 
 fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {

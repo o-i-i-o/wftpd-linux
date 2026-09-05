@@ -1,14 +1,14 @@
-use gtk::prelude::*;
-use gtk::{Application, ApplicationWindow, Notebook, Label};
-use std::sync::{Arc, Mutex as StdMutex};
 use crate::AppState;
+use gtk::prelude::*;
+use gtk::{Application, ApplicationWindow, Label, Notebook};
+use std::sync::{Arc, Mutex as StdMutex};
 
-use super::server_tab;
-use super::user_tab;
-use super::security_tab;
-use super::service_tab;
-use super::log_tab;
 use super::file_log_tab;
+use super::log_tab;
+use super::security_tab;
+use super::server_tab;
+use super::service_tab;
+use super::user_tab;
 use super::utils::setup_window_for_uos;
 
 pub fn build_ui(app: &Application) {
@@ -25,7 +25,7 @@ pub fn build_ui(app: &Application) {
                 .default_height(200)
                 .build();
             window.present();
-            
+
             let error_msg = format!("初始化失败: {}", e);
             let dialog = gtk::MessageDialog::new(
                 Some(&window),
@@ -89,17 +89,16 @@ fn append_tab<P: gtk::prelude::IsA<gtk::Widget>>(notebook: &Notebook, page: &P, 
 async fn ensure_default_directories_async(state: &Arc<StdMutex<AppState>>) {
     let dirs_to_create: Vec<String> = {
         match state.try_lock() {
-            Ok(s) => {
-                match s.user_manager.try_lock() {
-                    Ok(users) => {
-                        let users_list = users.list_users();
-                        users_list.into_iter()
-                            .map(|(_, user)| user.home_dir.clone())
-                            .collect()
-                    }
-                    Err(_) => return,
+            Ok(s) => match s.user_manager.try_lock() {
+                Ok(users) => {
+                    let users_list = users.list_users();
+                    users_list
+                        .into_iter()
+                        .map(|(_, user)| user.home_dir.clone())
+                        .collect()
                 }
-            }
+                Err(_) => return,
+            },
             Err(_) => return,
         }
     };
@@ -107,8 +106,9 @@ async fn ensure_default_directories_async(state: &Arc<StdMutex<AppState>>) {
     for dir in dirs_to_create {
         let path = std::path::Path::new(&dir);
         if !path.exists()
-            && let Err(e) = std::fs::create_dir_all(path) {
-                eprintln!("Failed to create directory {}: {}", dir, e);
-            }
+            && let Err(e) = std::fs::create_dir_all(path)
+        {
+            eprintln!("Failed to create directory {}: {}", dir, e);
+        }
     }
 }

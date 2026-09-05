@@ -1,36 +1,10 @@
 #!/bin/sh
+# wftpg 安装前脚本（用户态服务模型，无系统级准备工作）
+
 set -e
 
 case "$1" in
     install|upgrade)
-        if [ -d /etc/wftpg ]; then
-            if [ -f /etc/wftpg/config.toml ]; then
-                cp /etc/wftpg/config.toml /etc/wftpg/config.toml.bak
-                echo "已备份现有配置文件到 /etc/wftpg/config.toml.bak"
-            fi
-        fi
-        
-        if ! getent group wftpg > /dev/null 2>&1; then
-            groupadd --system wftpg 2>/dev/null || true
-            echo "已创建wftpg系统组"
-        fi
-        
-        if ! getent passwd wftpg > /dev/null 2>&1; then
-            useradd --system \
-                --gid wftpg \
-                --shell /usr/sbin/nologin \
-                --home-dir /var/lib/wftpg \
-                --no-create-home \
-                wftpg 2>/dev/null || true
-            echo "已创建wftpg系统用户"
-        fi
-        ;;
-    
-    abort-upgrade)
-        ;;
-    
-    *)
-        echo "preinst called with unknown argument \`$1'" >&2
         ;;
 esac
 

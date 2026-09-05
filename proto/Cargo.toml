@@ -1,0 +1,17 @@
+[package]
+name = "wftpd-proto"
+description = "WFTPD 前后端 gRPC 契约（tonic over UDS）"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+wftpd-common = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+protox = { workspace = true }

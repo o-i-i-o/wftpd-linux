@@ -1,50 +1,16 @@
 #!/bin/sh
+# wftpg 卸载后脚本（用户态服务模型）
+#
+# 各用户的配置与状态位于 ~/.config/wftpd 与 ~/.local/state/wftpd，
+# 属于用户数据，包卸载时不做清理（purge 亦不触碰用户主目录）。
+
 set -e
 
 case "$1" in
     remove|purge)
-        update-desktop-database /usr/share/applications 2>/dev/null || true
-        update-mime-database /usr/share/mime 2>/dev/null || true
-        gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
-        
-        if command -v systemctl > /dev/null 2>&1; then
-            systemctl daemon-reload 2>/dev/null || true
+        if command -v update-desktop-database &> /dev/null; then
+            update-desktop-database -q || true
         fi
-        
-        if [ "$1" = "purge" ]; then
-            if [ -d /etc/wftpg ]; then
-                rm -rf /etc/wftpg
-                echo "已删除配置文件目录 /etc/wftpg"
-            fi
-            
-            if [ -d /var/log/wftpg ]; then
-                rm -rf /var/log/wftpg
-                echo "已删除日志目录 /var/log/wftpg"
-            fi
-            
-            if [ -d /var/lib/wftpg ]; then
-                rm -rf /var/lib/wftpg
-                echo "已删除数据目录 /var/lib/wftpg"
-            fi
-            
-            if getent passwd wftpg > /dev/null 2>&1; then
-                userdel wftpg 2>/dev/null || true
-                echo "已删除wftpg用户"
-            fi
-            
-            if getent group wftpg > /dev/null 2>&1; then
-                groupdel wftpg 2>/dev/null || true
-                echo "已删除wftpg组"
-            fi
-        fi
-        ;;
-    
-    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
-        ;;
-    
-    *)
-        echo "postrm called with unknown argument \`$1'" >&2
-        exit 1
         ;;
 esac
 

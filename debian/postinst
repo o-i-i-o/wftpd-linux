@@ -1,259 +1,27 @@
-#!/bin/sh
+#!/bin/bash
+# wftpg 安装后脚本（用户态服务模型）
+#
+# wftpd 以 systemd 用户服务运行，无需 root 权限、无需专用用户。
+# 首次登录后由用户自行启用：
+#   systemctl --user enable --now wftpd
+
 set -e
-
-WFTPG_USER="wftpg"
-WFTPG_GROUP="wftpg"
-WFTPG_HOME="/var/lib/wftpg"
-
-create_wftpg_user() {
-    if ! id "$WFTPG_USER" > /dev/null 2>&1; then
-        echo "创建 wftpg 系统用户..."
-        
-        # 尝试创建用户，不使用 || true 来掩盖错误
-        if useradd --system \
-                --shell /usr/sbin/nologin \
-                --home-dir "$WFTPG_HOME" \
-                --no-create-home \
-                --user-group \
-                --comment "WFTPG SFTP/FTP Server" \
-                "$WFTPG_USER" 2>/dev/null; then
-            
-            # 双重检查用户是否真的创建成功
-            if id "$WFTPG_USER" > /dev/null 2>&1; then
-                echo "用户 $WFTPG_USER 创建成功"
-            else
-                echo "错误：useradd 命令返回成功但用户不存在！" >&2
-                echo "这可能是由于系统配置问题或用户数据库同步延迟" >&2
-                echo "请检查 /var/log/auth.log 或 /var/log/secure" >&2
-                exit 1
-            fi
-        else
-            echo "错误：无法创建 wftpg 用户" >&2
-            echo "可能的原因:" >&2
-            echo "  1. 用户已存在但 id 命令检测失败" >&2
-            echo "  2. useradd 命令不可用" >&2
-            echo "  3. 系统用户数据库已满" >&2
-            echo "  4. 权限不足或其他系统限制" >&2
-            echo "" >&2
-            echo "请检查系统日志以获取更多信息" >&2
-            exit 1
-        fi
-    else
-        echo "用户 $WFTPG_USER 已存在"
-    fi
-}
-
-setup_user_groups() {
-    INSTALL_USER=""
-    
-    if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-        INSTALL_USER="$SUDO_USER"
-    elif [ -n "$PKEXEC_UID" ]; then
-        INSTALL_USER=$(getent passwd "$PKEXEC_UID" | cut -d: -f1)
-    elif [ -n "$LOGNAME" ] && [ "$LOGNAME" != "root" ]; then
-        INSTALL_USER="$LOGNAME"
-    fi
-    
-    if [ -z "$INSTALL_USER" ]; then
-        for user in $(ls /home 2>/dev/null); do
-            if id "$user" >/dev/null 2>&1; then
-                INSTALL_USER="$user"
-                break
-            fi
-        done
-    fi
-    
-    if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ]; then
-        echo "检测到安装用户: $INSTALL_USER"
-        
-        if id "$WFTPG_USER" > /dev/null 2>&1; then
-            INSTALL_USER_GROUP=$(id -gn "$INSTALL_USER" 2>/dev/null || echo "$INSTALL_USER")
-            
-            echo "配置用户组关系..."
-            
-            if ! groups "$INSTALL_USER" 2>/dev/null | grep -q "\\b$WFTPG_GROUP\\b"; then
-                echo "将 $INSTALL_USER 加入 $WFTPG_GROUP 组..."
-                usermod -aG "$WFTPG_GROUP" "$INSTALL_USER" 2>/dev/null || {
-                    echo "警告: 无法将 $INSTALL_USER 加入 $WFTPG_GROUP 组"
-                }
-            else
-                echo "$INSTALL_USER 已在 $WFTPG_GROUP 组中"
-            fi
-            
-            if ! groups "$WFTPG_USER" 2>/dev/null | grep -q "\\b$INSTALL_USER_GROUP\\b"; then
-                echo "将 $WFTPG_USER 加入 $INSTALL_USER_GROUP 组..."
-                usermod -aG "$INSTALL_USER_GROUP" "$WFTPG_USER" 2>/dev/null || {
-                    echo "警告: 无法将 $WFTPG_USER 加入 $INSTALL_USER_GROUP 组"
-                }
-            else
-                echo "$WFTPG_USER 已在 $INSTALL_USER_GROUP 组中"
-            fi
-            
-            echo "用户组关系配置完成"
-        fi
-    else
-        echo "未检测到非root安装用户，跳过用户组配置"
-        echo "如需使用GUI管理服务，请手动执行:"
-        echo "  sudo usermod -aG $WFTPG_GROUP <您的用户名>"
-        echo "  sudo usermod -aG <您的组名> $WFTPG_USER"
-    fi
-}
-
-setup_directories() {
-    # 关键检查：确保 wftpg 用户存在
-    # 如果用户不存在，说明 create_wftpg_user 失败，安装应该中止
-    if ! id "$WFTPG_USER" > /dev/null 2>&1; then
-        echo "错误：wftpg 用户不存在！" >&2
-        echo "可能是用户创建失败或系统环境问题" >&2
-        echo "安装无法继续，请检查系统日志" >&2
-        exit 1
-    fi
-    
-    echo "设置 wftpg 相关目录权限..."
-    
-    mkdir -p /etc/wftpg
-    chmod 755 /etc/wftpg
-    
-    mkdir -p /etc/wftpg/keys
-    chmod 755 /etc/wftpg/keys
-    
-    if [ ! -f /etc/wftpg/config.toml ] && [ -f /etc/wftpg/config.toml.example ]; then
-        cp /etc/wftpg/config.toml.example /etc/wftpg/config.toml
-        chmod 644 /etc/wftpg/config.toml
-        echo "已创建默认配置文件 /etc/wftpg/config.toml"
-    fi
-    
-    if [ ! -f /etc/wftpg/users.json ] && [ -f /etc/wftpg/users.json.example ]; then
-        cp /etc/wftpg/users.json.example /etc/wftpg/users.json
-        chmod 644 /etc/wftpg/users.json
-        echo "已创建默认用户配置 /etc/wftpg/users.json"
-    fi
-    
-    mkdir -p /var/log/wftpg
-    chmod 755 /var/log/wftpg
-    
-    mkdir -p /var/lib/wftpg
-    chmod 755 /var/lib/wftpg
-    
-    mkdir -p /var/lib/wftpg/ssh
-    chmod 700 /var/lib/wftpg/ssh
-    
-    mkdir -p /var/lib/wftpg/share
-    chmod 755 /var/lib/wftpg/share
-    
-    # 设置所有目录和文件的所有者为 wftpg:wftpg
-    # 此时 wftpg 用户已经通过上面的检查，确保存在
-    chown -R "$WFTPG_USER:$WFTPG_GROUP" /etc/wftpg
-    chown -R "$WFTPG_USER:$WFTPG_GROUP" /var/log/wftpg
-    chown -R "$WFTPG_USER:$WFTPG_GROUP" /var/lib/wftpg
-    
-    echo "目录权限已设置为 wftpg:wftpg"
-}
-
-setup_permissions() {
-    if [ -f /usr/bin/wftpd ]; then
-        chmod 755 /usr/bin/wftpd
-        chown root:root /usr/bin/wftpd
-        if command -v setcap > /dev/null 2>&1; then
-            setcap 'cap_net_bind_service=+ep' /usr/bin/wftpd 2>/dev/null || true
-        fi
-    fi
-    
-    if [ -f /usr/bin/wftp-gui ]; then
-        chmod 755 /usr/bin/wftp-gui
-        chown root:root /usr/bin/wftp-gui
-    fi
-    
-    if [ -f /usr/share/polkit-1/actions/com.wftpg.pkexec.policy ]; then
-        chmod 644 /usr/share/polkit-1/actions/com.wftpg.pkexec.policy
-        chown root:root /usr/share/polkit-1/actions/com.wftpg.pkexec.policy
-    fi
-    
-    if [ -f /lib/systemd/system/wftpd.service ]; then
-        chmod 644 /lib/systemd/system/wftpd.service
-        chown root:root /lib/systemd/system/wftpd.service
-    fi
-}
-
-generate_ssh_host_key() {
-    SSH_KEY_DIR="/var/lib/wftpg/ssh"
-    SSH_KEY_FILE="$SSH_KEY_DIR/ssh_host_rsa_key"
-    
-    if [ ! -f "$SSH_KEY_FILE" ]; then
-        echo "生成SSH主机密钥..."
-        ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_FILE" -N "" -q 2>/dev/null || true
-        
-        if [ -f "$SSH_KEY_FILE" ]; then
-            chmod 600 "$SSH_KEY_FILE"
-            chmod 644 "${SSH_KEY_FILE}.pub"
-            if id "$WFTPG_USER" > /dev/null 2>&1; then
-                chown "$WFTPG_USER:$WFTPG_GROUP" "$SSH_KEY_FILE" "${SSH_KEY_FILE}.pub"
-            fi
-            echo "SSH主机密钥生成成功"
-        fi
-    fi
-}
-
-enable_services() {
-    if command -v systemctl > /dev/null 2>&1; then
-        systemctl daemon-reload > /dev/null 2>&1 || true
-    fi
-}
 
 case "$1" in
     configure)
-        update-desktop-database /usr/share/applications 2>/dev/null || true
-        gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
-        
-        create_wftpg_user
-        setup_user_groups
-        setup_directories
-        setup_permissions
-        generate_ssh_host_key
-        enable_services
-        
-        echo ""
-        echo "========================================"
-        echo "  WFTPG 安装完成"
-        echo "========================================"
-        echo ""
-        echo "程序组成:"
-        echo "  wftp-gui    - GUI 管理界面"
-        echo "  wftpd       - 后台服务程序"
-        echo ""
-        echo "启动方式:"
-        echo "  1. GUI: 应用程序菜单 -> WFTPG"
-        echo "  2. GUI: 终端运行 wftp-gui"
-        echo "  3. 服务: systemctl start wftpd"
-        echo ""
-        echo "目录结构:"
-        echo "  配置: /etc/wftpg/"
-        echo "  日志: /var/log/wftpg/"
-        echo "  数据: /var/lib/wftpg/"
-        echo ""
-        echo "Systemd服务管理:"
-        echo "  systemctl enable wftpd   # 开机自启"
-        echo "  systemctl start wftpd    # 启动服务"
-        echo "  systemctl status wftpd   # 查看状态"
-        echo ""
-        echo "权限配置:"
-        echo "  - 安装用户已加入 wftpg 组，可管理服务"
-        echo "  - wftpg 用户已加入安装用户组，可访问共享目录"
-        echo ""
-        echo "注意: 后台服务已设置CAP_NET_BIND_SERVICE能力"
-        echo "      可以绑定特权端口(21/22)而无需root权限"
-        echo ""
-        echo "重要: 配置FTP/SFTP用户时，请确保共享目录权限正确"
-        echo "      建议使用GUI程序配置，会自动设置正确的目录权限"
-        echo "========================================"
-        ;;
-    
-    abort-upgrade|abort-remove|abort-deconfigure)
-        ;;
-    
-    *)
-        echo "postinst called with unknown argument \`$1'" >&2
-        exit 1
+        # 刷新桌面环境缓存
+        if command -v update-desktop-database &> /dev/null; then
+            update-desktop-database -q || true
+        fi
+        if command -v gtk-update-icon-cache &> /dev/null; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2> /dev/null || true
+        fi
+
+        echo "WFTPG 安装完成。"
+        echo "启用后台服务（以桌面用户运行，无需 root）："
+        echo "  systemctl --user enable --now wftpd"
+        echo "启动图形管理界面："
+        echo "  wftp-gui"
         ;;
 esac
 

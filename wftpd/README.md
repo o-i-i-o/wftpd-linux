@@ -62,9 +62,15 @@ systemctl --user enable wftpd  # 登录后自启
 
 ## 配置文件
 
-配置文件位于用户配置目录 `~/.config/wftpd/config.toml`（遵循 XDG 规范，
-可用 `XDG_CONFIG_HOME` 或环境变量 `WFTPD_CONFIG_DIR` 覆盖；首次启动若不存在
-会自动生成默认配置）：
+配置文件按以下顺序解析：
+
+1. 环境变量 `WFTPD_CONFIG_DIR` 指定的 `config.toml`（测试/多实例覆盖）；
+2. 二进制同目录 `config.toml`——直接运行编译产物（如 `./target/release/wftpd`）
+   时默认配置就生成在这里，便于测试；
+3. 用户配置目录 `~/.config/wftpd/config.toml`（deb 安装形态；安装时由包内
+   `/usr/share/wftpg/config.toml` 预置，其中 `~` 已替换为实际用户主目录）。
+
+安装形态下配置内容遵循 XDG 规范：
 
 ```toml
 [ftp]
@@ -145,8 +151,9 @@ sftp -P 2222 user@localhost
 
 ## 与服务端交互
 
-服务以当前桌面用户的 systemd 用户服务运行（配置文件在 `~/.config/wftpd/`，
-deb 安装时由包内示例配置生成初始文件）：
+服务以当前桌面用户的 systemd 用户服务运行，配置文件位于 `~/.config/wftpd/`；
+deb 包内置初始配置 `/usr/share/wftpg/config.toml`（由示例配置打包时重命名而来），
+程序运行时读取用户目录下的配置，不存在则自动生成默认配置：
 
 - **启动服务**: `systemctl --user start wftpd`
 - **停止服务**: Ctrl+C 或 `systemctl --user stop wftpd`

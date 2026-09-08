@@ -372,11 +372,13 @@ if [ -f "${SCRIPT_DIR}/wftpd.service" ]; then
     log_info "  已复制：wftpd.service（用户服务，无需 root）"
 fi
 
-log_info "[8/9] 安装配置模板..."
+log_info "[8/9] 安装初始配置文件..."
 if [ -f "${PROJECT_DIR}/config_template.toml" ]; then
-    cp "${PROJECT_DIR}/config_template.toml" "${DEB_DIR}/usr/share/${PACKAGE_NAME}/config_template.toml"
-    chmod 644 "${DEB_DIR}/usr/share/${PACKAGE_NAME}/config_template.toml"
-    log_info "  已复制：config_template.toml（实际配置位于 ~/.config/wftpd/config.toml）"
+    # 打包阶段把示例配置复制为 config.toml 随包交付（安装位置 /usr/share/wftpg/），
+    # 各用户的实际配置位于 ~/.config/wftpd/config.toml
+    cp "${PROJECT_DIR}/config_template.toml" "${DEB_DIR}/usr/share/${PACKAGE_NAME}/config.toml"
+    chmod 644 "${DEB_DIR}/usr/share/${PACKAGE_NAME}/config.toml"
+    log_info "  已复制：config_template.toml -> config.toml（实际配置位于 ~/.config/wftpd/config.toml）"
 fi
 
 log_info "[9/9] 创建DEBIAN控制文件..."

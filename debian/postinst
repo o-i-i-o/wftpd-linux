@@ -3,10 +3,11 @@
 #
 # wftpd 以 systemd 用户服务运行，无需 root 权限、无需专用用户。
 # 本脚本职责：
-#   1. 为每个活跃桌面会话执行 systemctl --user daemon-reload，
+#   1. 把包内初始配置（/usr/share/wftpg/config.toml，打包时由示例配置重命名）
+#      预置到活跃用户的 ~/.config/wftpd/config.toml；
+#   2. 为每个活跃桌面会话执行 systemctl --user daemon-reload，
 #      让用户管理器载入（升级后的）单元文件；
-#   2. 已启用且正在运行的用户服务重启一次，加载升级后的二进制；
-#   3. 全新安装时由包内示例配置生成用户初始配置文件。
+#   3. 已启用且正在运行的用户服务重启一次，加载升级后的二进制。
 
 set -e
 
@@ -18,28 +19,28 @@ user_systemctl() {
         -c "systemctl --user $*" 2> /dev/null
 }
 
-# 全新安装：从包内示例配置生成初始配置（示例中的 ~ 替换为用户主目录）。
-# 已有配置一律不覆盖；失败不阻塞安装，首次启动 wftpd 时会自动兜底。
+# 全新安装：把包内初始配置放入用户配置目录（~ 替换为用户主目录）。
+# 已有配置一律不覆盖；失败不阻塞安装，首次启动 wftpd 时会自动生成默认配置。
 seed_default_config() {
     local uid="$1" home="$2"
-    local template="/usr/share/wftpg/config_template.toml"
+    local src="/usr/share/wftpg/config.toml"
     local dest_dir="${home}/.config/wftpd"
     local dest="${dest_dir}/config.toml"
 
-    [ -f "$template" ] || return 0
+    [ -f "$src" ] || return 0
     [ -e "$dest" ] && return 0
 
     local escaped_home
     escaped_home=$(printf '%s' "$home" | sed 's/[&|]/\\&/g')
     mkdir -p "$dest_dir"
     chown "$uid" "$dest_dir" 2> /dev/null || true
-    if sed "s|~|${escaped_home}|g" "$template" > "$dest" \
+    if sed "s|~|${escaped_home}|g" "$src" > "$dest" \
         && chown "$uid" "$dest" 2> /dev/null; then
         chmod 600 "$dest"
-        echo "已从示例配置生成: $dest"
+        echo "已预置初始配置: $dest"
     else
         rm -f "$dest"
-        echo "警告: 生成初始配置失败，首次启动 wftpd 时会自动生成默认配置" >&2
+        echo "警告: 预置初始配置失败，首次启动 wftpd 时会自动生成默认配置" >&2
     fi
 }
 
@@ -63,6 +64,8 @@ case "$1" in
                 continue
             fi
 
+            seed_default_config "$uid" "$home_dir"
+
             # 载入（升级后的）单元文件；用户管理器不会自动重读
             user_systemctl "$uid" "$user_name" daemon-reload || true
 
@@ -74,8 +77,6 @@ case "$1" in
                     fi
                 fi
             fi
-
-            seed_default_config "$uid" "$home_dir"
         done
 
         echo "WFTPG 安装完成。"

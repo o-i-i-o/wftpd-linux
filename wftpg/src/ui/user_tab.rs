@@ -900,15 +900,6 @@ fn get_suggested_directories() -> Vec<(String, String, String)> {
         }
     }
 
-    let var_share = std::path::Path::new("/var/lib/wftpg/share");
-    if var_share.exists() && check_dir_permission(&var_share.to_string_lossy()) {
-        dirs.push((
-            var_share.to_string_lossy().to_string(),
-            "系统共享目录".to_string(),
-            "读写".to_string(),
-        ));
-    }
-
     if dirs.is_empty() {
         dirs.push((
             "/tmp".to_string(),

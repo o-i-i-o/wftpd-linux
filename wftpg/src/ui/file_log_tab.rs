@@ -63,10 +63,14 @@ fn populate_log_files(combo: &ComboBoxText, state: &Arc<StdMutex<AppState>>) {
         if let Ok(config) = s.config.try_lock() {
             config.logging.log_dir.clone()
         } else {
-            "/var/log/wftpg".to_string()
+            wftpd_common::paths::default_log_dir()
+                .to_string_lossy()
+                .into_owned()
         }
     } else {
-        "/var/log/wftpg".to_string()
+        wftpd_common::paths::default_log_dir()
+            .to_string_lossy()
+            .into_owned()
     };
 
     combo.append(Some("current"), "当前日志 (内存缓冲)");

@@ -19,6 +19,7 @@ struct StatusLabels {
     ftp: Label,
     sftp: Label,
     version: Label,
+    autostart: Label,
 }
 
 pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
@@ -42,6 +43,7 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
     let ftp_status = Label::new(Some("FTP: 未知"));
     let sftp_status = Label::new(Some("SFTP: 未知"));
     let version_status = Label::new(None);
+    let autostart_status = Label::new(Some("开机自启: 未知"));
     ftp_status.set_halign(gtk::Align::Start);
     sftp_status.set_halign(gtk::Align::Start);
     version_status.set_halign(gtk::Align::Start);
@@ -54,6 +56,7 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
         ftp: ftp_status,
         sftp: sftp_status,
         version: version_status,
+        autostart: autostart_status,
     };
 
     let refresh_button = Button::with_label("刷新状态");
@@ -98,35 +101,7 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
     container.pack_start(&services_frame, false, false, 0);
 
     // ---- 后端守护进程管理 ----
-    let daemon_frame = Frame::new(Some("后端守护进程（systemd 用户服务）"));
-    let daemon_box = Box::new(Orientation::Vertical, 6);
-    daemon_box.set_margin_top(8);
-    daemon_box.set_margin_bottom(8);
-    daemon_box.set_margin_start(8);
-    daemon_box.set_margin_end(8);
-
-    let daemon_row = Box::new(Orientation::Horizontal, 6);
-    for (text, verb) in [("启动", "start"), ("停止", "stop"), ("重启", "restart")] {
-        let button = Button::with_label(text);
-        let verb = verb.to_string();
-        let labels = labels.clone();
-        let refreshing = Arc::clone(&refreshing);
-        button.connect_clicked(move |_| run_systemctl(&verb, &labels, &refreshing));
-        daemon_row.pack_start(&button, false, false, 0);
-    }
-    daemon_box.pack_start(&daemon_row, false, false, 0);
-
-    let hint = Label::new(None);
-    hint.set_markup(
-        "wftpd 以当前桌面用户的 systemd 服务运行，无需 root 权限：\n\
-         • 启动：<tt>systemctl --user start wftpd</tt>\n\
-         • 停止：<tt>systemctl --user stop wftpd</tt>\n\
-         • 开机自启：<tt>systemctl --user enable wftpd</tt>\n\
-         • 查看状态：<tt>systemctl --user status wftpd</tt>",
-    );
-    hint.set_halign(gtk::Align::Start);
-    daemon_box.pack_start(&hint, false, false, 0);
-    daemon_frame.add(&daemon_box);
+    let daemon_frame = build_daemon_frame(&labels, &refreshing);
     container.pack_start(&daemon_frame, false, false, 0);
 
     // 周期自动刷新：状态变化（无论来源）都会同步到界面
@@ -145,6 +120,55 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
     container
 }
 
+/// 构建后端守护进程管理区：启停按钮、自启状态与 enable/disable 按钮
+fn build_daemon_frame(labels: &StatusLabels, refreshing: &Arc<AtomicBool>) -> Frame {
+    let daemon_frame = Frame::new(Some("后端守护进程（systemd 用户服务）"));
+    let daemon_box = Box::new(Orientation::Vertical, 6);
+    daemon_box.set_margin_top(8);
+    daemon_box.set_margin_bottom(8);
+    daemon_box.set_margin_start(8);
+    daemon_box.set_margin_end(8);
+
+    let daemon_row = Box::new(Orientation::Horizontal, 6);
+    for (text, verb) in [("启动", "start"), ("停止", "stop"), ("重启", "restart")] {
+        let button = Button::with_label(text);
+        let verb = verb.to_string();
+        let labels = labels.clone();
+        let refreshing = Arc::clone(refreshing);
+        button.connect_clicked(move |_| run_systemctl(&verb, &labels, &refreshing));
+        daemon_row.pack_start(&button, false, false, 0);
+    }
+    daemon_box.pack_start(&daemon_row, false, false, 0);
+
+    // 开机自启：enable/disable 均为 systemctl --user，与上方按钮共用执行逻辑
+    let autostart_row = Box::new(Orientation::Horizontal, 6);
+    labels.autostart.set_halign(gtk::Align::Start);
+    autostart_row.pack_start(&labels.autostart, true, true, 0);
+    for (text, verb) in [("设为自启", "enable"), ("取消自启", "disable")] {
+        let button = Button::with_label(text);
+        let verb = verb.to_string();
+        let labels = labels.clone();
+        let refreshing = Arc::clone(refreshing);
+        button.connect_clicked(move |_| run_systemctl(&verb, &labels, &refreshing));
+        autostart_row.pack_start(&button, false, false, 0);
+    }
+    daemon_box.pack_start(&autostart_row, false, false, 0);
+
+    let hint = Label::new(None);
+    hint.set_markup(
+        "wftpd 以当前桌面用户的 systemd 服务运行，无需 root 权限：\n\
+         • 启动：<tt>systemctl --user start wftpd</tt>\n\
+         • 停止：<tt>systemctl --user stop wftpd</tt>\n\
+         • 开机自启：<tt>systemctl --user enable wftpd</tt>（登录后自动启动）\n\
+         • 查看状态：<tt>systemctl --user status wftpd</tt>\n\
+         • 未登录也保持运行：<tt>sudo loginctl enable-linger $USER</tt>",
+    );
+    hint.set_halign(gtk::Align::Start);
+    daemon_box.pack_start(&hint, false, false, 0);
+    daemon_frame.add(&daemon_box);
+    daemon_frame
+}
+
 /// 查询后端状态并更新标签；同一时刻只允许一次刷新在途，避免请求堆积
 fn refresh_status(labels: &StatusLabels, refreshing: &Arc<AtomicBool>) {
     use std::sync::mpsc;
@@ -155,7 +179,9 @@ fn refresh_status(labels: &StatusLabels, refreshing: &Arc<AtomicBool>) {
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(communication::get_status());
+        // 自启状态由 systemd 管理，与 gRPC 后端状态一并查询
+        let autostart = systemctl_is_enabled();
+        let _ = tx.send((communication::get_status(), autostart));
     });
 
     // glib 主循环轮询后台线程结果（与 log_tab 相同的模式）
@@ -163,15 +189,16 @@ fn refresh_status(labels: &StatusLabels, refreshing: &Arc<AtomicBool>) {
     let refreshing = Arc::clone(refreshing);
     glib_poll(move || {
         let done = match rx.try_recv() {
-            Ok(Ok(status)) => {
+            Ok((Ok(status), autostart)) => {
                 set_state_label(&labels.ftp, "FTP", status.ftp_running);
                 set_state_label(&labels.sftp, "SFTP", status.sftp_running);
                 labels
                     .version
                     .set_text(&format!("后端版本: wftpd v{}", status.version));
+                set_autostart_label(&labels.autostart, &autostart);
                 true
             }
-            Ok(Err(e)) => {
+            Ok((Err(e), autostart)) => {
                 labels
                     .ftp
                     .set_markup("<b>FTP:</b> <span foreground='red'>后端未连接</span>");
@@ -179,6 +206,7 @@ fn refresh_status(labels: &StatusLabels, refreshing: &Arc<AtomicBool>) {
                     .sftp
                     .set_markup("<b>SFTP:</b> <span foreground='red'>后端未连接</span>");
                 labels.version.set_text(&format!("错误: {e}"));
+                set_autostart_label(&labels.autostart, &autostart);
                 true
             }
             // 查询线程异常终止：结束本轮轮询，等待下一次刷新
@@ -211,6 +239,32 @@ fn set_state_label(label: &Label, name: &str, running: bool) {
         label.set_markup(&format!(
             "<b>{name}:</b> <span foreground='gray'>○ 已停止</span>"
         ));
+    }
+}
+
+/// 查询 wftpd 用户服务的自启状态（systemctl --user is-enabled 的第一行输出；
+/// systemctl 不可用时返回空串，由调用方显示"未知"）
+fn systemctl_is_enabled() -> String {
+    std::process::Command::new("systemctl")
+        .args(["--user", "is-enabled", "wftpd"])
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+fn set_autostart_label(label: &Label, state: &str) {
+    match state {
+        "enabled" | "enabled-runtime" => {
+            label.set_markup("<b>开机自启:</b> <span foreground='green'>已启用</span>");
+        }
+        "disabled" => {
+            label.set_markup("<b>开机自启:</b> <span foreground='gray'>未启用</span>");
+        }
+        "not-found" | "not-loaded" => {
+            label.set_markup("<b>开机自启:</b> <span foreground='red'>单元未安装</span>");
+        }
+        "" => label.set_markup("<b>开机自启:</b> <span foreground='red'>未知</span>"),
+        other => label.set_markup(&format!("<b>开机自启:</b> {other}")),
     }
 }
 

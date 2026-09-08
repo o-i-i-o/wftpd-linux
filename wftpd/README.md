@@ -49,20 +49,22 @@ cargo build --release
 
 ### 运行
 
-直接运行：
+直接运行（以当前桌面用户身份，无需 root）：
 ```bash
-sudo ./target/release/wftpd
+./target/release/wftpd
 ```
 
-或使用 systemd 服务：
+或使用 systemd 用户服务：
 ```bash
-sudo systemctl start wftpd
-sudo systemctl enable wftpd  # 开机自启
+systemctl --user start wftpd
+systemctl --user enable wftpd  # 登录后自启
 ```
 
 ## 配置文件
 
-配置文件位于 `/etc/wftpg/config.toml`：
+配置文件位于用户配置目录 `~/.config/wftpd/config.toml`（遵循 XDG 规范，
+可用 `XDG_CONFIG_HOME` 或环境变量 `WFTPD_CONFIG_DIR` 覆盖；首次启动若不存在
+会自动生成默认配置）：
 
 ```toml
 [ftp]
@@ -70,7 +72,7 @@ enabled = true
 bind_ip = "0.0.0.0"
 port = 2121
 passive_ports = [50000, 51000]
-welcome_message = "Welcome to WFTPG FTP Server"
+welcome_message = "Welcome to WFTPD FTP Server"
 allow_anonymous = false
 max_speed_kbps = 0
 encoding = "UTF-8"
@@ -79,7 +81,7 @@ encoding = "UTF-8"
 enabled = true
 bind_ip = "0.0.0.0"
 port = 2222
-host_key_path = "/var/lib/wftpg/ssh/ssh_host_rsa_key"
+host_key_path = "~/.local/state/wftpd/ssh/ssh_host_ed25519_key"
 max_auth_attempts = 3
 auth_timeout = 60
 
@@ -91,7 +93,7 @@ ban_duration = 300
 max_connections = 100
 
 [logging]
-log_dir = "/var/log/wftpg"
+log_dir = "~/.local/state/wftpd/logs"
 log_level = "info"
 max_log_size = 10485760
 max_log_files = 10
@@ -100,7 +102,7 @@ enable_json = false
 
 ## 用户配置
 
-用户数据位于 `/etc/wftpg/users.json`：
+用户数据位于 `~/.config/wftpd/users.json`：
 
 ```json
 {
@@ -143,13 +145,14 @@ sftp -P 2222 user@localhost
 
 ## 与服务端交互
 
-由于移除了 IPC 通信模块，现在服务直接由命令行启动和管理：
+服务以当前桌面用户的 systemd 用户服务运行（配置文件在 `~/.config/wftpd/`，
+deb 安装时由包内示例配置生成初始文件）：
 
-- **启动服务**: `sudo ./target/release/wftpd`
-- **停止服务**: Ctrl+C 或 `sudo systemctl stop wftpd`
-- **重启服务**: `sudo systemctl restart wftpd`
-- **查看状态**: `sudo systemctl status wftpd`
-- **查看日志**: `journalctl -u wftpd -f` 或查看 `/var/log/wftpg/` 目录
+- **启动服务**: `systemctl --user start wftpd`
+- **停止服务**: Ctrl+C 或 `systemctl --user stop wftpd`
+- **重启服务**: `systemctl --user restart wftpd`
+- **查看状态**: `systemctl --user status wftpd`
+- **查看日志**: `journalctl --user -u wftpd -f` 或查看 `~/.local/state/wftpd/logs/` 目录
 
 ## 主要变化（相比 GUI 版本）
 

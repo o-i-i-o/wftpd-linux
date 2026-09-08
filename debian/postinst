@@ -2,10 +2,46 @@
 # wftpg 安装后脚本（用户态服务模型）
 #
 # wftpd 以 systemd 用户服务运行，无需 root 权限、无需专用用户。
-# 首次登录后由用户自行启用：
-#   systemctl --user enable --now wftpd
+# 本脚本职责：
+#   1. 为每个活跃桌面会话执行 systemctl --user daemon-reload，
+#      让用户管理器载入（升级后的）单元文件；
+#   2. 已启用且正在运行的用户服务重启一次，加载升级后的二进制；
+#   3. 全新安装时由包内示例配置生成用户初始配置文件。
 
 set -e
+
+# 以指定用户身份执行 systemctl --user（$3 起为子命令参数）
+user_systemctl() {
+    local uid="$1" user_name="$2"
+    shift 2
+    XDG_RUNTIME_DIR="/run/user/${uid}" su -s /bin/sh "$user_name" \
+        -c "systemctl --user $*" 2> /dev/null
+}
+
+# 全新安装：从包内示例配置生成初始配置（示例中的 ~ 替换为用户主目录）。
+# 已有配置一律不覆盖；失败不阻塞安装，首次启动 wftpd 时会自动兜底。
+seed_default_config() {
+    local uid="$1" home="$2"
+    local template="/usr/share/wftpg/config_template.toml"
+    local dest_dir="${home}/.config/wftpd"
+    local dest="${dest_dir}/config.toml"
+
+    [ -f "$template" ] || return 0
+    [ -e "$dest" ] && return 0
+
+    local escaped_home
+    escaped_home=$(printf '%s' "$home" | sed 's/[&|]/\\&/g')
+    mkdir -p "$dest_dir"
+    chown "$uid" "$dest_dir" 2> /dev/null || true
+    if sed "s|~|${escaped_home}|g" "$template" > "$dest" \
+        && chown "$uid" "$dest" 2> /dev/null; then
+        chmod 600 "$dest"
+        echo "已从示例配置生成: $dest"
+    else
+        rm -f "$dest"
+        echo "警告: 生成初始配置失败，首次启动 wftpd 时会自动生成默认配置" >&2
+    fi
+}
 
 case "$1" in
     configure)
@@ -16,6 +52,31 @@ case "$1" in
         if command -v gtk-update-icon-cache &> /dev/null; then
             gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2> /dev/null || true
         fi
+
+        # 遍历活跃用户会话（/run/user/<uid> 存在即会话活跃）
+        for runtime_dir in /run/user/[0-9]*; do
+            [ -d "$runtime_dir" ] || continue
+            uid="${runtime_dir##*/}"
+            user_name=$(getent passwd "$uid" | cut -d: -f1)
+            home_dir=$(getent passwd "$uid" | cut -d: -f6)
+            if [ -z "$user_name" ] || [ "$user_name" = "root" ] || [ -z "$home_dir" ]; then
+                continue
+            fi
+
+            # 载入（升级后的）单元文件；用户管理器不会自动重读
+            user_systemctl "$uid" "$user_name" daemon-reload || true
+
+            # 已启用且在运行：重启以加载新二进制（未启用/未运行则不打扰用户）
+            if user_systemctl "$uid" "$user_name" is-enabled wftpd 2> /dev/null | grep -q '^enabled'; then
+                if user_systemctl "$uid" "$user_name" is-active --quiet wftpd 2> /dev/null; then
+                    if user_systemctl "$uid" "$user_name" restart wftpd; then
+                        echo "已为用户 ${user_name} 重启 wftpd 用户服务"
+                    fi
+                fi
+            fi
+
+            seed_default_config "$uid" "$home_dir"
+        done
 
         echo "WFTPG 安装完成。"
         echo "启用后台服务（以桌面用户运行，无需 root）："

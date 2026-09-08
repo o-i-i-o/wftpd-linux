@@ -13,18 +13,18 @@
 
 use std::path::PathBuf;
 
+/// 当前用户主目录（`HOME` 未设置时回退到 `/`）
+#[must_use]
+pub fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| PathBuf::from("/"), PathBuf::from)
+}
+
 fn xdg_dir(env_var: &str, fallback: &str) -> PathBuf {
     std::env::var_os(env_var)
         .filter(|v| !v.is_empty())
-        .map_or_else(
-            || {
-                let home = std::env::var_os("HOME")
-                    .filter(|v| !v.is_empty())
-                    .map_or_else(|| PathBuf::from("/"), PathBuf::from);
-                home.join(fallback)
-            },
-            PathBuf::from,
-        )
+        .map_or_else(|| home_dir().join(fallback), PathBuf::from)
 }
 
 fn override_dir(env_var: &str) -> Option<PathBuf> {

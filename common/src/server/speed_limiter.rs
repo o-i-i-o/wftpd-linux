@@ -26,6 +26,10 @@ impl SpeedLimiter {
         }
     }
 
+    /// 按令牌桶限速：不足时异步等待补足
+    ///
+    /// # Panics
+    /// 内部互斥锁中毒（持有线程 panic）时 panic
     pub async fn throttle(&self, bytes: usize) {
         if self.max_bytes_per_second == 0 || bytes == 0 {
             return;

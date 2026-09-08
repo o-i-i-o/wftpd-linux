@@ -98,6 +98,13 @@ impl SftpServer {
         }
     }
 
+    /// 启动 SFTP 服务（监听循环在独立任务中运行，可经 [`SftpServer::stop`] 中断）
+    ///
+    /// # Errors
+    /// 配置锁被占用、bind 地址非法，或主机密钥加载/生成失败时返回错误
+    ///
+    /// # Panics
+    /// `closed_rx` 互斥锁中毒（持有线程 panic）时 panic
     pub async fn start(&self) -> Result<()> {
         let (
             bind_ip,
@@ -198,6 +205,13 @@ impl SftpServer {
         Ok(())
     }
 
+    /// 停止服务并等待监听套接字释放（最长 5 秒）
+    ///
+    /// # Errors
+    /// 当前实现不会返回 `Err`；保留 `Result` 签名与 [`SftpServer::start`] 对称
+    ///
+    /// # Panics
+    /// `closed_rx` 互斥锁中毒（持有线程 panic）时 panic
     pub async fn stop(&self) -> Result<()> {
         self.running.store(false, Ordering::SeqCst);
 
@@ -224,6 +238,10 @@ impl SftpServer {
         self.running.load(Ordering::SeqCst)
     }
 
+    /// 加载主机私钥；不存在时生成 Ed25519 密钥并落盘（0600 权限）
+    ///
+    /// # Errors
+    /// 密钥文件读取/解析失败，或新密钥生成、序列化、写入失败时返回错误
     async fn load_or_generate_host_key(path: &str) -> Result<PrivateKey> {
         let path = PathBuf::from(path);
 

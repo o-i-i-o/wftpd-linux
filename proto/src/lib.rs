@@ -3,8 +3,6 @@
 //! 后端（wftpd）实现 [`ControlServer`]，前端（wftp-gui）使用 [`ControlClient`]，
 //! 通过 UDS 套接字通信。
 
-#![allow(clippy::module_name_repetitions)]
-
 pub mod convert;
 
 pub mod wftpd {

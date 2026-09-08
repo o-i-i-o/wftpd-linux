@@ -119,6 +119,10 @@ impl FileLogger {
         }
     }
 
+    /// 记录一条文件操作：推送广播、写入内存缓冲并输出到 `file_ops` target
+    ///
+    /// # Panics
+    /// 内存缓冲互斥锁中毒（持有线程 panic）时 panic
     pub fn log(&mut self, info: &FileLogInfo<'_>) {
         let entry = FileLogEntry {
             timestamp: Local::now(),
@@ -169,6 +173,10 @@ impl FileLogger {
     }
 
     #[must_use]
+    /// 最近的 `count` 条文件操作记录（新→旧）
+    ///
+    /// # Panics
+    /// 内存缓冲互斥锁中毒（持有线程 panic）时 panic
     pub fn get_recent_logs(&self, count: usize) -> Vec<FileLogEntry> {
         let buffer = self.buffer.lock().unwrap();
         buffer.iter().rev().take(count).cloned().collect()

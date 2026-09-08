@@ -54,6 +54,10 @@ impl LogBuffer {
         }
     }
 
+    /// 追加一条日志到环形缓冲，并广播给订阅者
+    ///
+    /// # Panics
+    /// 内部互斥锁中毒（持有线程 panic）时 panic
     pub fn push(&self, entry: LogEntryJson) {
         {
             let mut entries = self.inner.entries.lock().unwrap();
@@ -68,6 +72,10 @@ impl LogBuffer {
 
     /// 最近 `count` 条日志，按时间正序返回
     #[must_use]
+    /// 最近 `count` 条日志，按时间正序返回
+    ///
+    /// # Panics
+    /// 内部互斥锁中毒（持有线程 panic）时 panic
     pub fn recent(&self, count: usize) -> Vec<LogEntryJson> {
         let entries = self.inner.entries.lock().unwrap();
         let skip = entries.len().saturating_sub(count);
@@ -140,6 +148,11 @@ where
     }
 }
 
+/// 初始化全局 tracing：控制台/程序日志/审计日志三层 + 内存环形缓冲
+///
+/// # Errors
+/// 日志目录创建失败、滚动 appender 构建失败，或全局 subscriber
+/// 已被初始化时返回错误
 pub fn init_tracing(
     log_dir: &str,
     log_level: &str,
@@ -266,6 +279,10 @@ fn parse_log_level(level: &str) -> Targets {
         .with_target("runtime", LevelFilter::WARN)
 }
 
+/// 动态调整全局日志级别
+///
+/// # Errors
+/// reload handle 尚未初始化，或过滤器替换失败时返回错误
 pub fn set_log_level(level: &str) -> Result<()> {
     let filter = parse_log_level(level);
 
@@ -278,6 +295,10 @@ pub fn set_log_level(level: &str) -> Result<()> {
     Ok(())
 }
 
+/// 简易初始化：仅控制台输出，INFO 起始级别
+///
+/// # Errors
+/// 全局 subscriber 已被初始化时返回错误
 pub fn init_simple() -> Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)

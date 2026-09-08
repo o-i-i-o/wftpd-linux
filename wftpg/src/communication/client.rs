@@ -74,6 +74,10 @@ pub struct ServerStatus {
     pub version: String,
 }
 
+/// 查询后端版本与 FTP/SFTP 运行状态
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn get_status() -> Result<ServerStatus> {
     run(async {
         let mut client = connect().await?;
@@ -101,6 +105,10 @@ fn op_result(reply: &wftpd_proto::OpReply) -> Result<()> {
     }
 }
 
+/// 启动指定服务；业务失败经 `OpReply` 返回，不产生 `Err`
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn start_service(which: Which) -> Result<()> {
     run(async {
         let mut client = connect().await?;
@@ -109,6 +117,10 @@ pub fn start_service(which: Which) -> Result<()> {
     })
 }
 
+/// 停止指定服务；业务失败经 `OpReply` 返回，不产生 `Err`
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn stop_service(which: Which) -> Result<()> {
     run(async {
         let mut client = connect().await?;
@@ -117,6 +129,10 @@ pub fn stop_service(which: Which) -> Result<()> {
     })
 }
 
+/// 重启指定服务；业务失败经 `OpReply` 返回，不产生 `Err`
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn restart_service(which: Which) -> Result<()> {
     run(async {
         let mut client = connect().await?;
@@ -128,6 +144,10 @@ pub fn restart_service(which: Which) -> Result<()> {
 // ===== 配置与用户 =====
 
 /// 保存配置（后端负责校验与落盘），返回规范化后的配置内容
+/// 保存配置（后端负责校验与落盘），返回规范化后的配置内容
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn write_config(content: &str) -> Result<String> {
     let content = content.to_string();
     run(async {
@@ -141,6 +161,10 @@ pub fn write_config(content: &str) -> Result<String> {
 }
 
 /// 保存用户库（后端负责校验与落盘），返回实际保存的内容
+/// 保存用户库（后端负责校验与落盘），返回实际保存的内容
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn write_users(content: &str) -> Result<String> {
     let content = content.to_string();
     run(async {
@@ -153,6 +177,10 @@ pub fn write_users(content: &str) -> Result<String> {
     })
 }
 
+/// 追加一条 GUI 审计记录到后端审计日志
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn write_audit_log(user: &str, action: &str, target: &str, details: &str) -> Result<()> {
     let request = WriteAuditLogRequest {
         user: user.to_string(),
@@ -170,6 +198,10 @@ pub fn write_audit_log(user: &str, action: &str, target: &str, details: &str) ->
 // ===== 日志 =====
 
 /// 读取后端内存环形缓冲中的最近日志
+/// 读取后端内存环形缓冲中的最近日志
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn get_logs(count: usize) -> Result<Vec<LogEntryJson>> {
     run(async {
         let mut client = connect().await?;
@@ -189,6 +221,10 @@ pub fn get_logs(count: usize) -> Result<Vec<LogEntryJson>> {
 }
 
 /// 读取指定程序日志文件的最后 count 条
+/// 读取指定程序日志文件的最后 count 条
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn get_log_file_content(path: &str, count: usize) -> Result<Vec<LogEntryJson>> {
     let path = path.to_string();
     run(async {
@@ -210,6 +246,10 @@ pub fn get_log_file_content(path: &str, count: usize) -> Result<Vec<LogEntryJson
 }
 
 /// 读取文件操作审计日志；path == "current" 表示内存缓冲中的最新记录
+/// 读取文件操作审计日志；`path == "current"` 表示内存缓冲中的最新记录
+///
+/// # Errors
+/// wftpd 控制套接字不存在（后端未运行）、UDS 连接失败，或 gRPC 调用失败时返回错误
 pub fn get_file_log_file_content(path: &str, count: usize) -> Result<Vec<FileLogEntryJson>> {
     let path = path.to_string();
     run(async {

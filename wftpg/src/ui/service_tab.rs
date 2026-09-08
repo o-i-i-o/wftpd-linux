@@ -2,11 +2,24 @@
 
 use gtk::prelude::*;
 use gtk::{Box, Button, Frame, Label, Orientation, glib};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use wftpd_proto::wftpd::v1::service_selector::Which;
 
 use crate::AppState;
 use crate::communication;
+
+/// 状态自动刷新间隔（秒）：同步外部引起的状态变化
+/// （终端执行 systemctl、服务异常退出、其他客户端操作等）
+const AUTO_REFRESH_SECS: u32 = 2;
+
+/// 状态区标签集合；GTK 控件为引用计数对象，clone 后仍指向同一控件
+#[derive(Clone)]
+struct StatusLabels {
+    ftp: Label,
+    sftp: Label,
+    version: Label,
+}
 
 pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);
@@ -14,6 +27,9 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
     container.set_margin_bottom(10);
     container.set_margin_start(10);
     container.set_margin_end(10);
+
+    // 标记一次状态刷新是否在途，避免周期刷新与手动刷新叠加请求
+    let refreshing = Arc::new(AtomicBool::new(false));
 
     // ---- 状态区 ----
     let status_frame = Frame::new(Some("服务状态"));
@@ -34,17 +50,18 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
     status_box.pack_start(&sftp_status, false, false, 0);
     status_box.pack_start(&version_status, false, false, 0);
 
+    let labels = StatusLabels {
+        ftp: ftp_status,
+        sftp: sftp_status,
+        version: version_status,
+    };
+
     let refresh_button = Button::with_label("刷新状态");
     {
-        let ftp_status = ftp_status.clone();
-        let sftp_status = sftp_status.clone();
-        let version_status = version_status.clone();
+        let labels = labels.clone();
+        let refreshing = Arc::clone(&refreshing);
         refresh_button.connect_clicked(move |_| {
-            refresh_status(
-                ftp_status.clone(),
-                sftp_status.clone(),
-                version_status.clone(),
-            );
+            refresh_status(&labels, &refreshing);
         });
     }
     status_box.pack_start(&refresh_button, false, false, 0);
@@ -68,7 +85,10 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
         for (text, action) in [("启动", "start"), ("停止", "stop"), ("重启", "restart")] {
             let button = Button::with_label(text);
             let action = action.to_string();
-            button.connect_clicked(move |_| run_service_action(which, &action));
+            let labels = labels.clone();
+            let refreshing = Arc::clone(&refreshing);
+            button
+                .connect_clicked(move |_| run_service_action(which, &action, &labels, &refreshing));
             row.pack_start(&button, false, false, 0);
         }
 
@@ -89,7 +109,9 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
     for (text, verb) in [("启动", "start"), ("停止", "stop"), ("重启", "restart")] {
         let button = Button::with_label(text);
         let verb = verb.to_string();
-        button.connect_clicked(move |_| run_systemctl(&verb));
+        let labels = labels.clone();
+        let refreshing = Arc::clone(&refreshing);
+        button.connect_clicked(move |_| run_systemctl(&verb, &labels, &refreshing));
         daemon_row.pack_start(&button, false, false, 0);
     }
     daemon_box.pack_start(&daemon_row, false, false, 0);
@@ -107,14 +129,29 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
     daemon_frame.add(&daemon_box);
     container.pack_start(&daemon_frame, false, false, 0);
 
+    // 周期自动刷新：状态变化（无论来源）都会同步到界面
+    {
+        let labels = labels.clone();
+        let refreshing = Arc::clone(&refreshing);
+        glib::timeout_add_seconds_local(AUTO_REFRESH_SECS, move || {
+            refresh_status(&labels, &refreshing);
+            glib::ControlFlow::Continue
+        });
+    }
+
     // 初始加载状态
-    refresh_status(ftp_status, sftp_status, version_status);
+    refresh_status(&labels, &refreshing);
 
     container
 }
 
-fn refresh_status(ftp_status: Label, sftp_status: Label, version_status: Label) {
+/// 查询后端状态并更新标签；同一时刻只允许一次刷新在途，避免请求堆积
+fn refresh_status(labels: &StatusLabels, refreshing: &Arc<AtomicBool>) {
     use std::sync::mpsc;
+
+    if refreshing.swap(true, Ordering::SeqCst) {
+        return; // 上一次刷新尚未完成，跳过本次
+    }
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -122,23 +159,38 @@ fn refresh_status(ftp_status: Label, sftp_status: Label, version_status: Label) 
     });
 
     // glib 主循环轮询后台线程结果（与 log_tab 相同的模式）
+    let labels = labels.clone();
+    let refreshing = Arc::clone(refreshing);
     glib_poll(move || {
-        match rx.try_recv() {
-            Ok(result) => match result {
-                Ok(status) => {
-                    set_state_label(&ftp_status, "FTP", status.ftp_running);
-                    set_state_label(&sftp_status, "SFTP", status.sftp_running);
-                    version_status.set_text(&format!("后端版本: wftpd v{}", status.version));
-                }
-                Err(e) => {
-                    ftp_status.set_markup("<b>FTP:</b> <span foreground='red'>后端未连接</span>");
-                    sftp_status.set_markup("<b>SFTP:</b> <span foreground='red'>后端未连接</span>");
-                    version_status.set_text(&format!("错误: {e}"));
-                }
-            },
-            Err(_) => return glib::ControlFlow::Continue,
+        let done = match rx.try_recv() {
+            Ok(Ok(status)) => {
+                set_state_label(&labels.ftp, "FTP", status.ftp_running);
+                set_state_label(&labels.sftp, "SFTP", status.sftp_running);
+                labels
+                    .version
+                    .set_text(&format!("后端版本: wftpd v{}", status.version));
+                true
+            }
+            Ok(Err(e)) => {
+                labels
+                    .ftp
+                    .set_markup("<b>FTP:</b> <span foreground='red'>后端未连接</span>");
+                labels
+                    .sftp
+                    .set_markup("<b>SFTP:</b> <span foreground='red'>后端未连接</span>");
+                labels.version.set_text(&format!("错误: {e}"));
+                true
+            }
+            // 查询线程异常终止：结束本轮轮询，等待下一次刷新
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => true,
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+        };
+        if done {
+            refreshing.store(false, Ordering::SeqCst);
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
         }
-        glib::ControlFlow::Break
     });
 }
 
@@ -162,10 +214,17 @@ fn set_state_label(label: &Label, name: &str, running: bool) {
     }
 }
 
-fn run_service_action(which: Which, action: &str) {
+fn run_service_action(
+    which: Which,
+    action: &str,
+    labels: &StatusLabels,
+    refreshing: &Arc<AtomicBool>,
+) {
     use std::sync::mpsc;
 
     let action = action.to_string();
+    let labels = labels.clone();
+    let refreshing = Arc::clone(refreshing);
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = match action.as_str() {
@@ -176,21 +235,33 @@ fn run_service_action(which: Which, action: &str) {
         let _ = tx.send(result);
     });
 
+    // 操作结束后（无论成败）立即刷新状态，保证显示与后端一致
     glib_poll(move || match rx.try_recv() {
         Ok(Err(e)) => {
             show_error_dialog(&format!("操作失败: {e}"));
+            refresh_status(&labels, &refreshing);
             glib::ControlFlow::Break
         }
-        Ok(Ok(())) => glib::ControlFlow::Break,
-        Err(_) => glib::ControlFlow::Continue,
+        Ok(Ok(())) => {
+            refresh_status(&labels, &refreshing);
+            glib::ControlFlow::Break
+        }
+        Err(mpsc::TryRecvError::Disconnected) => {
+            show_error_dialog("服务操作线程异常终止");
+            refresh_status(&labels, &refreshing);
+            glib::ControlFlow::Break
+        }
+        Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
     });
 }
 
-fn run_systemctl(verb: &str) {
+fn run_systemctl(verb: &str, labels: &StatusLabels, refreshing: &Arc<AtomicBool>) {
     use std::sync::mpsc;
 
     let verb = verb.to_string();
     let verb_msg = verb.clone();
+    let labels = labels.clone();
+    let refreshing = Arc::clone(refreshing);
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let status = std::process::Command::new("systemctl")
@@ -199,18 +270,26 @@ fn run_systemctl(verb: &str) {
         let _ = tx.send(status);
     });
 
+    // systemctl 返回后立即刷新；守护进程刚启动时套接字可能尚未就绪，
+    // 此时显示"后端未连接"，由周期自动刷新在数秒内纠正
     glib_poll(move || match rx.try_recv() {
         Ok(Ok(s)) => {
             if !s.success() {
                 show_error_dialog(&format!("systemctl --user {verb_msg} wftpd 失败: {s}"));
             }
+            refresh_status(&labels, &refreshing);
             glib::ControlFlow::Break
         }
         Ok(Err(e)) => {
             show_error_dialog(&format!("无法执行 systemctl: {e}"));
+            refresh_status(&labels, &refreshing);
             glib::ControlFlow::Break
         }
-        Err(_) => glib::ControlFlow::Continue,
+        Err(mpsc::TryRecvError::Disconnected) => {
+            refresh_status(&labels, &refreshing);
+            glib::ControlFlow::Break
+        }
+        Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
     });
 }
 

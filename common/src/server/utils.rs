@@ -306,6 +306,11 @@ async fn resolve_nonexistent_path_async(
     }
 }
 
+/// 将用户提供的路径解析为主目录内的绝对路径（不跟随未存在的路径）
+///
+/// # Errors
+/// 主目录不存在或无法访问、路径超过最大长度，或路径（含符号链接解析结果）
+/// 逃逸主目录时返回错误
 pub fn safe_resolve_path(home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
     check_path_length(path)?;
 
@@ -356,6 +361,10 @@ pub fn safe_resolve_path(home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
     }
 }
 
+/// [`safe_resolve_path`] 的异步版本
+///
+/// # Errors
+/// 同 [`safe_resolve_path`]
 pub async fn safe_resolve_path_async(home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
     check_path_length(path)?;
 
@@ -406,6 +415,10 @@ pub async fn safe_resolve_path_async(home_dir: &str, path: &str) -> WftpgResult<
     }
 }
 
+/// 相对路径以 `cwd` 为基准的 [`safe_resolve_path`] 变体
+///
+/// # Errors
+/// 同 [`safe_resolve_path`]；另外当 `cwd` 位于主目录之外或无法访问时也返回错误
 pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> WftpgResult<PathBuf> {
     check_path_length(path)?;
 
@@ -456,6 +469,10 @@ pub fn safe_resolve_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Wftp
     }
 }
 
+/// [`safe_resolve_path_with_cwd`] 的异步版本
+///
+/// # Errors
+/// 同 [`safe_resolve_path_with_cwd`]
 pub async fn safe_resolve_path_with_cwd_async(
     cwd: &str,
     home_dir: &str,
@@ -709,6 +726,11 @@ pub fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
 }
 
 #[cfg(unix)]
+/// 以 `openat(O_NOFOLLOW)` 逐段打开主目录下的相对路径，防符号链接竞态
+///
+/// # Errors
+/// 主目录无法规范化或打开、相对路径包含 `..`、任一路径组件打开失败
+/// （包括组件为符号链接被 `O_NOFOLLOW` 拒绝）时返回错误
 pub fn safe_open_file_at(home_dir: &str, relative_path: &str) -> WftpgResult<std::fs::File> {
     use nix::fcntl::{AT_FDCWD, OFlag, openat};
     use nix::sys::stat::Mode;
@@ -780,6 +802,10 @@ pub fn safe_open_file_at(home_dir: &str, relative_path: &str) -> WftpgResult<std
 }
 
 #[cfg(unix)]
+/// [`safe_open_file_at`] 的异步版本
+///
+/// # Errors
+/// 同 [`safe_open_file_at`]
 pub async fn safe_open_file_at_async(
     home_dir: &str,
     relative_path: &str,
@@ -869,6 +895,13 @@ pub async fn safe_open_file_at_async(
 /// # Returns
 /// * `Ok(PathBuf)` - 规范化后的绝对路径
 /// * `Err` - 如果路径逃逸或无效
+///
+/// canonicalize 全部符号链接，并逐段检查祖先目录，确保没有任何一级
+/// 通过符号链接指向主目录之外。
+///
+/// # Errors
+/// 主目录无法规范化、路径或其父目录逃逸 chroot、符号链接祖先指向 chroot
+/// 之外，或读取符号链接失败时返回错误
 pub async fn validate_path_within_chroot(path: &str, home_dir: &str) -> Result<PathBuf> {
     debug!("Validating path: {:?} within chroot: {:?}", path, home_dir);
 
@@ -959,6 +992,12 @@ pub async fn validate_path_within_chroot(path: &str, home_dir: &str) -> Result<P
 /// 🔒 验证路径是否可以安全创建（用于 MKDIR、CREATE 等操作）
 ///
 /// 检查新路径是否会在创建后导致安全问题
+/// 验证新路径可以安全创建（用于 MKDIR、CREATE 等操作）
+///
+/// 检查所有已存在的祖先组件，确保创建动作不会落在符号链接之下。
+///
+/// # Errors
+/// 主目录无法规范化、创建路径逃逸 chroot，或祖先中存在符号链接时返回错误
 pub async fn validate_path_for_creation(path: &str, home_dir: &str) -> Result<PathBuf> {
     debug!(
         "Validating path for creation: {:?} within chroot: {:?}",
@@ -1011,6 +1050,11 @@ pub async fn validate_path_for_creation(path: &str, home_dir: &str) -> Result<Pa
 /// * `cwd` - 当前工作目录
 /// * `home_dir` - 用户主目录（chroot 根目录）
 /// * `path` - 要解析的路径（可以是相对或绝对）
+///
+/// 绝对路径直接验证；相对路径先并入 `cwd` 再验证。
+///
+/// # Errors
+/// 同 [`validate_path_within_chroot`]
 pub async fn validate_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Result<PathBuf> {
     // 如果是绝对路径，直接验证
     if path.starts_with('/') {

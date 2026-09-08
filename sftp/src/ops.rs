@@ -61,6 +61,10 @@ pub struct SftpFileHandler {
 }
 
 impl SftpFileHandler {
+    /// 创建会话处理器；限速参数取自当前用户配置
+    ///
+    /// # Panics
+    /// 用户库互斥锁中毒（持有线程 panic）时 panic
     pub fn new(
         username: String,
         home_dir: String,
@@ -248,6 +252,7 @@ impl Handler for SftpFileHandler {
         StatusCode::OpUnsupported
     }
 
+    #[allow(clippy::unused_async_trait_impl)] // trait 声明为 async，实现体无 await 也无法省略
     async fn init(
         &mut self,
         _version: u32,
@@ -505,6 +510,7 @@ impl Handler for SftpFileHandler {
         Ok(Handle { id, handle })
     }
 
+    #[allow(clippy::unused_async_trait_impl)] // trait 声明为 async，实现体无 await 也无法省略
     async fn readdir(&mut self, id: u32, handle: String) -> SftpResult<Name> {
         let Some(OpenEntry::Dir(dir)) = self.handles.get_mut(&handle) else {
             return Err(StatusCode::NoSuchFile);
@@ -645,6 +651,7 @@ impl Handler for SftpFileHandler {
         Ok(Self::status(id, StatusCode::Ok))
     }
 
+    #[allow(clippy::unused_async_trait_impl)] // trait 声明为 async，实现体无 await 也无法省略
     async fn readlink(&mut self, id: u32, path: String) -> SftpResult<Name> {
         let resolved = self.resolve(&path)?;
         // 返回创建时保存的原样目标字符串（与 POSIX readlink 语义一致）
@@ -657,6 +664,7 @@ impl Handler for SftpFileHandler {
         })
     }
 
+    #[allow(clippy::unused_async_trait_impl)] // trait 声明为 async，实现体无 await 也无法省略
     async fn symlink(
         &mut self,
         id: u32,

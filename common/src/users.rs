@@ -99,6 +99,13 @@ impl UserManager {
         Self::default()
     }
 
+    /// 从 JSON 文件加载用户库
+    ///
+    /// 文件缺失、为空、读取失败或解析失败时均回退为空用户库并记录日志，
+    /// 不视为致命错误。
+    ///
+    /// # Errors
+    /// 当前实现不会返回 `Err`；保留 `Result` 签名以便未来引入可恢复错误
     pub fn load(path: &Path) -> Result<Self> {
         debug!("[UserManager] 尝试加载用户配置文件：{:?}", path);
 
@@ -152,6 +159,10 @@ impl UserManager {
         Ok(manager)
     }
 
+    /// 将用户库序列化为 JSON 并写入 `path`（先写临时文件再原子重命名）
+    ///
+    /// # Errors
+    /// 父目录创建、序列化、临时文件写入或重命名失败时返回错误
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).context("Failed to create users directory")?;
@@ -167,6 +178,10 @@ impl UserManager {
         Ok(())
     }
 
+    /// 使用 Argon2id 生成口令哈希（自动随机盐）
+    ///
+    /// # Errors
+    /// Argon2 哈希计算失败（如盐生成失败）时返回错误
     fn hash_password(password: &str) -> Result<String> {
         // password-hash 0.6 起 hash_password 自动生成随机盐，无需外部 RNG
         let hash = Argon2::default()
@@ -189,6 +204,10 @@ impl UserManager {
             .is_ok()
     }
 
+    /// 新增用户
+    ///
+    /// # Errors
+    /// 用户名为空、用户已存在、家目录为空/不存在/不是目录，或口令哈希失败时返回错误
     pub fn add_user(
         &mut self,
         username: String,
@@ -233,6 +252,10 @@ impl UserManager {
         Ok(())
     }
 
+    /// 删除用户
+    ///
+    /// # Errors
+    /// 用户不存在时返回错误
     pub fn remove_user(&mut self, username: &str) -> Result<()> {
         if self.users.remove(username).is_none() {
             return Err(anyhow::anyhow!("用户不存在: {username}"));
@@ -240,6 +263,10 @@ impl UserManager {
         Ok(())
     }
 
+    /// 更新用户口令
+    ///
+    /// # Errors
+    /// 用户不存在或新口令哈希失败时返回错误
     pub fn update_password(&mut self, username: &str, new_password: &str) -> Result<()> {
         let user = self
             .users
@@ -250,6 +277,10 @@ impl UserManager {
         Ok(())
     }
 
+    /// 更新用户主目录
+    ///
+    /// # Errors
+    /// 家目录为空/不存在/不是目录，或用户不存在时返回错误
     pub fn update_home_dir(&mut self, username: &str, home_dir: String) -> Result<()> {
         if home_dir.trim().is_empty() {
             return Err(anyhow::anyhow!("家目录不能为空"));
@@ -272,6 +303,10 @@ impl UserManager {
         Ok(())
     }
 
+    /// 覆盖用户权限
+    ///
+    /// # Errors
+    /// 用户不存在时返回错误
     pub fn update_permissions(&mut self, username: &str, permissions: Permissions) -> Result<()> {
         let user = self
             .users
@@ -282,6 +317,10 @@ impl UserManager {
         Ok(())
     }
 
+    /// 启用或禁用用户
+    ///
+    /// # Errors
+    /// 用户不存在时返回错误
     pub fn set_user_enabled(&mut self, username: &str, enabled: bool) -> Result<()> {
         let user = self
             .users
@@ -292,6 +331,12 @@ impl UserManager {
         Ok(())
     }
 
+    /// 校验用户口令；成功时更新 `last_login` 并落盘用户库
+    ///
+    /// 用户不存在、已禁用或口令不匹配均返回 `Ok(false)`。
+    ///
+    /// # Errors
+    /// 当前实现不会返回 `Err`；保留 `Result` 签名以便未来引入可恢复错误
     pub fn authenticate(&mut self, username: &str, password: &str) -> Result<bool> {
         let Some(user) = self.users.get_mut(username) else {
             return Ok(false);
@@ -315,6 +360,12 @@ impl UserManager {
         Ok(false)
     }
 
+    /// 从磁盘重新加载用户库并整体替换内存副本
+    ///
+    /// 文件缺失、读取失败或解析失败时保留/回退为空库并记录日志，不视为致命错误。
+    ///
+    /// # Errors
+    /// 当前实现不会返回 `Err`；保留 `Result` 签名以便未来引入可恢复错误
     pub fn reload(&mut self, path: &Path) -> Result<()> {
         debug!("[UserManager::reload] 尝试重新加载用户配置文件：{:?}", path);
 
@@ -394,6 +445,10 @@ impl UserManager {
         self.users.iter()
     }
 
+    /// 校验匿名 FTP 主目录配置
+    ///
+    /// # Errors
+    /// 目录为空、不存在或不是目录时返回错误
     pub fn validate_anonymous_home(home_dir: &str) -> Result<()> {
         if home_dir.trim().is_empty() {
             return Err(anyhow::anyhow!("匿名用户目录不能为空"));

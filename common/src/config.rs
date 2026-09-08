@@ -174,6 +174,10 @@ impl Default for Config {
 }
 
 impl Config {
+    /// 加载 TOML 配置；文件不存在时落盘一份默认配置并返回默认值
+    ///
+    /// # Errors
+    /// 配置文件存在但读取失败，或内容不是合法的 TOML 配置时返回错误
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             let config = Self::default();
@@ -190,6 +194,10 @@ impl Config {
         Ok(config)
     }
 
+    /// 将配置序列化为 TOML 并写入 `path`（先写临时文件再原子重命名）
+    ///
+    /// # Errors
+    /// 父目录创建、序列化、临时文件写入或重命名失败时返回错误
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).context("Failed to create config directory")?;
@@ -218,6 +226,10 @@ impl Config {
         paths::users_path()
     }
 
+    /// 校验配置自身的一致性（匿名 FTP 主目录、SFTP 主机密钥）
+    ///
+    /// # Errors
+    /// FTP 匿名访问已启用但 `anonymous_home` 未配置、不存在或不是目录时返回错误
     pub fn validate(&self) -> Result<()> {
         if self.ftp.enabled && self.ftp.allow_anonymous {
             match &self.ftp.anonymous_home {

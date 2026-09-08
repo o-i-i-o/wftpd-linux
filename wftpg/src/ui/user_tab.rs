@@ -352,19 +352,7 @@ fn build_home_dir_row(box_: &Box) -> Entry {
 }
 
 /// 构建八个权限勾选框（默认全开），返回顺序与 [`wftpd_common::Permissions`] 字段一致
-#[allow(clippy::type_complexity)]
-fn build_permission_checkboxes(
-    box_: &Box,
-) -> (
-    CheckButton,
-    CheckButton,
-    CheckButton,
-    CheckButton,
-    CheckButton,
-    CheckButton,
-    CheckButton,
-    CheckButton,
-) {
+fn build_permission_checkboxes(box_: &Box) -> [CheckButton; 8] {
     let perm_frame = Frame::new(Some("权限设置"));
     let perm_box = Box::new(Orientation::Horizontal, 10);
     perm_box.set_margin_top(5);
@@ -399,9 +387,9 @@ fn build_permission_checkboxes(
         rename_cb,
         append_cb,
     ] = checkboxes;
-    (
+    [
         read_cb, write_cb, delete_cb, list_cb, mkdir_cb, rmdir_cb, rename_cb, append_cb,
-    )
+    ]
 }
 
 /// 构建配额与限速两个设置区
@@ -445,8 +433,16 @@ fn build_limit_frames(box_: &Box) -> (CheckButton, SpinButton, CheckButton, Spin
 /// 组装对话框全部控件
 fn build_user_dialog_fields(box_: &Box, username: Option<&str>) -> UserDialogFields {
     let (username_entry, password_entry, home_entry) = build_identity_rows(box_, username);
-    let (read_cb, write_cb, delete_cb, list_cb, mkdir_cb, rmdir_cb, rename_cb, append_cb) =
-        build_permission_checkboxes(box_);
+    let [
+        read_cb,
+        write_cb,
+        delete_cb,
+        list_cb,
+        mkdir_cb,
+        rmdir_cb,
+        rename_cb,
+        append_cb,
+    ] = build_permission_checkboxes(box_);
     let (quota_cb, quota_spin, speed_limit_cb, speed_limit_spin) = build_limit_frames(box_);
 
     UserDialogFields {

@@ -24,3 +24,10 @@ md-5 = { workspace = true }
 hex = { workspace = true }
 nix = { workspace = true }
 libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+# 继承 workspace 统一 lint 策略（含 clippy::pedantic）
+[lints]
+workspace = true

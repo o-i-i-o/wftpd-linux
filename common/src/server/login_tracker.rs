@@ -120,3 +120,90 @@ impl LoginTracker {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failures_below_threshold_allowed() {
+        let tracker = LoginTracker::new(5, 60);
+        for _ in 0..4 {
+            assert!(tracker.check_and_record_failure("1.2.3.4"));
+        }
+        assert!(!tracker.is_banned("1.2.3.4"));
+        assert_eq!(tracker.get_remaining_attempts("1.2.3.4"), 1);
+    }
+
+    #[test]
+    fn reaching_threshold_bans_ip() {
+        let tracker = LoginTracker::new(3, 60);
+        assert!(tracker.check_and_record_failure("1.2.3.4"));
+        assert!(tracker.check_and_record_failure("1.2.3.4"));
+        // 第 3 次达到阈值：本次即返回 false 并封禁
+        assert!(!tracker.check_and_record_failure("1.2.3.4"));
+        assert!(tracker.is_banned("1.2.3.4"));
+        assert_eq!(tracker.get_remaining_attempts("1.2.3.4"), 0);
+        // 封禁期内继续失败仍被拒绝
+        assert!(!tracker.check_and_record_failure("1.2.3.4"));
+    }
+
+    #[test]
+    fn other_ips_unaffected() {
+        let tracker = LoginTracker::new(2, 60);
+        assert!(tracker.check_and_record_failure("1.1.1.1"));
+        assert!(!tracker.check_and_record_failure("1.1.1.1"));
+        assert!(tracker.is_banned("1.1.1.1"));
+        assert!(!tracker.is_banned("2.2.2.2"));
+        assert!(tracker.check_and_record_failure("2.2.2.2"));
+    }
+
+    #[test]
+    fn unknown_ip_has_full_attempts() {
+        let tracker = LoginTracker::new(4, 60);
+        assert_eq!(tracker.get_remaining_attempts("9.9.9.9"), 4);
+        assert!(!tracker.is_banned("9.9.9.9"));
+    }
+
+    #[test]
+    fn clear_attempts_resets_state() {
+        let tracker = LoginTracker::new(3, 60);
+        tracker.check_and_record_failure("1.2.3.4");
+        tracker.check_and_record_failure("1.2.3.4");
+        tracker.clear_attempts("1.2.3.4");
+        assert_eq!(tracker.get_remaining_attempts("1.2.3.4"), 3);
+    }
+
+    #[test]
+    fn ban_expires_and_resets_count() {
+        // 封禁时长 0：立刻过期，下次失败重新计数
+        let tracker = LoginTracker::new(2, 0);
+        assert!(tracker.check_and_record_failure("1.2.3.4"));
+        assert!(!tracker.check_and_record_failure("1.2.3.4"));
+        // banned_until = now，is_banned 检查过期并重置
+        assert!(!tracker.is_banned("1.2.3.4"));
+        assert_eq!(tracker.get_remaining_attempts("1.2.3.4"), 2);
+    }
+
+    #[test]
+    fn cleanup_keeps_active_bans() {
+        let tracker = LoginTracker::new(2, 3600);
+        assert!(tracker.check_and_record_failure("1.2.3.4"));
+        assert!(!tracker.check_and_record_failure("1.2.3.4"));
+
+        tracker.cleanup_expired();
+        assert!(tracker.is_banned("1.2.3.4"), "未过期的封禁应保留");
+    }
+
+    #[test]
+    fn cleanup_keeps_fresh_entries() {
+        let tracker = LoginTracker::new(10, 60);
+        tracker.check_and_record_failure("1.2.3.4");
+        tracker.cleanup_expired();
+        assert_eq!(
+            tracker.get_remaining_attempts("1.2.3.4"),
+            9,
+            "1 小时内的记录应保留"
+        );
+    }
+}

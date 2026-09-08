@@ -6,8 +6,7 @@
 pub mod convert;
 
 pub mod wftpd {
-    /// tonic-prost 生成的代码，不参与手工 lint 检查
-    #[allow(clippy::pedantic)]
+    // tonic-prost 生成代码的 lint 豁免在 proto/Cargo.toml 的 [lints.clippy] 配置
     pub mod v1 {
         tonic::include_proto!("wftpd.v1");
     }

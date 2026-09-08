@@ -27,3 +27,7 @@ chrono = { workspace = true }
 [[bin]]
 name = "wftp-gui"
 path = "src/bin/wftp-gui.rs"
+
+# 继承 workspace 统一 lint 策略（含 clippy::pedantic）
+[lints]
+workspace = true

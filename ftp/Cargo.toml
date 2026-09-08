@@ -16,3 +16,10 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+# 继承 workspace 统一 lint 策略（含 clippy::pedantic）
+[lints]
+workspace = true

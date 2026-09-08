@@ -325,3 +325,152 @@ fn ip_matches_cidr(ip: &str, cidr: &str) -> bool {
 
     ip == cidr
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- IP 过滤规则 ----
+
+    #[test]
+    fn ip_allowed_by_cidr_range() {
+        let allowed = vec!["192.168.1.0/24".to_string()];
+        assert!(Config::is_ip_allowed_for(&allowed, &[], "192.168.1.5"));
+        assert!(!Config::is_ip_allowed_for(&allowed, &[], "192.168.2.5"));
+    }
+
+    #[test]
+    fn ip_allowed_by_exact_match() {
+        let allowed = vec!["10.0.0.7".to_string()];
+        assert!(Config::is_ip_allowed_for(&allowed, &[], "10.0.0.7"));
+        assert!(!Config::is_ip_allowed_for(&allowed, &[], "10.0.0.8"));
+    }
+
+    #[test]
+    fn empty_allowed_list_permits_all() {
+        assert!(Config::is_ip_allowed_for(&[], &[], "1.2.3.4"));
+    }
+
+    #[test]
+    fn wildcard_cidr_permits_all() {
+        let allowed = vec!["0.0.0.0/0".to_string()];
+        assert!(Config::is_ip_allowed_for(&allowed, &[], "8.8.8.8"));
+    }
+
+    #[test]
+    fn denied_list_overrides_allowed() {
+        let allowed = vec!["0.0.0.0/0".to_string()];
+        let denied = vec!["10.0.0.1".to_string()];
+        assert!(!Config::is_ip_allowed_for(&allowed, &denied, "10.0.0.1"));
+        assert!(Config::is_ip_allowed_for(&allowed, &denied, "10.0.0.2"));
+    }
+
+    #[test]
+    fn instance_is_ip_allowed_matches_static() {
+        let mut config = Config::default();
+        config.security.allowed_ips = vec!["192.168.0.0/16".to_string()];
+        config.security.denied_ips = vec!["192.168.0.1".to_string()];
+        assert!(!config.is_ip_allowed("192.168.0.1"));
+        assert!(config.is_ip_allowed("192.168.5.5"));
+        assert!(!config.is_ip_allowed("10.0.0.1"));
+    }
+
+    // ---- validate：匿名 FTP 主目录 ----
+
+    #[test]
+    fn validate_anonymous_with_existing_home_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.ftp.enabled = true;
+        config.ftp.allow_anonymous = true;
+        config.ftp.anonymous_home = Some(dir.path().to_string_lossy().into_owned());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_anonymous_without_home_fails() {
+        let mut config = Config::default();
+        config.ftp.enabled = true;
+        config.ftp.allow_anonymous = true;
+        config.ftp.anonymous_home = None;
+        assert!(config.validate().is_err());
+
+        config.ftp.anonymous_home = Some("   ".to_string());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_anonymous_with_missing_home_fails() {
+        let mut config = Config::default();
+        config.ftp.enabled = true;
+        config.ftp.allow_anonymous = true;
+        config.ftp.anonymous_home = Some("/nonexistent/wftpd/test/home".to_string());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_anonymous_with_file_home_fails() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut config = Config::default();
+        config.ftp.enabled = true;
+        config.ftp.allow_anonymous = true;
+        config.ftp.anonymous_home = Some(file.path().to_string_lossy().into_owned());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_skips_anonymous_check_when_ftp_disabled() {
+        let mut config = Config::default();
+        config.ftp.enabled = false;
+        config.ftp.allow_anonymous = true;
+        config.ftp.anonymous_home = None;
+        assert!(config.validate().is_ok());
+    }
+
+    // ---- 持久化 ----
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let mut config = Config::default();
+        config.ftp.port = 2121;
+        config.sftp.enabled = false;
+        config.security.max_login_attempts = 7;
+        config.save(&path).unwrap();
+
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(loaded.ftp.port, 2121);
+        assert!(!loaded.sftp.enabled);
+        assert_eq!(loaded.security.max_login_attempts, 7);
+        assert_eq!(loaded.logging.log_dir, config.logging.log_dir);
+    }
+
+    #[test]
+    fn load_missing_file_writes_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("config.toml");
+        assert!(!path.exists());
+
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(loaded.ftp.port, Config::default().ftp.port);
+        assert!(path.exists(), "加载缺失配置时应落盘一份默认配置");
+    }
+
+    #[test]
+    fn load_invalid_toml_fails() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "not a valid toml {{{{").unwrap();
+        assert!(Config::load(file.path()).is_err());
+    }
+
+    #[test]
+    fn save_is_atomic_no_temp_file_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        Config::default().save(&path).unwrap();
+        assert!(path.exists());
+        assert!(!path.with_extension("tmp").exists());
+    }
+}

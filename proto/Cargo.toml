@@ -15,3 +15,9 @@ prost = { workspace = true }
 [build-dependencies]
 tonic-build = { workspace = true }
 protox = { workspace = true }
+
+# 本 crate 的代码全部由 tonic-prost-build 生成（proto/wftpd.proto → OUT_DIR），
+# 生成代码不满足 pedantic 的文档/命名规范且不可手改，在此清单级关闭；
+# 手写 crate 一律继承 workspace 的 pedantic = warn。
+[lints.clippy]
+pedantic = "allow"

@@ -152,3 +152,199 @@ impl Authenticator for WftpdAuthenticator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unftp_core::auth::{ChannelEncryptionState, UserDetailError};
+
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fut)
+    }
+
+    fn config_with(allow_anonymous: bool, anonymous_home: Option<String>) -> Config {
+        let mut config = Config::default();
+        config.ftp.allow_anonymous = allow_anonymous;
+        config.ftp.anonymous_home = anonymous_home;
+        config.security.allowed_ips = vec!["0.0.0.0/0".to_string()];
+        config.security.denied_ips = vec![];
+        config
+    }
+
+    fn creds_from_ip(ip: &str) -> Credentials {
+        Credentials {
+            password: Some("pw".to_string()),
+            certificate_chain: None,
+            source_ip: ip.parse().unwrap(),
+            command_channel_security: ChannelEncryptionState::Plaintext,
+        }
+    }
+
+    // ---- WftpdUserDetailProvider ----
+
+    #[test]
+    fn provider_maps_anonymous_to_anonymous_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with(true, Some(dir.path().to_string_lossy().into_owned()));
+        let manager = Arc::new(StdMutex::new(UserManager::new()));
+        let provider = WftpdUserDetailProvider::new(&config, manager);
+
+        for name in ["anonymous", "ftp"] {
+            let user = block_on(provider.provide_user_detail(&Principal {
+                username: name.to_string(),
+            }))
+            .expect("匿名用户应能获取详情");
+            assert!(user.anonymous);
+            assert_eq!(user.username, "anonymous");
+            assert_eq!(user.home, dir.path());
+            assert_eq!(user.permissions, wftpd_common::Permissions::full());
+        }
+    }
+
+    #[test]
+    fn provider_rejects_anonymous_without_home() {
+        let config = config_with(true, None);
+        let provider =
+            WftpdUserDetailProvider::new(&config, Arc::new(StdMutex::new(UserManager::new())));
+        let result = block_on(provider.provide_user_detail(&Principal {
+            username: "anonymous".to_string(),
+        }));
+        assert!(result.is_err(), "未配置 anonymous_home 时匿名详情应失败");
+    }
+
+    #[test]
+    fn provider_returns_real_user_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = UserManager::new();
+        manager
+            .add_user(
+                "alice".into(),
+                "pw",
+                dir.path().to_string_lossy().into_owned(),
+                wftpd_common::Permissions::full(),
+                false,
+            )
+            .unwrap();
+        let manager = Arc::new(StdMutex::new(manager));
+        let provider =
+            WftpdUserDetailProvider::new(&config_with(false, None), Arc::clone(&manager));
+
+        let user = block_on(provider.provide_user_detail(&Principal {
+            username: "alice".to_string(),
+        }))
+        .expect("已存在用户应返回详情");
+        assert!(!user.anonymous);
+        assert_eq!(user.home, dir.path());
+        assert!(user.permissions.can_write);
+    }
+
+    #[test]
+    fn provider_rejects_disabled_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = UserManager::new();
+        manager
+            .add_user(
+                "bob".into(),
+                "pw",
+                dir.path().to_string_lossy().into_owned(),
+                wftpd_common::Permissions::full(),
+                false,
+            )
+            .unwrap();
+        manager.set_user_enabled("bob", false).unwrap();
+        let provider = WftpdUserDetailProvider::new(
+            &config_with(false, None),
+            Arc::new(StdMutex::new(manager)),
+        );
+
+        assert!(
+            block_on(provider.provide_user_detail(&Principal {
+                username: "bob".to_string(),
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn provider_rejects_unknown_user() {
+        let provider = WftpdUserDetailProvider::new(
+            &config_with(false, None),
+            Arc::new(StdMutex::new(UserManager::new())),
+        );
+        let result = block_on(provider.provide_user_detail(&Principal {
+            username: "ghost".to_string(),
+        }));
+        assert!(matches!(result, Err(UserDetailError::UserNotFound { .. })));
+    }
+
+    // ---- WftpdAuthenticator ----
+
+    #[test]
+    fn authenticator_rejects_denied_ip() {
+        let mut config = config_with(false, None);
+        config.security.denied_ips = vec!["10.66.0.0/16".to_string()];
+        let authenticator =
+            WftpdAuthenticator::new(&config, Arc::new(StdMutex::new(UserManager::new())));
+
+        let result = block_on(authenticator.authenticate("alice", &creds_from_ip("10.66.1.1")));
+        assert!(matches!(result, Err(AuthenticationError::IpDisallowed)));
+
+        let ok = block_on(authenticator.authenticate("alice", &creds_from_ip("10.67.1.1")));
+        assert!(!matches!(ok, Err(AuthenticationError::IpDisallowed)));
+    }
+
+    #[test]
+    fn authenticator_anonymous_when_allowed() {
+        let config = config_with(true, Some("/srv/ftp".to_string()));
+        let authenticator =
+            WftpdAuthenticator::new(&config, Arc::new(StdMutex::new(UserManager::new())));
+
+        let principal =
+            block_on(authenticator.authenticate("anonymous", &creds_from_ip("127.0.0.1")))
+                .expect("允许匿名时应认证通过");
+        assert_eq!(principal.username, "anonymous");
+
+        let ftp_principal =
+            block_on(authenticator.authenticate("ftp", &creds_from_ip("127.0.0.1")))
+                .expect("ftp 用户名同样映射为匿名");
+        assert_eq!(ftp_principal.username, "anonymous");
+    }
+
+    #[test]
+    fn authenticator_anonymous_rejected_when_disabled() {
+        let config = config_with(false, None);
+        let authenticator =
+            WftpdAuthenticator::new(&config, Arc::new(StdMutex::new(UserManager::new())));
+
+        let result = block_on(authenticator.authenticate("anonymous", &creds_from_ip("127.0.0.1")));
+        assert!(matches!(result, Err(AuthenticationError::BadUser)));
+    }
+
+    #[test]
+    fn authenticator_requires_password() {
+        let config = config_with(false, None);
+        let authenticator =
+            WftpdAuthenticator::new(&config, Arc::new(StdMutex::new(UserManager::new())));
+
+        let mut creds = creds_from_ip("127.0.0.1");
+        creds.password = None;
+        let result = block_on(authenticator.authenticate("alice", &creds));
+        assert!(matches!(result, Err(AuthenticationError::BadPassword)));
+    }
+
+    #[test]
+    fn authenticator_wrong_password_fails() {
+        let config = config_with(false, None);
+        let authenticator =
+            WftpdAuthenticator::new(&config, Arc::new(StdMutex::new(UserManager::new())));
+
+        let mut creds = creds_from_ip("127.0.0.1");
+        creds.password = Some("definitely-wrong".to_string());
+        let result = block_on(authenticator.authenticate("alice", &creds));
+        assert!(matches!(result, Err(AuthenticationError::BadPassword)));
+    }
+}

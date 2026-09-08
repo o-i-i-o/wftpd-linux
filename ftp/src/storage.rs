@@ -477,3 +477,51 @@ fn io_err(e: &std::io::Error) -> StorageError {
         _ => ErrorKind::LocalError.into(),
     }
 }
+
+#[cfg(test)]
+mod user_tests {
+    use super::*;
+    use wftpd_common::Permissions;
+
+    #[test]
+    fn new_user_defaults_to_zero_quota() {
+        let user = WftpdUser::new(
+            "alice".to_string(),
+            PathBuf::from("/home/alice"),
+            Permissions::full(),
+        );
+        assert!(!user.anonymous);
+        assert_eq!(user.quota_mb, 0, "未配置 quota_mb 时归一为 0");
+        assert_eq!(user.username, "alice");
+    }
+
+    #[test]
+    fn new_user_carries_quota_from_permissions() {
+        let perms = Permissions {
+            quota_mb: Some(512),
+            ..Permissions::full()
+        };
+        let user = WftpdUser::new("bob".to_string(), PathBuf::from("/home/bob"), perms);
+        assert_eq!(user.quota_mb, 512);
+    }
+
+    #[test]
+    fn anonymous_user_has_full_permissions() {
+        let user = WftpdUser::anonymous(PathBuf::from("/srv/ftp"));
+        assert!(user.anonymous);
+        assert_eq!(user.username, "anonymous");
+        assert_eq!(user.home, PathBuf::from("/srv/ftp"));
+        assert_eq!(user.permissions, Permissions::full());
+    }
+
+    #[test]
+    fn user_detail_home_and_display() {
+        let user = WftpdUser::new(
+            "carol".to_string(),
+            PathBuf::from("/home/carol"),
+            Permissions::default(),
+        );
+        assert_eq!(UserDetail::home(&user), Some(Path::new("/home/carol")));
+        assert_eq!(user.to_string(), "carol");
+    }
+}

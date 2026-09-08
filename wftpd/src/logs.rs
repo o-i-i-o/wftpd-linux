@@ -11,8 +11,7 @@ use wftpd_common::{FileLogEntryJson, LogEntryJson, LogFileEntry};
 
 /// 列出目录下带指定前缀的日志文件（新→旧），例如 prefix="wftpg" 匹配 wftpg.2026-09-05.log
 ///
-/// 文件名由 tracing-appender 按 prefix/suffix 生成，恒为小写，因此扩展名比较保持大小写敏感
-#[allow(clippy::case_sensitive_file_extension_comparisons)]
+/// 扩展名比较大小写不敏感；前缀保持大小写敏感（由本程序生成，恒定小写）。
 pub fn list_log_files(log_dir: &str, prefix: &str) -> Vec<LogFileEntry> {
     let Ok(entries) = std::fs::read_dir(log_dir) else {
         return Vec::new();
@@ -23,9 +22,11 @@ pub fn list_log_files(log_dir: &str, prefix: &str) -> Vec<LogFileEntry> {
         .map(|e| e.path())
         .filter(|p| {
             p.is_file()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with(prefix) && n.ends_with(".log"))
+                && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.starts_with(prefix)
+                        && p.extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
+                })
         })
         .map(|p| LogFileEntry {
             name: p
@@ -224,5 +225,100 @@ mod tests {
         assert_eq!(entry.operation, "UPLOAD");
         assert_eq!(entry.file_size, 10);
         assert!(entry.success);
+    }
+
+    // ---- 文件级读取 ----
+
+    #[test]
+    fn list_log_files_filters_prefix_and_sorts_desc() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "wftpg.2026-09-01.log",
+            "wftpg.2026-09-05.log",
+            "wftpg.2026-09-03.log",
+            "file-ops.2026-09-05.log", // 不同前缀，应被过滤
+            "wftpg.2026-09-02.txt",    // 非日志扩展名，应被过滤
+        ] {
+            std::fs::write(dir.path().join(name), "x").unwrap();
+        }
+
+        let files = list_log_files(&dir.path().to_string_lossy(), "wftpg");
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["wftpg.2026-09-05", "wftpg.2026-09-03", "wftpg.2026-09-01"]
+        );
+        assert!(files[0].path.ends_with("wftpg.2026-09-05.log"));
+    }
+
+    #[test]
+    fn list_log_files_missing_dir_returns_empty() {
+        assert!(list_log_files("/nonexistent/wftpd/logs", "wftpg").is_empty());
+    }
+
+    #[test]
+    fn read_program_log_returns_last_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wftpg.2026-09-08.log");
+        let mut content = String::new();
+        for i in 0..5 {
+            use std::fmt::Write as _;
+            let _ = writeln!(content, "2026-09-08T10:0{i}:00+08:00  INFO wftpd: line-{i}");
+        }
+        std::fs::write(&path, content).unwrap();
+
+        let entries = read_program_log(&path.to_string_lossy(), 3);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].message, "line-2", "最早的一条应为 line-2");
+        assert_eq!(entries[2].message, "line-4");
+
+        // count 超过文件行数时返回全部
+        assert_eq!(read_program_log(&path.to_string_lossy(), 100).len(), 5);
+    }
+
+    #[test]
+    fn read_program_log_missing_file_returns_empty() {
+        assert!(read_program_log("/nonexistent/wftpd/app.log", 10).is_empty());
+    }
+
+    #[test]
+    fn read_file_op_log_parses_json_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file-ops.2026-09-08.log");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"timestamp":"t1","fields":{"username":"u1","client_ip":"ip","operation":"UPLOAD","file_path":"/a","file_size":1,"protocol":"FTP","success":true,"message":"ok"}}"#,
+                "\n",
+                r#"{"timestamp":"t2","fields":{"username":"u2","client_ip":"ip","operation":"DELETE","file_path":"/b","file_size":0,"protocol":"FTP","success":false,"message":"nope"}}"#,
+                "\n",
+                "not-json-line\n",
+            ),
+        )
+        .unwrap();
+
+        let entries = read_file_op_log(&path.to_string_lossy(), 10);
+        assert_eq!(entries.len(), 2, "无法解析的行应被跳过");
+        assert_eq!(entries[0].operation, "UPLOAD");
+        assert_eq!(entries[1].operation, "DELETE");
+        assert!(!entries[1].success);
+    }
+
+    #[test]
+    fn ensure_path_in_dir_accepts_inside_rejects_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let inside = dir.path().join("app.log");
+        std::fs::write(&inside, "x").unwrap();
+        let outside = std::env::temp_dir().join("wftpd-outside-test.log");
+        std::fs::write(&outside, "x").unwrap();
+
+        assert!(
+            ensure_path_in_dir(&inside.to_string_lossy(), &dir.path().to_string_lossy()).is_ok()
+        );
+        assert!(
+            ensure_path_in_dir(&outside.to_string_lossy(), &dir.path().to_string_lossy()).is_err(),
+            "目录之外的路径应被拒绝"
+        );
+        let _ = std::fs::remove_file(&outside);
     }
 }

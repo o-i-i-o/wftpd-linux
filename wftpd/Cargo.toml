@@ -26,3 +26,10 @@ nix = { workspace = true }
 [[bin]]
 name = "wftpd"
 path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+# 继承 workspace 统一 lint 策略（含 clippy::pedantic）
+[lints]
+workspace = true

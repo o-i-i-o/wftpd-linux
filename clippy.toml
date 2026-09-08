@@ -1,0 +1,3 @@
+# Permissions（common/src/users.rs）是序列化进 users.json 的权限位集合，
+# 布尔字段数量为领域固有形态；将默认阈值 3 上调至 8。
+max-struct-bools = 8

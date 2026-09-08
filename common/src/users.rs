@@ -23,9 +23,10 @@ pub struct User {
     pub is_admin: bool,
 }
 
-// 权限模型即布尔位集合，字段数量为领域固有，非设计缺陷
-#[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+/// 权限位集合；字段数量经 clippy.toml 的 `max-struct-bools` 阈值豁免
+///
+/// 序列化形态即 users.json 的用户权限字段，不能随意重构。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Permissions {
     pub can_read: bool,
     pub can_write: bool,
@@ -463,5 +464,346 @@ impl UserManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_home() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    // ---- 口令哈希 ----
+
+    #[test]
+    fn hash_and_verify_password_roundtrip() {
+        let hash = UserManager::hash_password("s3cret-PW").unwrap();
+        assert!(hash.starts_with("$argon2id$"));
+        assert!(UserManager::verify_password("s3cret-PW", &hash));
+        assert!(!UserManager::verify_password("wrong", &hash));
+    }
+
+    #[test]
+    fn verify_password_rejects_malformed_hash() {
+        assert!(!UserManager::verify_password("x", "not-a-phc-hash"));
+        assert!(!UserManager::verify_password("x", ""));
+    }
+
+    #[test]
+    fn hash_password_uses_random_salt() {
+        let a = UserManager::hash_password("same").unwrap();
+        let b = UserManager::hash_password("same").unwrap();
+        assert_ne!(a, b, "相同口令的两次哈希应使用不同盐");
+    }
+
+    // ---- add_user 校验 ----
+
+    #[test]
+    fn add_user_rejects_empty_username() {
+        let (_dir, home) = temp_home();
+        let mut manager = UserManager::new();
+        let err = manager
+            .add_user(String::new(), "pw", home, Permissions::full(), false)
+            .unwrap_err();
+        assert!(err.to_string().contains("用户名不能为空"));
+    }
+
+    #[test]
+    fn add_user_rejects_duplicate() {
+        let (_dir, home) = temp_home();
+        let mut manager = UserManager::new();
+        manager
+            .add_user(
+                "alice".into(),
+                "pw",
+                home.clone(),
+                Permissions::full(),
+                false,
+            )
+            .unwrap();
+        assert!(
+            manager
+                .add_user("alice".into(), "pw", home, Permissions::full(), false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn add_user_rejects_empty_home() {
+        let mut manager = UserManager::new();
+        assert!(
+            manager
+                .add_user(
+                    "alice".into(),
+                    "pw",
+                    "  ".to_string(),
+                    Permissions::full(),
+                    false
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn add_user_rejects_missing_home() {
+        let mut manager = UserManager::new();
+        assert!(
+            manager
+                .add_user(
+                    "alice".into(),
+                    "pw",
+                    "/nonexistent/wftpd/home".to_string(),
+                    Permissions::full(),
+                    false
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn add_user_rejects_file_as_home() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut manager = UserManager::new();
+        let home = file.path().to_string_lossy().into_owned();
+        assert!(
+            manager
+                .add_user("alice".into(), "pw", home, Permissions::full(), false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn add_user_success_sets_defaults() {
+        let (_dir, home) = temp_home();
+        let mut manager = UserManager::new();
+        manager
+            .add_user("alice".into(), "pw", home, Permissions::full(), true)
+            .unwrap();
+
+        let user = manager.get_user("alice").unwrap();
+        assert!(user.enabled);
+        assert!(user.is_admin);
+        assert!(user.last_login.is_none());
+        assert_eq!(user.permissions, Permissions::full());
+    }
+
+    // ---- 用户操作 ----
+
+    fn manager_with_user() -> (tempfile::TempDir, UserManager) {
+        let (dir, home) = temp_home();
+        let mut manager = UserManager::new();
+        manager
+            .add_user("alice".into(), "pw", home, Permissions::full(), false)
+            .unwrap();
+        (dir, manager)
+    }
+
+    #[test]
+    fn remove_user_missing_fails() {
+        let (_dir, mut manager) = manager_with_user();
+        assert!(manager.remove_user("bob").is_err());
+        manager.remove_user("alice").unwrap();
+        assert!(manager.get_user("alice").is_none());
+    }
+
+    #[test]
+    fn update_password_changes_hash() {
+        let (_dir, mut manager) = manager_with_user();
+        let old_hash = manager.get_user("alice").unwrap().password_hash.clone();
+        manager.update_password("alice", "new-pw").unwrap();
+        let new_hash = &manager.get_user("alice").unwrap().password_hash;
+        assert_ne!(old_hash, *new_hash);
+        assert!(UserManager::verify_password("new-pw", new_hash));
+    }
+
+    #[test]
+    fn update_password_missing_user_fails() {
+        let mut manager = UserManager::new();
+        assert!(manager.update_password("ghost", "pw").is_err());
+    }
+
+    #[test]
+    fn update_home_dir_validates_target() {
+        let (_dir, mut manager) = manager_with_user();
+        assert!(manager.update_home_dir("alice", " ".into()).is_err());
+        assert!(
+            manager
+                .update_home_dir("alice", "/nonexistent/wftpd/home".into())
+                .is_err()
+        );
+        assert!(manager.update_home_dir("ghost", "/tmp".into()).is_err());
+
+        let (new_dir, new_home) = temp_home();
+        manager.update_home_dir("alice", new_home).unwrap();
+        assert_eq!(
+            manager.get_user("alice").unwrap().home_dir,
+            new_dir.path().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn update_permissions_and_enabled() {
+        let (_dir, mut manager) = manager_with_user();
+        let read_only = Permissions {
+            can_read: true,
+            can_list: true,
+            ..Permissions::default()
+        };
+        manager.update_permissions("alice", read_only).unwrap();
+        assert_eq!(manager.get_user("alice").unwrap().permissions, read_only);
+        assert!(manager.update_permissions("ghost", read_only).is_err());
+
+        manager.set_user_enabled("alice", false).unwrap();
+        assert!(!manager.get_user("alice").unwrap().enabled);
+        assert!(manager.set_user_enabled("ghost", true).is_err());
+    }
+
+    // ---- authenticate（不触发落盘的分支）----
+    // 注意：认证成功会写真实 XDG 用户库路径，成功分支由
+    // hash/verify 与 enabled 检查的组合覆盖，不在单测中执行。
+
+    #[test]
+    fn authenticate_unknown_user_returns_false() {
+        let mut manager = UserManager::new();
+        assert!(!manager.authenticate("ghost", "pw").unwrap());
+    }
+
+    #[test]
+    fn authenticate_disabled_user_returns_false() {
+        let (_dir, mut manager) = manager_with_user();
+        manager.set_user_enabled("alice", false).unwrap();
+        assert!(!manager.authenticate("alice", "pw").unwrap());
+    }
+
+    #[test]
+    fn authenticate_wrong_password_returns_false() {
+        let (_dir, mut manager) = manager_with_user();
+        assert!(!manager.authenticate("alice", "definitely-wrong").unwrap());
+    }
+
+    // ---- 持久化 ----
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let (dir, home) = temp_home();
+        let path = dir.path().join("users.json");
+        let mut manager = UserManager::new();
+        manager
+            .add_user("alice".into(), "pw", home, Permissions::full(), true)
+            .unwrap();
+        manager
+            .add_user(
+                "bob".into(),
+                "pw2",
+                dir.path().to_string_lossy().into_owned(),
+                Permissions::default(),
+                false,
+            )
+            .unwrap();
+        manager.save(&path).unwrap();
+
+        let loaded = UserManager::load(&path).unwrap();
+        assert_eq!(loaded.get_users().len(), 2);
+        let alice = loaded.get_user("alice").unwrap();
+        assert!(alice.is_admin);
+        assert!(UserManager::verify_password("pw", &alice.password_hash));
+        assert_eq!(
+            loaded.get_user("bob").unwrap().permissions,
+            Permissions::default()
+        );
+    }
+
+    #[test]
+    fn load_missing_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = UserManager::load(&dir.path().join("absent.json")).unwrap();
+        assert_eq!(manager.get_users().len(), 0);
+    }
+
+    #[test]
+    fn load_empty_file_returns_empty() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "   \n ").unwrap();
+        let manager = UserManager::load(file.path()).unwrap();
+        assert_eq!(manager.get_users().len(), 0);
+    }
+
+    #[test]
+    fn load_invalid_json_returns_empty() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "{ not json").unwrap();
+        let manager = UserManager::load(file.path()).unwrap();
+        assert_eq!(manager.get_users().len(), 0);
+    }
+
+    #[test]
+    fn reload_replaces_users_from_disk() {
+        let (dir, home) = temp_home();
+        let path = dir.path().join("users.json");
+
+        let mut disk_manager = UserManager::new();
+        disk_manager
+            .add_user("carol".into(), "pw", home, Permissions::full(), false)
+            .unwrap();
+        disk_manager.save(&path).unwrap();
+
+        let mut manager = UserManager::new();
+        manager.reload(&path).unwrap();
+        assert!(manager.get_user("carol").is_some());
+        assert_eq!(manager.get_users().len(), 1);
+    }
+
+    #[test]
+    fn reload_missing_file_keeps_existing() {
+        let (_dir, mut manager) = manager_with_user();
+        manager
+            .reload(Path::new("/nonexistent/wftpd/users.json"))
+            .unwrap();
+        assert!(manager.get_user("alice").is_some());
+    }
+
+    // ---- 列表与杂项 ----
+
+    #[test]
+    fn list_and_get_all_users_agree() {
+        let (_dir, manager) = manager_with_user();
+        assert_eq!(manager.list_users().count(), 1);
+        assert_eq!(manager.get_all_users().len(), 1);
+        assert_eq!(manager.get_all_users()[0].username, "alice");
+    }
+
+    #[test]
+    fn validate_anonymous_home_rules() {
+        let (dir, home) = temp_home();
+        assert!(UserManager::validate_anonymous_home(&home).is_ok());
+        assert!(UserManager::validate_anonymous_home(" ").is_err());
+        assert!(UserManager::validate_anonymous_home("/nonexistent/wftpd/anon").is_err());
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        assert!(UserManager::validate_anonymous_home(&file.path().to_string_lossy()).is_err());
+        drop(dir);
+    }
+
+    #[test]
+    fn permissions_display_lists_enabled_flags() {
+        let full = Permissions::full();
+        let display = full.to_string();
+        for flag in [
+            "读",
+            "写",
+            "删",
+            "列表",
+            "建目录",
+            "删目录",
+            "重命名",
+            "追加",
+        ] {
+            assert!(display.contains(flag), "缺少权限标识: {flag}");
+        }
+        assert_eq!(Permissions::default().to_string(), "");
     }
 }

@@ -1070,3 +1070,362 @@ pub async fn validate_path_with_cwd(cwd: &str, home_dir: &str, path: &str) -> Re
 
     validate_path_within_chroot(&full_path, home_dir).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read as _;
+
+    /// 测试用 `current_thread` runtime（`tokio` 的 `macros` 特性未启用，不能用 `#[tokio::test]`）
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fut)
+    }
+
+    fn temp_home() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    fn home_str(dir: &tempfile::TempDir) -> String {
+        dir.path().to_string_lossy().into_owned()
+    }
+
+    // ---- 虚拟/真实路径互转 ----
+
+    #[test]
+    fn real_to_virtual_path_maps_home_to_root() {
+        let dir = temp_home();
+        let home = home_str(&dir);
+        assert_eq!(real_to_virtual_path(&home, &home), "/");
+    }
+
+    #[test]
+    fn real_to_virtual_path_strips_home_prefix() {
+        let dir = temp_home();
+        let home = home_str(&dir);
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        assert_eq!(
+            real_to_virtual_path(&dir.path().join("a/b").to_string_lossy(), &home),
+            "/a/b"
+        );
+    }
+
+    #[test]
+    fn virtual_to_real_path_root_is_home() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            PathBuf::from(virtual_to_real_path("/", &home_str(&dir))),
+            home
+        );
+    }
+
+    #[test]
+    fn virtual_to_real_path_joins_components() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            PathBuf::from(virtual_to_real_path("/a/b.txt", &home_str(&dir))),
+            home.join("a/b.txt")
+        );
+        assert_eq!(
+            PathBuf::from(virtual_to_real_path("a/b.txt", &home_str(&dir))),
+            home.join("a/b.txt")
+        );
+    }
+
+    // ---- 用户名合法性 ----
+
+    #[test]
+    fn is_safe_username_accepts_alnum_underscore_dash() {
+        for name in ["alice", "a", "A_1-b", "_x", "0start", &"a".repeat(64)] {
+            assert!(is_safe_username(name), "应接受: {name}");
+        }
+    }
+
+    #[test]
+    fn is_safe_username_rejects_bad_input() {
+        for name in ["", "-lead", "has space", "中文", "a;b", "a/b", ".", ".."] {
+            assert!(!is_safe_username(name), "应拒绝: {name:?}");
+        }
+        assert!(!is_safe_username(&"a".repeat(65)), "超过 64 字符应拒绝");
+    }
+
+    // ---- safe_resolve_path：chroot 锚定 ----
+
+    #[test]
+    fn safe_resolve_path_empty_and_dot_return_home() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        for p in ["", ".", "./", "  "] {
+            assert_eq!(safe_resolve_path(&home_str(&dir), p).unwrap(), home);
+        }
+    }
+
+    #[test]
+    fn safe_resolve_path_existing_relative_and_absolute() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+
+        assert_eq!(
+            safe_resolve_path(&home_str(&dir), "sub").unwrap(),
+            home.join("sub")
+        );
+        assert_eq!(
+            safe_resolve_path(&home_str(&dir), "/sub").unwrap(),
+            home.join("sub")
+        );
+    }
+
+    #[test]
+    fn safe_resolve_path_nonexistent_stays_inside_home() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        assert_eq!(
+            safe_resolve_path(&home_str(&dir), "newdir/file.txt").unwrap(),
+            home.join("newdir/file.txt")
+        );
+    }
+
+    #[test]
+    fn safe_resolve_path_blocks_parent_escape() {
+        let dir = temp_home();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        let home = home_str(&dir);
+
+        assert!(safe_resolve_path(&home, "..").is_err());
+        assert!(safe_resolve_path(&home, "../..").is_err());
+        assert!(safe_resolve_path(&home, "sub/../../..").is_err());
+    }
+
+    #[test]
+    fn safe_resolve_path_blocks_symlink_escape() {
+        let dir = temp_home();
+        let home = home_str(&dir);
+        std::os::unix::fs::symlink("/etc", dir.path().join("etc_link")).unwrap();
+        assert!(safe_resolve_path(&home, "etc_link/passwd").is_err());
+    }
+
+    #[test]
+    fn safe_resolve_path_rejects_overlong_path() {
+        let dir = temp_home();
+        let long = "a".repeat(5000);
+        assert!(matches!(
+            safe_resolve_path(&home_str(&dir), &long),
+            Err(WftpgError::PathResolveError(_))
+        ));
+    }
+
+    #[test]
+    fn safe_resolve_path_missing_home_fails() {
+        assert!(safe_resolve_path("/nonexistent/wftpd/home", "x").is_err());
+    }
+
+    // ---- safe_resolve_path_with_cwd ----
+
+    #[test]
+    fn safe_resolve_path_with_cwd_resolves_relative_to_cwd() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        let sub = home.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        assert_eq!(
+            safe_resolve_path_with_cwd(&sub.to_string_lossy(), &home_str(&dir), "f.txt").unwrap(),
+            sub.join("f.txt")
+        );
+        // cwd 内的 .. 被钳制回主目录，不视为攻击
+        assert_eq!(
+            safe_resolve_path_with_cwd(&sub.to_string_lossy(), &home_str(&dir), "../x").unwrap(),
+            home.join("x")
+        );
+    }
+
+    #[test]
+    fn safe_resolve_path_with_cwd_rejects_outside_cwd() {
+        let dir = temp_home();
+        assert!(safe_resolve_path_with_cwd("/etc", &home_str(&dir), "").is_err());
+    }
+
+    // ---- MLST/时间/模式格式化 ----
+
+    #[test]
+    fn escape_mlst_filename_escapes_specials() {
+        assert_eq!(escape_mlst_filename("a b"), "a\\ b");
+        assert_eq!(escape_mlst_filename("x;y=z"), "x\\;y\\=z");
+        assert_eq!(escape_mlst_filename("a\\b"), "a\\\\b");
+        assert_eq!(escape_mlst_filename("\n"), "\\012");
+        assert_eq!(escape_mlst_filename("\r"), "\\015");
+        assert_eq!(escape_mlst_filename("\t"), "\\011");
+        assert_eq!(escape_mlst_filename("\u{1}"), "\\001");
+        assert_eq!(escape_mlst_filename("plain.txt"), "plain.txt");
+    }
+
+    #[test]
+    fn file_metadata_formatting() {
+        let dir = temp_home();
+        let file = dir.path().join("f.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let md = std::fs::metadata(&file).unwrap();
+
+        let mtime = get_file_mtime(&md);
+        assert_eq!(mtime.len(), 16, "格式应为 YYYY-MM-DD HH:MM");
+        assert!(mtime.contains('-'));
+
+        let raw = get_file_mtime_raw(&md);
+        assert!(raw.parse::<u64>().is_ok());
+
+        #[cfg(unix)]
+        assert_eq!(get_unix_mode(&md), "0644");
+
+        let facts = build_mlst_facts(&md);
+        assert!(facts.starts_with("type=file;"));
+        assert!(facts.contains("size=5;"));
+        assert!(facts.contains("unix.mode="));
+
+        let dir_md = std::fs::metadata(dir.path()).unwrap();
+        assert!(build_mlst_facts(&dir_md).starts_with("type=dir;"));
+    }
+
+    // ---- safe_open_file_at：openat(O_NOFOLLOW) 防符号链接 ----
+
+    #[test]
+    fn safe_open_file_at_reads_file_inside_home() {
+        let dir = temp_home();
+        std::fs::write(dir.path().join("data.txt"), b"hello").unwrap();
+
+        let mut f = safe_open_file_at(&home_str(&dir), "data.txt").unwrap();
+        let mut content = String::new();
+        f.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn safe_open_file_at_opens_nested_components() {
+        let dir = temp_home();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        std::fs::write(dir.path().join("a/b/c.txt"), b"deep").unwrap();
+
+        let mut f = safe_open_file_at(&home_str(&dir), "a/b/c.txt").unwrap();
+        let mut content = String::new();
+        f.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "deep");
+    }
+
+    #[test]
+    fn safe_open_file_at_rejects_parent_dir() {
+        let dir = temp_home();
+        assert!(safe_open_file_at(&home_str(&dir), "../secret").is_err());
+        assert!(safe_open_file_at(&home_str(&dir), "a/../b").is_err());
+    }
+
+    #[test]
+    fn safe_open_file_at_rejects_symlink() {
+        let dir = temp_home();
+        std::fs::write(dir.path().join("real.txt"), b"r").unwrap();
+        std::os::unix::fs::symlink("real.txt", dir.path().join("ln.txt")).unwrap();
+        assert!(safe_open_file_at(&home_str(&dir), "ln.txt").is_err());
+    }
+
+    #[test]
+    fn safe_open_file_at_rejects_absolute_escape() {
+        let dir = temp_home();
+        assert!(safe_open_file_at(&home_str(&dir), "/etc/passwd").is_err());
+    }
+
+    // ---- 异步变体 ----
+
+    #[test]
+    fn safe_resolve_path_async_basic_and_escape() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::os::unix::fs::symlink("/etc", dir.path().join("etc_link")).unwrap();
+        let hs = home_str(&dir);
+
+        assert_eq!(
+            block_on(safe_resolve_path_async(&hs, "sub")).unwrap(),
+            home.join("sub")
+        );
+        assert!(block_on(safe_resolve_path_async(&hs, "..")).is_err());
+        assert!(block_on(safe_resolve_path_async(&hs, "etc_link/passwd")).is_err());
+    }
+
+    #[test]
+    fn safe_open_file_at_async_reads_file() {
+        let dir = temp_home();
+        std::fs::write(dir.path().join("data.txt"), b"async").unwrap();
+        let mut f = block_on(safe_open_file_at_async(&home_str(&dir), "data.txt")).unwrap();
+        let content = block_on(async {
+            use tokio::io::AsyncReadExt as _;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf).await.unwrap();
+            buf
+        });
+        assert_eq!(content, b"async");
+    }
+
+    #[test]
+    fn validate_path_within_chroot_ok_and_escape() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::os::unix::fs::symlink("/etc", dir.path().join("etc_link")).unwrap();
+        let hs = home_str(&dir);
+
+        assert_eq!(
+            block_on(validate_path_within_chroot("sub/f.txt", &hs)).unwrap(),
+            home.join("sub/f.txt")
+        );
+        // chroot 语义：绝对路径视为主目录内的路径
+        assert_eq!(
+            block_on(validate_path_within_chroot("/etc/passwd", &hs)).unwrap(),
+            home.join("etc/passwd")
+        );
+        assert!(block_on(validate_path_within_chroot("etc_link/passwd", &hs)).is_err());
+    }
+
+    #[test]
+    fn validate_path_for_creation_rules() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        let hs = home_str(&dir);
+
+        assert_eq!(
+            block_on(validate_path_for_creation("newd/x.txt", &hs)).unwrap(),
+            home.join("newd/x.txt")
+        );
+        // 根目录不可创建
+        assert!(block_on(validate_path_for_creation("/", &hs)).is_err());
+    }
+
+    #[test]
+    fn validate_path_with_cwd_joins_relative() {
+        let dir = temp_home();
+        let home = dir.path().canonicalize().unwrap();
+        // sub 必须真实存在：canonicalize 才能解析 ".." 并发现逃逸
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        let hs = home_str(&dir);
+
+        assert_eq!(
+            block_on(validate_path_with_cwd("/sub", &hs, "f.txt")).unwrap(),
+            home.join("sub/f.txt")
+        );
+        // 空路径/`.` 解析为 cwd 本身
+        assert_eq!(
+            block_on(validate_path_with_cwd("/sub", &hs, ".")).unwrap(),
+            home.join("sub")
+        );
+        // cwd 之上的路径拒绝
+        assert!(block_on(validate_path_with_cwd("/sub", &hs, "../../x")).is_err());
+    }
+}

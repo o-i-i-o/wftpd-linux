@@ -227,3 +227,33 @@ impl FtpServer {
         *self.running.lock().unwrap()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wftpd_common::{Config, UserManager};
+
+    fn make_server() -> FtpServer {
+        FtpServer::new(
+            Arc::new(StdMutex::new(Config::default())),
+            Arc::new(StdMutex::new(UserManager::new())),
+            Arc::new(StdMutex::new(wftpd_common::FileLogger::new("/tmp", 0))),
+        )
+    }
+
+    #[test]
+    fn new_server_is_not_running() {
+        assert!(!make_server().is_running());
+    }
+
+    #[test]
+    fn stop_before_start_is_noop() {
+        let server = make_server();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(server.stop());
+        assert!(!server.is_running());
+    }
+}

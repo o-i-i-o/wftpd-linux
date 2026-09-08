@@ -94,3 +94,61 @@ impl Clone for SpeedLimiter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fut)
+    }
+
+    #[test]
+    fn new_converts_kbps_to_bytes() {
+        let limiter = SpeedLimiter::new(64);
+        assert_eq!(limiter.get_limit(), 64);
+    }
+
+    #[test]
+    fn with_unlimited_is_zero_limit() {
+        assert_eq!(SpeedLimiter::with_unlimited().get_limit(), 0);
+        assert_eq!(SpeedLimiter::default().get_limit(), 0);
+    }
+
+    #[test]
+    fn set_limit_updates_conversion() {
+        let mut limiter = SpeedLimiter::new(10);
+        limiter.set_limit(256);
+        assert_eq!(limiter.get_limit(), 256);
+    }
+
+    #[test]
+    fn clone_preserves_limit() {
+        let limiter = SpeedLimiter::new(128);
+        assert_eq!(limiter.clone().get_limit(), 128);
+    }
+
+    #[test]
+    fn unlimited_throttle_is_noop() {
+        let limiter = SpeedLimiter::with_unlimited();
+        // 不限速时任意字节数都应立即返回，不等待
+        block_on(limiter.throttle(10 * 1024 * 1024));
+    }
+
+    #[test]
+    fn zero_bytes_throttle_is_noop() {
+        let limiter = SpeedLimiter::new(1);
+        block_on(limiter.throttle(0));
+    }
+
+    #[test]
+    fn limited_throttle_returns_quickly_when_idle() {
+        // 令牌桶空闲补充：首次少量字节应几乎无等待
+        let limiter = SpeedLimiter::new(1024 * 1024);
+        block_on(limiter.throttle(1024));
+    }
+}

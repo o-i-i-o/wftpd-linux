@@ -50,3 +50,64 @@ impl From<serde_json::Error> for WftpgError {
 }
 
 pub type WftpgResult<T> = Result<T, WftpgError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_includes_kind_prefix() {
+        assert_eq!(
+            WftpgError::ConfigError("bad".into()).to_string(),
+            "配置错误: bad"
+        );
+        assert_eq!(
+            WftpgError::PathResolveError("escape".into()).to_string(),
+            "路径解析错误: escape"
+        );
+        assert_eq!(
+            WftpgError::AuthError("denied".into()).to_string(),
+            "认证错误: denied"
+        );
+    }
+
+    #[test]
+    fn all_variants_display_without_panic() {
+        let samples = [
+            WftpgError::ConfigError("x".into()),
+            WftpgError::NetworkError("x".into()),
+            WftpgError::AuthError("x".into()),
+            WftpgError::FileError("x".into()),
+            WftpgError::PermissionError("x".into()),
+            WftpgError::UserError("x".into()),
+            WftpgError::ProtocolError("x".into()),
+            WftpgError::InternalError("x".into()),
+            WftpgError::PathResolveError("x".into()),
+        ];
+        for e in &samples {
+            assert!(!e.to_string().is_empty());
+            let _ = format!("{e:?}");
+        }
+    }
+
+    #[test]
+    fn from_io_error_maps_to_file_error() {
+        let err = WftpgError::from(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        assert!(matches!(err, WftpgError::FileError(_)));
+    }
+
+    #[test]
+    fn from_serde_errors_map_to_config_error() {
+        let json_err = serde_json::from_str::<String>("{").unwrap_err();
+        assert!(matches!(
+            WftpgError::from(json_err),
+            WftpgError::ConfigError(_)
+        ));
+
+        let toml_err = toml::from_str::<String>("=").unwrap_err();
+        assert!(matches!(
+            WftpgError::from(toml_err),
+            WftpgError::ConfigError(_)
+        ));
+    }
+}

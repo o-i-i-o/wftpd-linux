@@ -1,27 +1,32 @@
 use gtk::ApplicationWindow;
 use gtk::prelude::*;
 
-/// `u64` -> `f64`（GTK `SpinButton` 数值域），小值无精度问题；集中放置以通过 pedantic cast 检查
-#[allow(clippy::cast_precision_loss)]
+/// `u64` -> `f64`，用于设置 `SpinButton` 值。
+/// GUI 数值域（端口/速率/时长等）远小于 `u32::MAX`，经 `u32` 饱和后由
+/// `From` 无损转换，不存在精度损失。
 #[must_use]
 pub fn spin_f64_from(v: u64) -> f64 {
-    v as f64
+    f64::from(u32::try_from(v).unwrap_or(u32::MAX))
 }
 
 /// `SpinButton` 值（已被控件范围钳制为非负）取整为 `u64`。
-/// `f64` 无 `TryFrom` 到整型，只能 `as` 转换；先 round 并钳制到 9e15
-/// （< 2^53，`f64` 可精确表示，亦小于 `u64::MAX`），故转换不可能截断或丢符号。
+/// `f64` 到整型没有 `TryFrom`，为避免 `as` 的截断语义，经十进制字符串
+/// 取整转换：先 round 并钳制到 9e15（< 2^53，`f64` 可精确表示），解析
+/// 必然成功；`NaN` 等异常值解析失败时回退为 0（与 `as` 的饱和语义一致）。
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn spin_u64(value: f64) -> u64 {
-    value.round().clamp(0.0, 9.0e15) as u64
+    value
+        .round()
+        .clamp(0.0, 9.0e15)
+        .to_string()
+        .parse()
+        .unwrap_or_default()
 }
 
-/// 同 [`spin_u64`]，目标类型为 `u32`（钳制上限 4e9 < `u32::MAX`）
+/// 同 [`spin_u64`]，目标类型为 `u32`
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn spin_u32(value: f64) -> u32 {
-    value.round().clamp(0.0, 4.0e9) as u32
+    u32::try_from(spin_u64(value)).unwrap_or(u32::MAX)
 }
 
 /// 同 [`spin_u64`]，目标类型为 `usize`
@@ -32,9 +37,13 @@ pub fn spin_usize(value: f64) -> usize {
 
 /// `f64` -> `i32`（窗口尺寸），四舍五入并钳制到非负 `i32` 范围（理由同 [`spin_u64`]）
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn f64_to_i32(value: f64) -> i32 {
-    value.round().clamp(0.0, 2.0e9) as i32
+    value
+        .round()
+        .clamp(0.0, 2.0e9)
+        .to_string()
+        .parse()
+        .unwrap_or(i32::MAX)
 }
 
 pub fn setup_window_for_uos(window: &ApplicationWindow) {

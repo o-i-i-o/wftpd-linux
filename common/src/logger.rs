@@ -135,3 +135,69 @@ impl Logger {
         // Level is managed by tracing subscriber
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_level_display() {
+        assert_eq!(LogLevel::Debug.to_string(), "DEBUG");
+        assert_eq!(LogLevel::Info.to_string(), "INFO");
+        assert_eq!(LogLevel::Warning.to_string(), "WARN");
+        assert_eq!(LogLevel::Error.to_string(), "ERROR");
+    }
+
+    #[test]
+    fn basic_levels_recorded_with_source() {
+        let logger = Logger::new("/tmp", 0, 1);
+        logger.debug("src", "d");
+        logger.info("src", "i");
+        logger.warning("src", "w");
+        logger.error("src", "e");
+
+        let logs = logger.get_recent_logs(10);
+        assert_eq!(logs.len(), 4);
+        assert_eq!(logs[0].level, LogLevel::Error, "最近一条应为 error");
+        assert_eq!(logs[3].level, LogLevel::Debug);
+        assert!(logs.iter().all(|e| e.source == "src"));
+        assert!(logs.iter().all(|e| e.client_ip.is_none()));
+    }
+
+    #[test]
+    fn client_action_records_context() {
+        let logger = Logger::new("/tmp", 0, 1);
+        logger.client_action("ftp", "登录成功", "1.2.3.4", Some("alice"), "LOGIN");
+
+        let logs = logger.get_recent_logs(1);
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].client_ip.as_deref(), Some("1.2.3.4"));
+        assert_eq!(logs[0].username.as_deref(), Some("alice"));
+        assert_eq!(logs[0].action.as_deref(), Some("LOGIN"));
+        assert_eq!(logs[0].message, "登录成功");
+    }
+
+    #[test]
+    fn get_recent_logs_returns_newest_first_and_limits_count() {
+        let logger = Logger::new("/tmp", 0, 1);
+        logger.info("a", "1");
+        logger.info("a", "2");
+        logger.info("a", "3");
+
+        let two = logger.get_recent_logs(2);
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[0].message, "3");
+        assert_eq!(two[1].message, "2");
+    }
+
+    #[test]
+    fn buffer_is_bounded() {
+        let logger = Logger::new("/tmp", 0, 1);
+        for i in 0..1100 {
+            logger.info("a", &format!("{i}"));
+        }
+        let logs = logger.get_recent_logs(2000);
+        assert!(logs.len() <= 1000, "缓冲区应保持有界，实际 {}", logs.len());
+        assert_eq!(logs[0].message, "1099");
+    }
+}

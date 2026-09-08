@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 use tracing::info;
 
 /// 日志条目 JSON 结构（用于网络传输）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogEntryJson {
     pub timestamp: String,
     pub level: String,
@@ -24,14 +24,14 @@ pub struct LogEntryJson {
 }
 
 /// 日志文件条目（供前端列出可选日志文件）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogFileEntry {
     pub name: String,
     pub path: String,
 }
 
 /// 文件操作日志条目（用于网络传输）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileLogEntryJson {
     pub timestamp: String,
     pub username: String,
@@ -325,5 +325,100 @@ impl FileLogger {
             success: false,
             message: error,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn logger() -> FileLogger {
+        FileLogger::new("/tmp", 0)
+    }
+
+    #[test]
+    fn convenience_methods_record_expected_operations() {
+        let mut fl = logger();
+        fl.log_upload("u", "1.1.1.1", "/a", 10, "FTP");
+        fl.log_update("u", "1.1.1.1", "/a", 12, "FTP");
+        fl.log_download("u", "1.1.1.1", "/a", 12, "FTP");
+        fl.log_delete("u", "1.1.1.1", "/a", "FTP");
+        fl.log_rename("u", "1.1.1.1", "/a", "/b", "FTP");
+        fl.log_mkdir("u", "1.1.1.1", "/d", "FTP");
+        fl.log_rmdir("u", "1.1.1.1", "/d", "FTP");
+        fl.log_failed("u", "1.1.1.1", "UPLOAD", "/a", "FTP", "磁盘已满");
+
+        let logs = fl.get_recent_logs(100);
+        assert_eq!(logs.len(), 8);
+        // get_recent_logs 新→旧排列
+        let ops: Vec<&str> = logs.iter().map(|e| e.operation.as_str()).collect();
+        assert_eq!(
+            ops,
+            vec![
+                "UPLOAD", "RMDIR", "MKDIR", "RENAME", "DELETE", "DOWNLOAD", "UPDATE", "UPLOAD"
+            ]
+        );
+        assert!(logs[0].message.contains("磁盘已满"));
+        assert!(!logs[0].success);
+        assert!(logs[1].success);
+    }
+
+    #[test]
+    fn entry_fields_preserved() {
+        let mut fl = logger();
+        fl.log_upload("alice", "10.0.0.9", "/up/x.bin", 4096, "SFTP");
+
+        let entry = &fl.get_recent_logs(1)[0];
+        assert_eq!(entry.username, "alice");
+        assert_eq!(entry.client_ip, "10.0.0.9");
+        assert_eq!(entry.file_path, "/up/x.bin");
+        assert_eq!(entry.file_size, 4096);
+        assert_eq!(entry.protocol, "SFTP");
+    }
+
+    #[test]
+    fn rename_records_both_paths() {
+        let mut fl = logger();
+        fl.log_rename("u", "ip", "/old", "/new", "FTP");
+        assert_eq!(fl.get_recent_logs(1)[0].file_path, "/old -> /new");
+    }
+
+    #[test]
+    fn get_recent_logs_limits_count() {
+        let mut fl = logger();
+        for i in 0..10 {
+            fl.log_mkdir("u", "ip", &format!("/d{i}"), "FTP");
+        }
+        let logs = fl.get_recent_logs(3);
+        assert_eq!(logs.len(), 3);
+        assert_eq!(logs[0].file_path, "/d9");
+        assert_eq!(logs[2].file_path, "/d7");
+    }
+
+    #[test]
+    fn clone_shares_underlying_buffer() {
+        let mut fl = logger();
+        let snapshot = fl.clone();
+        fl.log_upload("u", "ip", "/a", 1, "FTP");
+        assert_eq!(snapshot.get_recent_logs(10).len(), 1);
+    }
+
+    #[test]
+    fn json_conversion_serializes_fields() {
+        let mut fl = logger();
+        fl.log_upload("alice", "10.0.0.9", "/a", 7, "FTP");
+        let entry = &fl.get_recent_logs(1)[0];
+
+        let json = FileLogEntryJson::from(entry);
+        assert_eq!(json.username, "alice");
+        assert_eq!(json.file_size, 7);
+        assert!(json.success);
+        assert!(json.timestamp.contains('T'), "时间戳应为 RFC3339 格式");
+
+        // JSON 往返无损
+        let restored: FileLogEntryJson =
+            serde_json::from_str(&serde_json::to_string(&json).unwrap()).unwrap();
+        assert_eq!(restored.file_path, json.file_path);
+        assert_eq!(restored.operation, json.operation);
     }
 }

@@ -9,8 +9,13 @@ members = [
     "wftpg",
 ]
 
+[workspace.lints.clippy]
+# 手写代码统一启用 clippy::pedantic；各成员经 [lints] workspace = true 继承。
+# 生成代码所在的 wftpd-proto 单独在自身清单中配置。
+pedantic = { level = "warn", priority = -1 }
+
 [workspace.package]
-version = "3.0.1"
+version = "3.0.2"
 edition = "2024"
 authors = ["WFTPG Developer"]
 license = "MIT"

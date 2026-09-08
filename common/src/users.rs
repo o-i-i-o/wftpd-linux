@@ -23,6 +23,8 @@ pub struct User {
     pub is_admin: bool,
 }
 
+// 权限模型即布尔位集合，字段数量为领域固有，非设计缺陷
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Permissions {
     pub can_read: bool,
@@ -38,6 +40,7 @@ pub struct Permissions {
 }
 
 impl Permissions {
+    #[must_use]
     pub fn full() -> Self {
         Permissions {
             can_read: true,
@@ -91,6 +94,7 @@ pub struct UserManager {
 }
 
 impl UserManager {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -115,7 +119,7 @@ impl UserManager {
             }
             Err(e) => {
                 error!("[UserManager] 读取用户配置文件失败：{} - {:?}", e, path);
-                eprintln!("Warning: Failed to read users file: {}", e);
+                eprintln!("Warning: Failed to read users file: {e}");
                 return Ok(Self::new());
             }
         };
@@ -132,7 +136,7 @@ impl UserManager {
                 e,
                 &content[..content.len().min(200)]
             );
-            eprintln!("Warning: Failed to parse users file: {}", e);
+            eprintln!("Warning: Failed to parse users file: {e}");
             UserManager::new()
         });
 
@@ -167,7 +171,7 @@ impl UserManager {
         // password-hash 0.6 起 hash_password 自动生成随机盐，无需外部 RNG
         let hash = Argon2::default()
             .hash_password(password.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Failed to hash password: {e}"))?
             .to_string();
         Ok(hash)
     }
@@ -198,7 +202,7 @@ impl UserManager {
         }
 
         if self.users.contains_key(&username) {
-            return Err(anyhow::anyhow!("用户已存在: {}", username));
+            return Err(anyhow::anyhow!("用户已存在: {username}"));
         }
 
         if home_dir.trim().is_empty() {
@@ -207,10 +211,10 @@ impl UserManager {
 
         let home_path = Path::new(&home_dir);
         if !home_path.exists() {
-            return Err(anyhow::anyhow!("家目录不存在: {}", home_dir));
+            return Err(anyhow::anyhow!("家目录不存在: {home_dir}"));
         }
         if !home_path.is_dir() {
-            return Err(anyhow::anyhow!("家目录路径不是目录: {}", home_dir));
+            return Err(anyhow::anyhow!("家目录路径不是目录: {home_dir}"));
         }
 
         let password_hash = Self::hash_password(password)?;
@@ -231,7 +235,7 @@ impl UserManager {
 
     pub fn remove_user(&mut self, username: &str) -> Result<()> {
         if self.users.remove(username).is_none() {
-            return Err(anyhow::anyhow!("用户不存在: {}", username));
+            return Err(anyhow::anyhow!("用户不存在: {username}"));
         }
         Ok(())
     }
@@ -240,7 +244,7 @@ impl UserManager {
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
+            .ok_or_else(|| anyhow::anyhow!("用户不存在: {username}"))?;
 
         user.password_hash = Self::hash_password(new_password)?;
         Ok(())
@@ -253,16 +257,16 @@ impl UserManager {
 
         let home_path = Path::new(&home_dir);
         if !home_path.exists() {
-            return Err(anyhow::anyhow!("家目录不存在: {}", home_dir));
+            return Err(anyhow::anyhow!("家目录不存在: {home_dir}"));
         }
         if !home_path.is_dir() {
-            return Err(anyhow::anyhow!("家目录路径不是目录: {}", home_dir));
+            return Err(anyhow::anyhow!("家目录路径不是目录: {home_dir}"));
         }
 
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
+            .ok_or_else(|| anyhow::anyhow!("用户不存在: {username}"))?;
 
         user.home_dir = home_dir;
         Ok(())
@@ -272,7 +276,7 @@ impl UserManager {
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
+            .ok_or_else(|| anyhow::anyhow!("用户不存在: {username}"))?;
 
         user.permissions = permissions;
         Ok(())
@@ -282,18 +286,15 @@ impl UserManager {
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", username))?;
+            .ok_or_else(|| anyhow::anyhow!("用户不存在: {username}"))?;
 
         user.enabled = enabled;
         Ok(())
     }
 
     pub fn authenticate(&mut self, username: &str, password: &str) -> Result<bool> {
-        let user = match self.users.get_mut(username) {
-            Some(u) => u,
-            None => {
-                return Ok(false);
-            }
+        let Some(user) = self.users.get_mut(username) else {
+            return Ok(false);
         };
 
         if !user.enabled {
@@ -305,7 +306,7 @@ impl UserManager {
 
             let users_path = crate::paths::users_path();
             if let Err(e) = self.save(&users_path) {
-                eprintln!("Warning: Failed to persist last_login: {}", e);
+                eprintln!("Warning: Failed to persist last_login: {e}");
             }
 
             return Ok(true);
@@ -374,14 +375,17 @@ impl UserManager {
         Ok(())
     }
 
+    #[must_use]
     pub fn get_user(&self, username: &str) -> Option<&User> {
         self.users.get(username)
     }
 
+    #[must_use]
     pub fn get_users(&self) -> &std::collections::HashMap<String, User> {
         &self.users
     }
 
+    #[must_use]
     pub fn get_all_users(&self) -> Vec<User> {
         self.users.values().cloned().collect()
     }
@@ -397,10 +401,10 @@ impl UserManager {
 
         let home_path = Path::new(home_dir);
         if !home_path.exists() {
-            return Err(anyhow::anyhow!("匿名用户目录不存在: {}", home_dir));
+            return Err(anyhow::anyhow!("匿名用户目录不存在: {home_dir}"));
         }
         if !home_path.is_dir() {
-            return Err(anyhow::anyhow!("匿名用户目录路径不是目录: {}", home_dir));
+            return Err(anyhow::anyhow!("匿名用户目录路径不是目录: {home_dir}"));
         }
 
         Ok(())

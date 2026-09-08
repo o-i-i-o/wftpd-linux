@@ -16,14 +16,15 @@ use std::path::PathBuf;
 fn xdg_dir(env_var: &str, fallback: &str) -> PathBuf {
     std::env::var_os(env_var)
         .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/"));
-            home.join(fallback)
-        })
+        .map_or_else(
+            || {
+                let home = std::env::var_os("HOME")
+                    .filter(|v| !v.is_empty())
+                    .map_or_else(|| PathBuf::from("/"), PathBuf::from);
+                home.join(fallback)
+            },
+            PathBuf::from,
+        )
 }
 
 fn override_dir(env_var: &str) -> Option<PathBuf> {
@@ -33,54 +34,63 @@ fn override_dir(env_var: &str) -> Option<PathBuf> {
 }
 
 /// 配置目录（config.toml、users.json、用户公钥目录）
+#[must_use]
 pub fn config_dir() -> PathBuf {
     override_dir("WFTPD_CONFIG_DIR")
         .unwrap_or_else(|| xdg_dir("XDG_CONFIG_HOME", ".config").join("wftpd"))
 }
 
 /// 持久状态目录（日志、SSH 主机密钥等跨重启保留的数据）
+#[must_use]
 pub fn state_dir() -> PathBuf {
     override_dir("WFTPD_STATE_DIR")
         .unwrap_or_else(|| xdg_dir("XDG_STATE_HOME", ".local/state").join("wftpd"))
 }
 
 /// 运行时目录（UDS 套接字等生命周期与登录会话一致的数据）
+#[must_use]
 pub fn runtime_dir() -> PathBuf {
-    match std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        Some(dir) => PathBuf::from(dir).join("wftpd"),
-        None => {
-            let uid = nix::unistd::getuid();
-            PathBuf::from(format!("/tmp/wftpd-{}", uid))
-        }
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        PathBuf::from(dir).join("wftpd")
+    } else {
+        let uid = nix::unistd::getuid();
+        PathBuf::from(format!("/tmp/wftpd-{uid}"))
     }
 }
 
+#[must_use]
 pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+#[must_use]
 pub fn users_path() -> PathBuf {
     config_dir().join("users.json")
 }
 
 /// SFTP 公钥认证的用户密钥目录（`<keys_dir>/<username>/authorized_keys`）
+#[must_use]
 pub fn keys_dir() -> PathBuf {
     config_dir().join("keys")
 }
 
+#[must_use]
 pub fn default_log_dir() -> PathBuf {
     state_dir().join("logs")
 }
 
+#[must_use]
 pub fn default_host_key_path() -> PathBuf {
     state_dir().join("ssh").join("ssh_host_ed25519_key")
 }
 
 /// 前后端 gRPC(UDS) 套接字路径
+#[must_use]
 pub fn socket_path() -> PathBuf {
     runtime_dir().join("wftpd.sock")
 }
 
+#[must_use]
 pub fn audit_log_path() -> PathBuf {
     default_log_dir().join("audit.log")
 }

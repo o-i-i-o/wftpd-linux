@@ -29,7 +29,7 @@ pub struct SftpHandler {
     authenticated: bool,
     username: Option<String>,
     home_dir: Option<String>,
-    /// channel_open_session 收到的通道，sftp 子系统请求时取出转换为字节流
+    /// `channel_open_session` 收到的通道，sftp 子系统请求时取出转换为字节流
     open_channels: HashMap<ChannelId, Channel<Msg>>,
 }
 
@@ -58,7 +58,7 @@ impl SftpHandler {
 
     fn audit(&self, message: &str, username: Option<&str>, result: &str) {
         if let Ok(mut file_log) = self.file_logger.try_lock() {
-            file_log.log(wftpd_common::FileLogInfo {
+            file_log.log(&wftpd_common::FileLogInfo {
                 username: username.unwrap_or("unknown"),
                 client_ip: &self.client_ip,
                 operation: "SFTP",
@@ -71,7 +71,7 @@ impl SftpHandler {
         }
     }
 
-    async fn resolve_user(&self, user: &str) -> Option<(String, bool)> {
+    fn resolve_user(&self, user: &str) -> Option<(String, bool)> {
         if !is_safe_username(user) {
             warn!(user = %user, client_ip = %self.client_ip, "[SFTP AUTH] 用户名格式无效");
             return None;
@@ -124,16 +124,16 @@ impl SftpHandler {
         Ok(())
     }
 
-    fn reject(&self, user: &str, via: &str) -> Result<Auth, anyhow::Error> {
+    fn reject(&self, user: &str, via: &str) -> Auth {
         self.audit(
             &format!("{via} auth failed for user {user}"),
             Some(user),
             "AUTH_FAIL",
         );
-        Ok(Auth::Reject {
+        Auth::Reject {
             proceed_with_methods: None,
             partial_success: false,
-        })
+        }
     }
 }
 
@@ -143,8 +143,8 @@ impl russh::server::Handler for SftpHandler {
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         info!(user = %user, client_ip = %self.client_ip, "[SFTP AUTH] 密码认证请求");
 
-        let Some((home_dir, _)) = self.resolve_user(user).await else {
-            return self.reject(user, "password");
+        let Some((home_dir, _)) = self.resolve_user(user) else {
+            return Ok(self.reject(user, "password"));
         };
 
         let ok = {
@@ -153,7 +153,7 @@ impl russh::server::Handler for SftpHandler {
         };
 
         if !ok {
-            return self.reject(user, "password");
+            return Ok(self.reject(user, "password"));
         }
 
         match self.validate_and_set_home_dir(user, &home_dir).await {
@@ -180,11 +180,11 @@ impl russh::server::Handler for SftpHandler {
     ) -> Result<Auth, Self::Error> {
         info!(user = %user, client_ip = %self.client_ip, "[SFTP AUTH] 公钥认证请求");
 
-        let Some((home_dir, enabled)) = self.resolve_user(user).await else {
-            return self.reject(user, "public key");
+        let Some((home_dir, enabled)) = self.resolve_user(user) else {
+            return Ok(self.reject(user, "public key"));
         };
         if !enabled {
-            return self.reject(user, "public key");
+            return Ok(self.reject(user, "public key"));
         }
 
         let user_pubkey_path = self.keys_dir.join(format!("{user}.pub"));
@@ -200,7 +200,7 @@ impl russh::server::Handler for SftpHandler {
         };
 
         if !key_ok {
-            return self.reject(user, "public key");
+            return Ok(self.reject(user, "public key"));
         }
 
         match self.validate_and_set_home_dir(user, &home_dir).await {

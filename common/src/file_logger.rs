@@ -1,7 +1,7 @@
 //! 文件操作日志模块
 //!
 //! 基于 tracing 实现文件操作审计日志
-//! - 日志通过 tracing 输出到 file_ops target
+//! - 日志通过 tracing 输出到 `file_ops` target
 //! - 内存缓冲区用于 UI 实时显示
 
 use chrono::{DateTime, Local};
@@ -101,6 +101,7 @@ impl Clone for FileLogger {
 }
 
 impl FileLogger {
+    #[must_use]
     pub fn new(_log_dir: &str, _max_file_size: u64) -> Self {
         FileLogger {
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(2000))),
@@ -109,6 +110,7 @@ impl FileLogger {
         }
     }
 
+    #[must_use]
     pub fn with_log_sender(log_sender: broadcast::Sender<LogEntryJson>) -> Self {
         FileLogger {
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(2000))),
@@ -117,7 +119,7 @@ impl FileLogger {
         }
     }
 
-    pub fn log(&mut self, info: FileLogInfo<'_>) {
+    pub fn log(&mut self, info: &FileLogInfo<'_>) {
         let entry = FileLogEntry {
             timestamp: Local::now(),
             username: info.username.to_string(),
@@ -166,11 +168,13 @@ impl FileLogger {
         );
     }
 
+    #[must_use]
     pub fn get_recent_logs(&self, count: usize) -> Vec<FileLogEntry> {
         let buffer = self.buffer.lock().unwrap();
         buffer.iter().rev().take(count).cloned().collect()
     }
 
+    #[must_use]
     pub fn get_buffer(&self) -> Arc<Mutex<VecDeque<FileLogEntry>>> {
         Arc::clone(&self.buffer)
     }
@@ -183,7 +187,7 @@ impl FileLogger {
         file_size: u64,
         protocol: &str,
     ) {
-        self.log(FileLogInfo {
+        self.log(&FileLogInfo {
             username,
             client_ip,
             operation: "UPLOAD",
@@ -203,7 +207,7 @@ impl FileLogger {
         file_size: u64,
         protocol: &str,
     ) {
-        self.log(FileLogInfo {
+        self.log(&FileLogInfo {
             username,
             client_ip,
             operation: "UPDATE",
@@ -223,7 +227,7 @@ impl FileLogger {
         file_size: u64,
         protocol: &str,
     ) {
-        self.log(FileLogInfo {
+        self.log(&FileLogInfo {
             username,
             client_ip,
             operation: "DOWNLOAD",
@@ -236,7 +240,7 @@ impl FileLogger {
     }
 
     pub fn log_delete(&mut self, username: &str, client_ip: &str, file_path: &str, protocol: &str) {
-        self.log(FileLogInfo {
+        self.log(&FileLogInfo {
             username,
             client_ip,
             operation: "DELETE",
@@ -256,11 +260,11 @@ impl FileLogger {
         new_path: &str,
         protocol: &str,
     ) {
-        self.log(FileLogInfo {
+        self.log(&FileLogInfo {
             username,
             client_ip,
             operation: "RENAME",
-            file_path: &format!("{} -> {}", old_path, new_path),
+            file_path: &format!("{old_path} -> {new_path}"),
             file_size: 0,
             protocol,
             success: true,
@@ -269,7 +273,7 @@ impl FileLogger {
     }
 
     pub fn log_mkdir(&mut self, username: &str, client_ip: &str, dir_path: &str, protocol: &str) {
-        self.log(FileLogInfo {
+        self.log(&FileLogInfo {
             username,
             client_ip,
             operation: "MKDIR",
@@ -282,7 +286,7 @@ impl FileLogger {
     }
 
     pub fn log_rmdir(&mut self, username: &str, client_ip: &str, dir_path: &str, protocol: &str) {
-        self.log(FileLogInfo {
+        self.log(&FileLogInfo {
             username,
             client_ip,
             operation: "RMDIR",
@@ -303,7 +307,7 @@ impl FileLogger {
         protocol: &str,
         error: &str,
     ) {
-        self.log(FileLogInfo {
+        self.log(&FileLogInfo {
             username,
             client_ip,
             operation,

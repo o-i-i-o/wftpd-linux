@@ -7,8 +7,8 @@ use wftpd_common::{FileLogEntryJson, LogEntryJson, LogFileEntry};
 
 use crate::wftpd::v1::{FileOpLogEntry, LogEntry, LogFileInfo};
 
-fn opt_to_str(v: &Option<String>) -> String {
-    v.clone().unwrap_or_default()
+fn opt_to_str(v: Option<&str>) -> String {
+    v.unwrap_or_default().to_string()
 }
 
 fn str_to_opt(v: String) -> Option<String> {
@@ -22,9 +22,9 @@ impl From<LogEntryJson> for LogEntry {
             level: e.level,
             source: e.source,
             message: e.message,
-            client_ip: opt_to_str(&e.client_ip),
-            username: opt_to_str(&e.username),
-            action: opt_to_str(&e.action),
+            client_ip: opt_to_str(e.client_ip.as_deref()),
+            username: opt_to_str(e.username.as_deref()),
+            action: opt_to_str(e.action.as_deref()),
         }
     }
 }

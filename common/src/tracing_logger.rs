@@ -1,13 +1,13 @@
 //! Tracing 日志系统初始化模块
 //!
 //! 提供基于 tracing 的日志系统，支持：
-//! - 动态日志级别过滤（通过配置文件，reload::Layer）
+//! - `动态日志级别过滤（通过配置文件，reload::Layer`）
 //! - JSON 格式输出（便于机器解析）
 //! - 文件轮转（通过 tracing-appender）
 //! - 控制台输出（带颜色和时间戳）
 //! - 分离程序日志和文件操作审计日志
 //! - 内存环形缓冲 + 广播通道（[`LogBuffer`]），供后端 gRPC 接口
-//!   向前端提供 GetRecentLogs / WatchLogs 能力
+//!   向前端提供 `GetRecentLogs` / `WatchLogs` 能力
 
 use anyhow::Result;
 use std::collections::VecDeque;
@@ -42,6 +42,7 @@ struct LogBufferInner {
 }
 
 impl LogBuffer {
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = tokio::sync::broadcast::channel(capacity.max(16));
         LogBuffer {
@@ -66,18 +67,20 @@ impl LogBuffer {
     }
 
     /// 最近 `count` 条日志，按时间正序返回
+    #[must_use]
     pub fn recent(&self, count: usize) -> Vec<LogEntryJson> {
         let entries = self.inner.entries.lock().unwrap();
         let skip = entries.len().saturating_sub(count);
         entries.iter().skip(skip).cloned().collect()
     }
 
+    #[must_use]
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<LogEntryJson> {
         self.inner.tx.subscribe()
     }
 }
 
-/// 从 tracing 事件字段中提取 message / client_ip / username / action
+/// 从 tracing 事件字段中提取 message / `client_ip` / username / action
 struct FieldCollector {
     message: String,
     client_ip: Option<String>,
@@ -88,10 +91,10 @@ struct FieldCollector {
 impl Visit for FieldCollector {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         match field.name() {
-            "message" => self.message = format!("{:?}", value),
-            "client_ip" => self.client_ip = Some(format!("{:?}", value)),
-            "username" => self.username = Some(format!("{:?}", value)),
-            "action" => self.action = Some(format!("{:?}", value)),
+            "message" => self.message = format!("{value:?}"),
+            "client_ip" => self.client_ip = Some(format!("{value:?}")),
+            "username" => self.username = Some(format!("{value:?}")),
+            "action" => self.action = Some(format!("{value:?}")),
             _ => {}
         }
     }
@@ -244,10 +247,10 @@ fn level_to_filter(level: &str) -> LevelFilter {
     match level.to_lowercase().as_str() {
         "trace" => LevelFilter::TRACE,
         "debug" => LevelFilter::DEBUG,
-        "info" => LevelFilter::INFO,
         "warn" | "warning" => LevelFilter::WARN,
         "error" => LevelFilter::ERROR,
         "off" => LevelFilter::OFF,
+        // "info" 与未知级别均回退到 INFO
         _ => LevelFilter::INFO,
     }
 }
@@ -305,10 +308,10 @@ mod tests {
         let buffer = LogBuffer::new(4);
         for i in 0..6 {
             buffer.push(LogEntryJson {
-                timestamp: format!("t{}", i),
+                timestamp: format!("t{i}"),
                 level: "INFO".into(),
                 source: "test".into(),
-                message: format!("m{}", i),
+                message: format!("m{i}"),
                 client_ip: None,
                 username: None,
                 action: None,

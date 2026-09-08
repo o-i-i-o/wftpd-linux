@@ -125,7 +125,7 @@ impl BackendState {
             .lock()
             .unwrap()
             .as_ref()
-            .is_some_and(|s| s.is_running())
+            .is_some_and(wftpd_ftp::FtpServer::is_running)
     }
 
     pub fn is_sftp_running(&self) -> bool {
@@ -133,7 +133,7 @@ impl BackendState {
             .lock()
             .unwrap()
             .as_ref()
-            .is_some_and(|s| s.is_running())
+            .is_some_and(wftpd_sftp::SftpServer::is_running)
     }
 
     /// 应用新的启用状态：启动"配置启用但未运行"的服务，停止"配置禁用但仍在运行"的服务。

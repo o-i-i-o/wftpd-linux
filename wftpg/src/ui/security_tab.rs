@@ -37,7 +37,7 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
     if let Ok(s) = state.try_lock()
         && let Ok(config) = s.config.try_lock()
     {
-        max_attempts_spin.set_value(config.security.max_login_attempts as f64);
+        max_attempts_spin.set_value(f64::from(config.security.max_login_attempts));
     }
     row1.pack_start(&max_attempts_spin, false, false, 0);
 
@@ -46,7 +46,7 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
     if let Ok(s) = state.try_lock()
         && let Ok(config) = s.config.try_lock()
     {
-        ban_duration_spin.set_value(config.security.ban_duration as f64);
+        ban_duration_spin.set_value(super::utils::spin_f64_from(config.security.ban_duration));
     }
     row1.pack_start(&ban_duration_spin, false, false, 0);
     box_.pack_start(&row1, false, false, 0);
@@ -61,8 +61,8 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
     let ban_duration_clone = ban_duration_spin.clone();
     save_btn.connect_clicked(
         clone!(@strong state_clone, @strong max_attempts_clone, @strong ban_duration_clone => move |_| {
-            let max_attempts = max_attempts_clone.value() as u32;
-            let ban_duration = ban_duration_clone.value() as u64;
+            let max_attempts = super::utils::spin_u32(max_attempts_clone.value());
+            let ban_duration = super::utils::spin_u64(ban_duration_clone.value());
 
             let config_str = {
                 if let Ok(s) = state_clone.try_lock() {
@@ -85,7 +85,7 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
                         "gui-security",
                         "SECURITY_CONFIG",
                         "login_settings",
-                        &format!("Login security updated: max_attempts={}, ban_duration={}s", max_attempts, ban_duration)
+                        &format!("Login security updated: max_attempts={max_attempts}, ban_duration={ban_duration}s")
                     );
                     info!("Login security settings saved");
                 }

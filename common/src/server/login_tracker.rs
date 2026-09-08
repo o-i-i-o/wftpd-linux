@@ -15,6 +15,7 @@ pub struct LoginTracker {
 }
 
 impl LoginTracker {
+    #[must_use]
     pub fn new(max_attempts: u32, ban_duration_secs: u64) -> Self {
         Self {
             attempts: Mutex::new(HashMap::new()),

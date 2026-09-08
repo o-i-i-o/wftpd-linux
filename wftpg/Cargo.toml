@@ -14,7 +14,7 @@ gtk = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
-libc = { workspace = true }
+nix = { workspace = true }
 ipnet = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

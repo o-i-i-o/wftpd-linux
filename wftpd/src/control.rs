@@ -3,8 +3,9 @@
 //! 语义约定：
 //! - Start/StopService 会同步更新 config 中对应服务的 enabled 标志并落盘，
 //!   保证“运行意图”在守护进程重启后保持一致；
-//! - SaveConfig / SaveUsers 先校验后落盘，失败时通过 OpReply 返回原因；
-//! - 所有文件写入都由后端完成，前端不直接改动配置与用户文件。
+//! - `SaveConfig` / `SaveUsers` 先校验后落盘，失败时通过 `OpReply` 返回原因；
+//! - 所有文件写入都由后端完成，前端不直接改动配置与用户文件；
+//! - 所有磁盘 IO 均通过 `spawn_blocking` 执行，避免阻塞 tokio 执行器。
 
 use std::io::Write;
 use std::sync::Arc;
@@ -57,6 +58,11 @@ fn internal(e: impl std::fmt::Display) -> Status {
     Status::internal(e.to_string())
 }
 
+/// `spawn_blocking` 的 `JoinError` 归一为 gRPC internal 错误
+fn join_err(e: &tokio::task::JoinError) -> Status {
+    internal(format!("blocking task failed: {e}"))
+}
+
 #[tonic::async_trait]
 impl Control for ControlService {
     async fn get_status(
@@ -80,16 +86,16 @@ impl Control for ControlService {
         let which = request.into_inner().which();
         let result = match which {
             Which::Ftp => {
-                self.set_ftp_enabled(true);
+                self.set_ftp_enabled(true).await;
                 self.state.start_ftp().await
             }
             Which::Sftp => {
-                self.set_sftp_enabled(true);
+                self.set_sftp_enabled(true).await;
                 self.state.start_sftp().await
             }
             Which::All => {
-                self.set_ftp_enabled(true);
-                self.set_sftp_enabled(true);
+                self.set_ftp_enabled(true).await;
+                self.set_sftp_enabled(true).await;
                 let ftp = self.state.start_ftp().await;
                 let sftp = self.state.start_sftp().await;
                 ftp.and(sftp)
@@ -111,16 +117,16 @@ impl Control for ControlService {
     ) -> Result<Response<OpReply>, Status> {
         match request.into_inner().which() {
             Which::Ftp => {
-                self.set_ftp_enabled(false);
+                self.set_ftp_enabled(false).await;
                 self.state.stop_ftp().await;
             }
             Which::Sftp => {
-                self.set_sftp_enabled(false);
+                self.set_sftp_enabled(false).await;
                 self.state.stop_sftp().await;
             }
             Which::All => {
-                self.set_ftp_enabled(false);
-                self.set_sftp_enabled(false);
+                self.set_ftp_enabled(false).await;
+                self.set_sftp_enabled(false).await;
                 self.state.stop_all().await;
             }
         }
@@ -154,8 +160,12 @@ impl Control for ControlService {
         &self,
         _request: Request<GetConfigRequest>,
     ) -> Result<Response<ConfigReply>, Status> {
-        let content =
-            std::fs::read_to_string(wftpd_common::Config::get_config_path()).map_err(internal)?;
+        let content = tokio::task::spawn_blocking(|| {
+            std::fs::read_to_string(wftpd_common::Config::get_config_path())
+        })
+        .await
+        .map_err(|e| join_err(&e))?
+        .map_err(internal)?;
         Ok(Response::new(ConfigReply { content }))
     }
 
@@ -165,15 +175,23 @@ impl Control for ControlService {
     ) -> Result<Response<ConfigReply>, Status> {
         let content = request.into_inner().content;
 
-        let new_config: wftpd_common::Config = toml::from_str(&content)
-            .map_err(|e| Status::invalid_argument(format!("配置解析失败: {e}")))?;
+        // 校验、落盘与回读均为磁盘/CPU 操作，放入阻塞线程池
+        let (new_config, content) = tokio::task::spawn_blocking(move || -> Result<_, Status> {
+            let new_config: wftpd_common::Config = toml::from_str(&content)
+                .map_err(|e| Status::invalid_argument(format!("配置解析失败: {e}")))?;
 
-        new_config
-            .validate()
-            .map_err(|e| Status::invalid_argument(format!("配置校验失败: {e}")))?;
+            new_config
+                .validate()
+                .map_err(|e| Status::invalid_argument(format!("配置校验失败: {e}")))?;
 
-        let config_path = wftpd_common::Config::get_config_path();
-        new_config.save(&config_path).map_err(internal)?;
+            let config_path = wftpd_common::Config::get_config_path();
+            new_config.save(&config_path).map_err(internal)?;
+
+            let content = std::fs::read_to_string(&config_path).map_err(internal)?;
+            Ok((new_config, content))
+        })
+        .await
+        .map_err(|e| join_err(&e))??;
 
         {
             let mut cfg = self.state.config.lock().unwrap();
@@ -183,7 +201,6 @@ impl Control for ControlService {
         // 应用启用标志（端口/证书等变更需要显式重启服务）
         self.state.apply_enabled_flags().await;
 
-        let content = std::fs::read_to_string(&config_path).map_err(internal)?;
         Ok(Response::new(ConfigReply { content }))
     }
 
@@ -191,8 +208,12 @@ impl Control for ControlService {
         &self,
         _request: Request<wftpd_proto::GetUsersRequest>,
     ) -> Result<Response<UsersReply>, Status> {
-        let content =
-            std::fs::read_to_string(wftpd_common::Config::get_users_path()).map_err(internal)?;
+        let content = tokio::task::spawn_blocking(|| {
+            std::fs::read_to_string(wftpd_common::Config::get_users_path())
+        })
+        .await
+        .map_err(|e| join_err(&e))?
+        .map_err(internal)?;
         Ok(Response::new(UsersReply { content }))
     }
 
@@ -203,14 +224,19 @@ impl Control for ControlService {
         let content = request.into_inner().content;
 
         // 先写入临时文件并用 UserManager 加载校验，避免半成品用户库落盘
-        let users_path = wftpd_common::Config::get_users_path();
-        let temp_path = users_path.with_extension("json.tmp");
-        std::fs::write(&temp_path, &content).map_err(internal)?;
-        let validated = wftpd_common::UserManager::load(&temp_path).map_err(|e| {
-            let _ = std::fs::remove_file(&temp_path);
-            Status::invalid_argument(format!("用户数据校验失败: {e}"))
-        })?;
-        std::fs::rename(&temp_path, &users_path).map_err(internal)?;
+        let (validated, content) = tokio::task::spawn_blocking(move || -> Result<_, Status> {
+            let users_path = wftpd_common::Config::get_users_path();
+            let temp_path = users_path.with_extension("json.tmp");
+            std::fs::write(&temp_path, &content).map_err(internal)?;
+            let validated = wftpd_common::UserManager::load(&temp_path).map_err(|e| {
+                let _ = std::fs::remove_file(&temp_path);
+                Status::invalid_argument(format!("用户数据校验失败: {e}"))
+            })?;
+            std::fs::rename(&temp_path, &users_path).map_err(internal)?;
+            Ok((validated, content))
+        })
+        .await
+        .map_err(|e| join_err(&e))??;
 
         {
             let mut manager = self.state.user_manager.lock().unwrap();
@@ -224,14 +250,18 @@ impl Control for ControlService {
         &self,
         _request: Request<GetInitialStateRequest>,
     ) -> Result<Response<InitialStateReply>, Status> {
-        let config =
-            std::fs::read_to_string(wftpd_common::Config::get_config_path()).map_err(internal)?;
-        let users =
-            std::fs::read_to_string(wftpd_common::Config::get_users_path()).map_err(internal)?;
+        let (config, users) = tokio::task::spawn_blocking(|| {
+            (
+                std::fs::read_to_string(wftpd_common::Config::get_config_path()),
+                std::fs::read_to_string(wftpd_common::Config::get_users_path()),
+            )
+        })
+        .await
+        .map_err(|e| join_err(&e))?;
 
         Ok(Response::new(InitialStateReply {
-            config,
-            users,
+            config: config.map_err(internal)?,
+            users: users.map_err(internal)?,
             ftp_running: self.state.is_ftp_running(),
             sftp_running: self.state.is_sftp_running(),
         }))
@@ -249,15 +279,20 @@ impl Control for ControlService {
                 .collect()
         };
 
-        let mut failed = Vec::new();
-        for dir in home_dirs {
-            let path = std::path::Path::new(&dir);
-            if !path.exists()
-                && let Err(e) = std::fs::create_dir_all(path)
-            {
-                failed.push(format!("{dir}: {e}"));
+        let failed = tokio::task::spawn_blocking(move || -> Vec<String> {
+            let mut failed = Vec::new();
+            for dir in home_dirs {
+                let path = std::path::Path::new(&dir);
+                if !path.exists()
+                    && let Err(e) = std::fs::create_dir_all(path)
+                {
+                    failed.push(format!("{dir}: {e}"));
+                }
             }
-        }
+            failed
+        })
+        .await
+        .map_err(|e| join_err(&e))?;
 
         if failed.is_empty() {
             Ok(Self::op_ok("用户目录已就绪"))
@@ -274,7 +309,10 @@ impl Control for ControlService {
         request: Request<CreateUserDirectoryRequest>,
     ) -> Result<Response<OpReply>, Status> {
         let path = request.into_inner().path;
-        match std::fs::create_dir_all(&path) {
+        let result = tokio::task::spawn_blocking(move || std::fs::create_dir_all(&path))
+            .await
+            .map_err(|e| join_err(&e))?;
+        match result {
             Ok(()) => Ok(Self::op_ok("目录已创建")),
             Err(e) => Ok(Self::op_err(&format!("创建目录失败: {e}"))),
         }
@@ -285,21 +323,32 @@ impl Control for ControlService {
         request: Request<SetupDirectoryPermissionsRequest>,
     ) -> Result<Response<OpReply>, Status> {
         let path = request.into_inner().path;
-        let path = std::path::Path::new(&path);
+        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let path = std::path::Path::new(&path);
 
-        if let Err(e) = std::fs::create_dir_all(path) {
-            return Ok(Self::op_err(&format!("创建目录失败: {e}")));
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)) {
-                return Ok(Self::op_err(&format!("设置权限失败: {e}")));
+            if let Err(e) = std::fs::create_dir_all(path) {
+                return Err(format!("创建目录失败: {e}"));
             }
-        }
 
-        Ok(Self::op_ok("目录权限已设置 (0755)"))
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(e) =
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                {
+                    return Err(format!("设置权限失败: {e}"));
+                }
+            }
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| join_err(&e))?;
+
+        match result {
+            Ok(()) => Ok(Self::op_ok("目录权限已设置 (0755)")),
+            Err(message) => Ok(Self::op_err(&message)),
+        }
     }
 
     async fn get_recent_logs(
@@ -355,7 +404,7 @@ impl Control for ControlService {
                                 return;
                             }
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     }
                 }
@@ -375,10 +424,10 @@ impl Control for ControlService {
             let cfg = self.state.config.lock().unwrap();
             cfg.logging.log_dir.clone()
         };
-        let files: Vec<LogFileInfo> = logs::list_log_files(&log_dir, "wftpg")
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let files = tokio::task::spawn_blocking(move || logs::list_log_files(&log_dir, "wftpg"))
+            .await
+            .map_err(|e| join_err(&e))?;
+        let files: Vec<LogFileInfo> = files.into_iter().map(Into::into).collect();
         Ok(Response::new(LogFilesReply { files }))
     }
 
@@ -392,14 +441,15 @@ impl Control for ControlService {
             cfg.logging.log_dir.clone()
         };
 
-        logs::ensure_path_in_dir(&req.path, &log_dir)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let entries = tokio::task::spawn_blocking(move || -> Result<_, Status> {
+            logs::ensure_path_in_dir(&req.path, &log_dir)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+            Ok(logs::read_program_log(&req.path, req.count as usize))
+        })
+        .await
+        .map_err(|e| join_err(&e))??;
 
-        let entries: Vec<wftpd_proto::LogEntry> =
-            logs::read_program_log(&req.path, req.count as usize)
-                .into_iter()
-                .map(Into::into)
-                .collect();
+        let entries: Vec<wftpd_proto::LogEntry> = entries.into_iter().map(Into::into).collect();
         Ok(Response::new(LogsReply { entries }))
     }
 
@@ -411,10 +461,10 @@ impl Control for ControlService {
             let cfg = self.state.config.lock().unwrap();
             cfg.logging.log_dir.clone()
         };
-        let files: Vec<LogFileInfo> = logs::list_log_files(&log_dir, "file-ops")
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let files = tokio::task::spawn_blocking(move || logs::list_log_files(&log_dir, "file-ops"))
+            .await
+            .map_err(|e| join_err(&e))?;
+        let files: Vec<LogFileInfo> = files.into_iter().map(Into::into).collect();
         Ok(Response::new(LogFilesReply { files }))
     }
 
@@ -443,13 +493,16 @@ impl Control for ControlService {
             let cfg = self.state.config.lock().unwrap();
             cfg.logging.log_dir.clone()
         };
-        logs::ensure_path_in_dir(&req.path, &log_dir)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
-        let entries: Vec<FileOpLogEntry> = logs::read_file_op_log(&req.path, count)
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let entries = tokio::task::spawn_blocking(move || -> Result<_, Status> {
+            logs::ensure_path_in_dir(&req.path, &log_dir)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+            Ok(logs::read_file_op_log(&req.path, count))
+        })
+        .await
+        .map_err(|e| join_err(&e))??;
+
+        let entries: Vec<FileOpLogEntry> = entries.into_iter().map(Into::into).collect();
         Ok(Response::new(FileOpLogsReply { entries }))
     }
 
@@ -458,26 +511,30 @@ impl Control for ControlService {
         request: Request<SaveLogConfigRequest>,
     ) -> Result<Response<OpReply>, Status> {
         let req = request.into_inner();
-        let level_changed;
-        let log_dir_changed;
+        let level_for_reload = req.log_level.clone();
+        let state = Arc::clone(&self.state);
 
-        {
-            let mut cfg = self.state.config.lock().unwrap();
-            log_dir_changed = cfg.logging.log_dir != req.log_dir;
-            level_changed = cfg.logging.log_level != req.log_level;
-            cfg.logging.log_dir = req.log_dir;
-            cfg.logging.log_level = req.log_level.clone();
-            cfg.logging.max_log_size = req.max_log_size;
-            cfg.logging.max_log_files = req.max_log_files as usize;
-            cfg.logging.enable_gui_logging = req.enable_gui_logging;
+        let (level_changed, log_dir_changed) =
+            tokio::task::spawn_blocking(move || -> Result<_, Status> {
+                let mut cfg = state.config.lock().unwrap();
+                let log_dir_changed = cfg.logging.log_dir != req.log_dir;
+                let level_changed = cfg.logging.log_level != req.log_level;
+                cfg.logging.log_dir = req.log_dir;
+                cfg.logging.log_level.clone_from(&req.log_level);
+                cfg.logging.max_log_size = req.max_log_size;
+                cfg.logging.max_log_files = req.max_log_files as usize;
+                cfg.logging.enable_gui_logging = req.enable_gui_logging;
 
-            cfg.save(&wftpd_common::Config::get_config_path())
-                .map_err(internal)?;
-        }
+                cfg.save(&wftpd_common::Config::get_config_path())
+                    .map_err(internal)?;
+                Ok((level_changed, log_dir_changed))
+            })
+            .await
+            .map_err(|e| join_err(&e))??;
 
         // 日志级别立即生效；日志目录/文件数上限在下次重启后生效
         if level_changed {
-            wftpd_common::set_log_level(&req.log_level).map_err(internal)?;
+            wftpd_common::set_log_level(&level_for_reload).map_err(internal)?;
         }
 
         let mut message = String::from("日志配置已保存");
@@ -492,24 +549,32 @@ impl Control for ControlService {
         request: Request<WriteAuditLogRequest>,
     ) -> Result<Response<OpReply>, Status> {
         let req = request.into_inner();
-
-        let audit_path = paths::audit_log_path();
-        if let Some(parent) = audit_path.parent() {
-            std::fs::create_dir_all(parent).map_err(internal)?;
-        }
-
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&audit_path)
-            .map_err(internal)?;
-
-        let timestamp = chrono::Local::now().to_rfc3339();
-        let line = format!(
-            "{} | {} | {} | {} | {}\n",
-            timestamp, req.user, req.action, req.target, req.details
+        let (user, action, target, details) = (
+            req.user.clone(),
+            req.action.clone(),
+            req.target.clone(),
+            req.details.clone(),
         );
-        file.write_all(line.as_bytes()).map_err(internal)?;
+
+        tokio::task::spawn_blocking(move || -> Result<_, Status> {
+            let audit_path = paths::audit_log_path();
+            if let Some(parent) = audit_path.parent() {
+                std::fs::create_dir_all(parent).map_err(internal)?;
+            }
+
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&audit_path)
+                .map_err(internal)?;
+
+            let timestamp = chrono::Local::now().to_rfc3339();
+            let line = format!("{timestamp} | {user} | {action} | {target} | {details}\n");
+            file.write_all(line.as_bytes()).map_err(internal)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| join_err(&e))??;
 
         info!(
             target: "audit",
@@ -525,15 +590,22 @@ impl Control for ControlService {
 }
 
 impl ControlService {
-    fn persist_config(&self) {
-        let cfg = self.state.config.lock().unwrap();
-        let path = wftpd_common::Config::get_config_path();
-        if let Err(e) = cfg.save(&path) {
-            error!("Failed to persist config: {}", e);
+    async fn persist_config(&self) {
+        let state = Arc::clone(&self.state);
+        let result = tokio::task::spawn_blocking(move || {
+            let cfg = state.config.lock().unwrap();
+            let path = wftpd_common::Config::get_config_path();
+            cfg.save(&path)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => error!("Failed to persist config: {e}"),
+            Err(e) => error!("Failed to persist config: {e}"),
         }
     }
 
-    fn set_ftp_enabled(&self, enabled: bool) {
+    async fn set_ftp_enabled(&self, enabled: bool) {
         {
             let mut cfg = self.state.config.lock().unwrap();
             if cfg.ftp.enabled == enabled {
@@ -541,10 +613,10 @@ impl ControlService {
             }
             cfg.ftp.enabled = enabled;
         }
-        self.persist_config();
+        self.persist_config().await;
     }
 
-    fn set_sftp_enabled(&self, enabled: bool) {
+    async fn set_sftp_enabled(&self, enabled: bool) {
         {
             let mut cfg = self.state.config.lock().unwrap();
             if cfg.sftp.enabled == enabled {
@@ -552,6 +624,6 @@ impl ControlService {
             }
             cfg.sftp.enabled = enabled;
         }
-        self.persist_config();
+        self.persist_config().await;
     }
 }

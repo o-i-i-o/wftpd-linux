@@ -4,7 +4,7 @@
 //! - 匿名访问：`allow_anonymous = true` 时接受 anonymous/ftp 用户，
 //!   由 `UserDetailProvider` 将其映射到 `anonymous_home`
 //! - IP 过滤：libunftp 在 `Credentials` 中提供来源 IP，
-//!   `allowed_ips` / `denied_ips` 规则在此执行（命中拒绝返回 IpDisallowed）
+//!   `allowed_ips` / `denied_ips` 规则在此执行（命中拒绝返回 `IpDisallowed`）
 
 use async_trait::async_trait;
 use std::net::IpAddr;
@@ -20,7 +20,6 @@ use wftpd_common::{Config, UserManager};
 #[derive(Debug)]
 pub struct WftpdUserDetailProvider {
     user_manager: Arc<StdMutex<UserManager>>,
-    allow_anonymous: bool,
     anonymous_home: Option<PathBuf>,
 }
 
@@ -28,7 +27,6 @@ impl WftpdUserDetailProvider {
     pub fn new(config: &Config, user_manager: Arc<StdMutex<UserManager>>) -> Self {
         WftpdUserDetailProvider {
             user_manager,
-            allow_anonymous: config.ftp.allow_anonymous,
             anonymous_home: config.ftp.anonymous_home.as_ref().map(PathBuf::from),
         }
     }
@@ -55,7 +53,7 @@ impl UserDetailProvider for WftpdUserDetailProvider {
             let users = self.user_manager.lock().unwrap();
             users
                 .get_user(&principal.username)
-                .map(|u| (PathBuf::from(&u.home_dir), u.permissions.clone(), u.enabled))
+                .map(|u| (PathBuf::from(&u.home_dir), u.permissions, u.enabled))
         };
 
         match detail {
@@ -142,17 +140,14 @@ impl Authenticator for WftpdAuthenticator {
             if let Err(e) = users.reload(&wftpd_common::Config::get_users_path()) {
                 warn!(error = %e, "重载用户配置失败，使用内存副本");
             }
-            match users.authenticate(username, password) {
-                Ok(true) => {
-                    info!(user = %username, client_ip = %creds.source_ip, "FTP 用户登录成功");
-                    Ok(Principal {
-                        username: username.to_string(),
-                    })
-                }
-                _ => {
-                    info!(user = %username, client_ip = %creds.source_ip, "FTP 登录失败");
-                    Err(AuthenticationError::BadPassword)
-                }
+            if let Ok(true) = users.authenticate(username, password) {
+                info!(user = %username, client_ip = %creds.source_ip, "FTP 用户登录成功");
+                Ok(Principal {
+                    username: username.to_string(),
+                })
+            } else {
+                info!(user = %username, client_ip = %creds.source_ip, "FTP 登录失败");
+                Err(AuthenticationError::BadPassword)
             }
         }
     }

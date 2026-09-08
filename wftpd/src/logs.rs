@@ -1,6 +1,6 @@
 //! 日志文件读取与解析：供 gRPC 日志接口使用。
 //!
-//! 程序日志由 tracing-appender 写出（enable_json=true 时为 JSON 行，
+//! 程序日志由 tracing-appender `写出（enable_json=true` 时为 JSON 行，
 //! 否则为文本行），文件操作审计日志恒为 JSON 行。解析均为尽力而为：
 //! 单行解析失败时跳过该行，不影响其余内容。
 
@@ -10,6 +10,9 @@ use std::path::Path;
 use wftpd_common::{FileLogEntryJson, LogEntryJson, LogFileEntry};
 
 /// 列出目录下带指定前缀的日志文件（新→旧），例如 prefix="wftpg" 匹配 wftpg.2026-09-05.log
+///
+/// 文件名由 tracing-appender 按 prefix/suffix 生成，恒为小写，因此扩展名比较保持大小写敏感
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 pub fn list_log_files(log_dir: &str, prefix: &str) -> Vec<LogFileEntry> {
     let Ok(entries) = std::fs::read_dir(log_dir) else {
         return Vec::new();
@@ -40,9 +43,8 @@ pub fn list_log_files(log_dir: &str, prefix: &str) -> Vec<LogFileEntry> {
 
 /// 读取文件最后 `count` 行
 fn tail_lines(path: &str, count: usize) -> Vec<String> {
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
     };
 
     let mut lines = Vec::new();
@@ -154,13 +156,13 @@ fn parse_file_op_line(line: &str) -> Option<FileLogEntryJson> {
         file_size: v
             .get("fields")
             .and_then(|f| f.get("file_size"))
-            .and_then(|m| m.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or_default(),
         protocol: field("protocol"),
         success: v
             .get("fields")
             .and_then(|f| f.get("success"))
-            .and_then(|m| m.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or_default(),
         message: field("message"),
     })
@@ -187,7 +189,7 @@ pub fn ensure_path_in_dir(path: &str, dir: &str) -> anyhow::Result<()> {
     let canonical = std::fs::canonicalize(Path::new(path))?;
     let log_dir = std::fs::canonicalize(Path::new(dir))?;
     if !canonical.starts_with(&log_dir) {
-        anyhow::bail!("path {} is outside log directory", path);
+        anyhow::bail!("path {path} is outside log directory");
     }
     Ok(())
 }

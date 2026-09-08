@@ -1,11 +1,11 @@
-//! SFTP 协议操作实现（russh_sftp::server::Handler）。
+//! SFTP `协议操作实现（russh_sftp::server::Handler`）。
 //!
 //! 业务逻辑与旧手写实现保持一致：
 //! - 路径经 `safe_resolve_path_async` 锚定在用户主目录内（防穿越）
-//! - 每个操作前检查用户权限（can_read/can_write/...）
-//! - 上传写入量受 quota_mb 配额约束
-//! - 传输受用户 speed_limit_kbps 限速
-//! - 文件操作写入审计日志（FileLogger → file_ops target）
+//! - `每个操作前检查用户权限（can_read/can_write`/...）
+//! - 上传写入量受 `quota_mb` 配额约束
+//! - 传输受用户 `speed_limit_kbps` 限速
+//! - 文件操作写入审计日志（FileLogger → `file_ops` target）
 //! - 支持 openssh 扩展：md5sum / sha256sum / space-available
 
 use std::collections::HashMap;
@@ -23,6 +23,10 @@ use wftpd_common::server::speed_limiter::SpeedLimiter;
 use wftpd_common::{FileLogger, Permissions, UserManager};
 
 const SFTP_VERSION: u32 = 3;
+
+/// 单次 READ 请求允许的最大字节数（与 OpenSSH 一致取 256 KiB）。
+/// len 来自客户端且直接决定缓冲区分配大小，必须设上限防止内存耗尽。
+const MAX_READ_LEN: u32 = 256 * 1024;
 
 type SftpResult<T> = Result<T, StatusCode>;
 
@@ -43,7 +47,7 @@ enum OpenEntry {
     Dir(DirHandle),
 }
 
-/// 每个已认证的 SFTP 会话一个实例（由 russh_sftp::server::run 驱动）
+/// 每个已认证的 SFTP 会话一个实例（由 `russh_sftp::server::run` 驱动）
 pub struct SftpFileHandler {
     username: String,
     home_dir: String,
@@ -143,7 +147,7 @@ impl SftpFileHandler {
         message: &str,
     ) {
         if let Ok(mut file_log) = self.file_logger.try_lock() {
-            file_log.log(wftpd_common::FileLogInfo {
+            file_log.log(&wftpd_common::FileLogInfo {
                 username: &self.username,
                 client_ip: &self.client_ip,
                 operation,
@@ -160,7 +164,7 @@ impl SftpFileHandler {
         loop {
             let id = self.next_handle;
             self.next_handle += 1;
-            let handle = format!("h{:x}", id);
+            let handle = format!("h{id:x}");
             if !self.handles.contains_key(&handle) {
                 return handle;
             }
@@ -196,7 +200,7 @@ impl SftpFileHandler {
     }
 
     fn io_status(e: &std::io::Error) -> StatusCode {
-        use std::io::ErrorKind::*;
+        use std::io::ErrorKind::{NotFound, PermissionDenied};
         match e.kind() {
             NotFound => StatusCode::NoSuchFile,
             PermissionDenied => StatusCode::PermissionDenied,
@@ -213,8 +217,12 @@ impl SftpFileHandler {
             gid: Some(md.gid()),
             group: None,
             permissions: Some(md.mode()),
-            atime: Some(md.atime().clamp(i32::MIN as i64, i32::MAX as i64) as u32),
-            mtime: Some(md.mtime().clamp(i32::MIN as i64, i32::MAX as i64) as u32),
+            atime: Some(
+                u32::try_from(md.atime().clamp(0, i64::from(u32::MAX))).unwrap_or_default(),
+            ),
+            mtime: Some(
+                u32::try_from(md.mtime().clamp(0, i64::from(u32::MAX))).unwrap_or_default(),
+            ),
         }
     }
 
@@ -310,9 +318,6 @@ impl Handler for SftpFileHandler {
         if pflags.contains(OpenFlags::TRUNCATE) {
             opts.truncate(true);
         }
-        if !pflags.contains(OpenFlags::READ) {
-            // 纯写打开时若文件不存在则创建失败由 OS 决定（无 O_EXCL 处理）
-        }
 
         let file = opts.open(&path).await.map_err(|e| {
             warn!(path = %path.display(), error = %e, "[SFTP] open failed");
@@ -329,7 +334,6 @@ impl Handler for SftpFileHandler {
         );
 
         debug!(user = %self.username, path = %path.display(), "[SFTP] file opened");
-        let _ = path;
         Ok(Handle { id, handle })
     }
 
@@ -348,16 +352,18 @@ impl Handler for SftpFileHandler {
     }
 
     async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> SftpResult<Data> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
         let Some(OpenEntry::File(f)) = self.handles.get_mut(&handle) else {
             return Err(StatusCode::NoSuchFile);
         };
 
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
         f.file
             .seek(SeekFrom::Start(offset))
             .await
             .map_err(|e| Self::io_status(&e))?;
 
+        let len = len.min(MAX_READ_LEN);
         let mut buf = vec![0u8; len as usize];
         let n = f
             .file
@@ -380,6 +386,8 @@ impl Handler for SftpFileHandler {
         offset: u64,
         data: Vec<u8>,
     ) -> SftpResult<Status> {
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
         let len = data.len() as u64;
 
         if !self.quota_ok(len).await {
@@ -391,7 +399,6 @@ impl Handler for SftpFileHandler {
             return Err(StatusCode::NoSuchFile);
         };
 
-        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
         f.file
             .seek(SeekFrom::Start(offset))
             .await
@@ -402,7 +409,7 @@ impl Handler for SftpFileHandler {
             .map_err(|e| Self::io_status(&e))?;
         f.file.flush().await.map_err(|e| Self::io_status(&e))?;
 
-        self.throttle(len as usize).await;
+        self.throttle(data.len()).await;
         Ok(Self::status(id, StatusCode::Ok))
     }
 
@@ -518,10 +525,7 @@ impl Handler for SftpFileHandler {
             return Err(StatusCode::PermissionDenied);
         }
         let resolved = self.resolve(&filename)?;
-        let size = tokio::fs::metadata(&resolved)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let size = tokio::fs::metadata(&resolved).await.map_or(0, |m| m.len());
 
         tokio::fs::remove_file(&resolved)
             .await
@@ -585,16 +589,16 @@ impl Handler for SftpFileHandler {
         // 把真实路径映射回 chroot 内的虚拟路径（客户端视角的根就是主目录）
         let home = PathBuf::from(&self.home_dir);
         let home_canon = tokio::fs::canonicalize(&home).await.unwrap_or(home);
-        let virtual_path = resolved
-            .strip_prefix(&home_canon)
-            .map(|rel| {
+        let virtual_path = resolved.strip_prefix(&home_canon).map_or_else(
+            |_| "/".to_string(),
+            |rel| {
                 if rel.as_os_str().is_empty() {
                     "/".to_string()
                 } else {
                     format!("/{}", rel.to_string_lossy())
                 }
-            })
-            .unwrap_or_else(|_| "/".to_string());
+            },
+        );
         Ok(Name {
             id,
             files: vec![File::dummy(virtual_path)],
@@ -674,8 +678,7 @@ impl Handler for SftpFileHandler {
         } else {
             let link_dir = link
                 .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(&self.home_dir));
+                .map_or_else(|| PathBuf::from(&self.home_dir), Path::to_path_buf);
             let joined = link_dir.join(target_raw);
             let home = PathBuf::from(&self.home_dir);
             let mut normalized = home.clone();
@@ -715,7 +718,7 @@ impl Handler for SftpFileHandler {
         match request.as_str() {
             "md5sum@openssh.com" => self.extended_digest(id, &data, Digest::Md5).await,
             "sha256sum@openssh.com" => self.extended_digest(id, &data, Digest::Sha256).await,
-            "space-available@openssh.com" => self.extended_space_available(id, &data).await,
+            "space-available@openssh.com" => self.extended_space_available(id, &data),
             other => {
                 debug!(request = other, "[SFTP] unsupported extension");
                 Err(StatusCode::OpUnsupported)
@@ -746,7 +749,7 @@ impl SftpFileHandler {
     }
 
     /// space-available@openssh.com（statvfs 编码按 draft-ietf-secsh-filexfer-06 §8）
-    async fn extended_space_available(&self, id: u32, data: &[u8]) -> SftpResult<Packet> {
+    fn extended_space_available(&self, id: u32, data: &[u8]) -> SftpResult<Packet> {
         let bad = StatusCode::BadMessage;
         let path_len =
             u32::from_be_bytes(data.get(0..4).ok_or(bad)?.try_into().map_err(|_| bad)?) as usize;
@@ -804,6 +807,7 @@ async fn digest_file(
     length: u64,
     kind: Digest,
 ) -> std::io::Result<Vec<u8>> {
+    use md5::Digest as _;
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     let mut file = tokio::fs::File::open(path).await?;
@@ -811,21 +815,22 @@ async fn digest_file(
 
     let mut remaining = length;
     let mut buf = [0u8; 8192];
-    use md5::Digest as _;
-    let mut md5_hasher = md5::Md5::new();
-    let mut sha_hasher = sha2::Sha256::new();
+    let mut hasher = match kind {
+        Digest::Md5 => Box::new(md5::Md5::new()) as Box<dyn md5::digest::DynDigest + Send>,
+        Digest::Sha256 => Box::new(sha2::Sha256::new()) as Box<dyn md5::digest::DynDigest + Send>,
+    };
     loop {
         let want = if remaining == 0 {
             buf.len()
         } else {
-            buf.len().min(remaining as usize)
+            buf.len()
+                .min(usize::try_from(remaining).unwrap_or(usize::MAX))
         };
         let n = file.read(&mut buf[..want]).await?;
         if n == 0 {
             break;
         }
-        md5_hasher.update(&buf[..n]);
-        sha_hasher.update(&buf[..n]);
+        hasher.update(&buf[..n]);
         if remaining > 0 {
             remaining -= n as u64;
             if remaining == 0 {
@@ -834,9 +839,5 @@ async fn digest_file(
         }
     }
 
-    let hex = match kind {
-        Digest::Md5 => hex::encode(md5_hasher.finalize()),
-        Digest::Sha256 => hex::encode(sha_hasher.finalize()),
-    };
-    Ok(hex.into_bytes())
+    Ok(hex::encode(hasher.finalize()).into_bytes())
 }

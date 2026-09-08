@@ -3,9 +3,9 @@
 //! [`WftpdUser`] 实现 `UserDetail`（声明主目录，libunftp 据此限制会话根），
 //! [`WftpdFilesystem`] 在每个操作中执行：
 //! - 路径安全（拒绝越出主目录）
-//! - 用户权限（can_read/can_write/can_delete/can_list/can_mkdir/can_rmdir/can_rename）
-//! - 配额（quota_mb，写入前检查）
-//! - 审计日志（FileLogger → file_ops target / 内存缓冲 → 前端）
+//! - `用户权限（can_read/can_write/can_delete/can_list/can_mkdir/can_rmdir/can_rename`）
+//! - `配额（quota_mb，写入前检查`）
+//! - 审计日志（FileLogger → `file_ops` target / 内存缓冲 → 前端）
 
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,7 @@ pub struct WftpdUser {
 }
 
 impl WftpdUser {
+    #[must_use]
     pub fn new(username: String, home: PathBuf, permissions: wftpd_common::Permissions) -> Self {
         let quota_mb = permissions.quota_mb.unwrap_or(0);
         WftpdUser {
@@ -43,6 +44,7 @@ impl WftpdUser {
         }
     }
 
+    #[must_use]
     pub fn anonymous(home: PathBuf) -> Self {
         WftpdUser {
             username: "anonymous".to_string(),
@@ -121,7 +123,7 @@ impl WftpdFilesystem {
 
     fn audit(&self, user: &str, op: &str, path: &Path, size: u64, success: bool, message: &str) {
         if let Ok(mut log) = self.file_logger.try_lock() {
-            log.log(wftpd_common::FileLogInfo {
+            log.log(&wftpd_common::FileLogInfo {
                 username: user,
                 client_ip: "-",
                 operation: op,
@@ -142,7 +144,7 @@ impl WftpdFilesystem {
         };
 
         let stripped = path.strip_prefix("/").unwrap_or(path);
-        let mut normalized = root.to_path_buf();
+        let mut normalized = root.clone();
         for component in stripped.components() {
             match component {
                 std::path::Component::Normal(seg) => normalized.push(seg),
@@ -215,7 +217,9 @@ where
         path: P,
     ) -> StorageResult<Self::Metadata> {
         let p = self.resolve(path.as_ref())?;
-        let md = tokio::fs::symlink_metadata(&p).await.map_err(io_err)?;
+        let md = tokio::fs::symlink_metadata(&p)
+            .await
+            .map_err(|e| io_err(&e))?;
         Ok(SystemMetadata(md))
     }
 
@@ -230,9 +234,9 @@ where
         Self::require(ctx.permissions.can_list, "LIST", ctx.username)?;
         let p = self.resolve(path.as_ref())?;
         let mut result = Vec::new();
-        let mut rd = tokio::fs::read_dir(&p).await.map_err(io_err)?;
-        while let Some(entry) = rd.next_entry().await.map_err(io_err)? {
-            let md = entry.metadata().await.map_err(io_err)?;
+        let mut rd = tokio::fs::read_dir(&p).await.map_err(|e| io_err(&e))?;
+        while let Some(entry) = rd.next_entry().await.map_err(|e| io_err(&e))? {
+            let md = entry.metadata().await.map_err(|e| io_err(&e))?;
             result.push(Fileinfo {
                 path: entry.path(),
                 metadata: SystemMetadata(md),
@@ -261,17 +265,17 @@ where
                 false,
                 &format!("下载失败: {e}"),
             );
-            io_err(e)
+            io_err(&e)
         })?;
 
         if start_pos > 0 {
             use tokio::io::AsyncSeekExt;
             file.seek(std::io::SeekFrom::Start(start_pos))
                 .await
-                .map_err(io_err)?;
+                .map_err(|e| io_err(&e))?;
         }
 
-        let size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+        let size = file.metadata().await.map_or(0, |m| m.len());
         self.audit(ctx.username, "DOWNLOAD", &p, size, true, "文件下载成功");
         Ok(Box::new(file))
     }
@@ -281,6 +285,8 @@ where
         P: AsRef<Path> + Send + Debug,
         R: tokio::io::AsyncRead + Send + Sync + Unpin + 'static,
     {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+
         let Some(ctx) = user.context() else {
             return Err(ErrorKind::PermanentFileNotAvailable.into());
         };
@@ -289,7 +295,9 @@ where
         self.check_quota(&p, ctx.quota_mb).await?;
 
         if let Some(parent) = p.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(io_err)?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| io_err(&e))?;
         }
 
         let mut file = tokio::fs::OpenOptions::new()
@@ -307,29 +315,27 @@ where
                     false,
                     &format!("上传失败: {e}"),
                 );
-                io_err(e)
+                io_err(&e)
             })?;
 
         if start_pos > 0 {
-            use tokio::io::AsyncSeekExt;
             file.seek(std::io::SeekFrom::Start(start_pos))
                 .await
-                .map_err(io_err)?;
+                .map_err(|e| io_err(&e))?;
         }
 
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut input = input;
         let mut buffer = [0u8; 8192];
         let mut written: u64 = 0;
         loop {
-            let n = input.read(&mut buffer).await.map_err(io_err)?;
+            let n = input.read(&mut buffer).await.map_err(|e| io_err(&e))?;
             if n == 0 {
                 break;
             }
-            file.write_all(&buffer[..n]).await.map_err(io_err)?;
+            file.write_all(&buffer[..n]).await.map_err(|e| io_err(&e))?;
             written += n as u64;
         }
-        file.flush().await.map_err(io_err)?;
+        file.flush().await.map_err(|e| io_err(&e))?;
 
         self.quota_cache
             .invalidate(&self.current_root()?.to_string_lossy())
@@ -344,7 +350,7 @@ where
         };
         Self::require(ctx.permissions.can_delete, "DELE", ctx.username)?;
         let p = self.resolve(path.as_ref())?;
-        tokio::fs::remove_file(&p).await.map_err(io_err)?;
+        tokio::fs::remove_file(&p).await.map_err(|e| io_err(&e))?;
 
         self.quota_cache
             .invalidate(&self.current_root()?.to_string_lossy())
@@ -359,7 +365,7 @@ where
         };
         Self::require(ctx.permissions.can_mkdir, "MKD", ctx.username)?;
         let p = self.resolve(path.as_ref())?;
-        tokio::fs::create_dir(&p).await.map_err(io_err)?;
+        tokio::fs::create_dir(&p).await.map_err(|e| io_err(&e))?;
 
         self.audit(ctx.username, "MKDIR", &p, 0, true, "目录创建成功");
         Ok(())
@@ -378,7 +384,9 @@ where
         let from = self.resolve(from.as_ref())?;
         let to = self.resolve(to.as_ref())?;
 
-        tokio::fs::rename(&from, &to).await.map_err(io_err)?;
+        tokio::fs::rename(&from, &to)
+            .await
+            .map_err(|e| io_err(&e))?;
 
         self.audit(
             ctx.username,
@@ -398,7 +406,9 @@ where
         Self::require(ctx.permissions.can_rmdir, "RMD", ctx.username)?;
         let p = self.resolve(path.as_ref())?;
         // 与既有行为一致：递归删除
-        tokio::fs::remove_dir_all(&p).await.map_err(io_err)?;
+        tokio::fs::remove_dir_all(&p)
+            .await
+            .map_err(|e| io_err(&e))?;
 
         self.audit(ctx.username, "RMDIR", &p, 0, true, "目录删除成功");
         Ok(())
@@ -406,7 +416,7 @@ where
 
     async fn cwd<P: AsRef<Path> + Send + Debug>(&self, _user: &UD, path: P) -> StorageResult<()> {
         let p = self.resolve(path.as_ref())?;
-        let md = tokio::fs::metadata(&p).await.map_err(io_err)?;
+        let md = tokio::fs::metadata(&p).await.map_err(|e| io_err(&e))?;
         if md.is_dir() {
             Ok(())
         } else {
@@ -415,7 +425,7 @@ where
     }
 }
 
-/// std::fs::Metadata 的 Metadata trait 适配
+/// `std::fs::Metadata` 的 Metadata trait 适配
 #[derive(Clone)]
 pub struct SystemMetadata(std::fs::Metadata);
 
@@ -458,11 +468,12 @@ impl Metadata for SystemMetadata {
     }
 }
 
-fn io_err(e: std::io::Error) -> StorageError {
+fn io_err(e: &std::io::Error) -> StorageError {
     match e.kind() {
-        std::io::ErrorKind::NotFound => ErrorKind::PermanentFileNotAvailable.into(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists => {
+            ErrorKind::PermanentFileNotAvailable.into()
+        }
         std::io::ErrorKind::PermissionDenied => ErrorKind::PermissionDenied.into(),
-        std::io::ErrorKind::AlreadyExists => ErrorKind::PermanentFileNotAvailable.into(),
         _ => ErrorKind::LocalError.into(),
     }
 }

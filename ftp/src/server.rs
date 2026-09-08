@@ -1,10 +1,10 @@
 //! FtpServer：把 Config/UserManager/FileLogger 组装为 libunftp Server。
 //!
 //! 配置映射：
-//! - passive_ports / masquerade_ip / welcome_message / idle_timeout → libunftp 选项
-//! - require_ssl + cert/key → FTPS（ftps_required）
-//! - max_login_attempts + ban_duration → libunftp FailedLoginsPolicy（防爆破锁定）
-//! - max_connections → 连接数上限（在 accept 层强制）
+//! - `passive_ports` / `masquerade_ip` / `welcome_message` / `idle_timeout` → libunftp 选项
+//! - `require_ssl` + cert/key → `FTPS（ftps_required`）
+//! - `max_login_attempts` + `ban_duration` → libunftp FailedLoginsPolicy（防爆破锁定）
+//! - `max_connections` → 连接数上限（在 accept 层强制）
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -106,12 +106,10 @@ impl FtpServer {
         builder = match masquerade_ip
             .as_deref()
             .and_then(|s| s.parse::<IpAddr>().ok())
-            .map(|ip| match ip {
+            .and_then(|ip| match ip {
                 IpAddr::V4(v4) => Some(v4),
                 IpAddr::V6(_) => None,
-            })
-            .unwrap_or(None)
-        {
+            }) {
             Some(v4) => builder.passive_host(v4),
             None => builder,
         };
@@ -192,6 +190,7 @@ impl FtpServer {
         info!("FTP 服务已停止");
     }
 
+    #[must_use]
     pub fn is_running(&self) -> bool {
         *self.running.lock().unwrap()
     }

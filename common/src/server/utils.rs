@@ -6,6 +6,7 @@ use crate::error::{WftpgError, WftpgResult};
 
 const MAX_PATH_LENGTH: usize = 4096;
 
+#[must_use]
 pub fn real_to_virtual_path(real_path: &str, home_dir: &str) -> String {
     let home_canon = match Path::new(home_dir).canonicalize() {
         Ok(c) => c,
@@ -30,6 +31,7 @@ pub fn real_to_virtual_path(real_path: &str, home_dir: &str) -> String {
     }
 }
 
+#[must_use]
 pub fn virtual_to_real_path(virtual_path: &str, home_dir: &str) -> String {
     let home_canon = match Path::new(home_dir).canonicalize() {
         Ok(c) => c.to_string_lossy().to_string(),
@@ -50,6 +52,7 @@ pub fn virtual_to_real_path(virtual_path: &str, home_dir: &str) -> String {
     }
 }
 
+#[must_use]
 pub fn is_safe_username(username: &str) -> bool {
     if username.is_empty() || username.len() > 64 {
         return false;
@@ -83,8 +86,8 @@ fn canonicalize_home(home_dir: &str) -> WftpgResult<PathBuf> {
         Err(e) => {
             error!(home = ?home, error = %e, "无法规范化主目录");
             Err(WftpgError::PathResolveError(format!(
-                "主目录不存在或无法访问：{:?}",
-                home
+                "主目录不存在或无法访问：{}",
+                home.display()
             )))
         }
     }
@@ -98,8 +101,8 @@ async fn canonicalize_home_async(home_dir: &str) -> WftpgResult<PathBuf> {
         Err(e) => {
             error!(home = ?home, error = %e, "无法规范化主目录");
             Err(WftpgError::PathResolveError(format!(
-                "主目录不存在或无法访问：{:?}",
-                home
+                "主目录不存在或无法访问：{}",
+                home.display()
             )))
         }
     }
@@ -136,13 +139,12 @@ fn apply_path_components_safe(
                     ));
                 }
             }
-            std::path::Component::CurDir => {}
             std::path::Component::RootDir => {
                 if clean_path.starts_with('/') {
                     safe_path = home_canon.to_path_buf();
                 }
             }
-            std::path::Component::Prefix(_) => {}
+            std::path::Component::CurDir | std::path::Component::Prefix(_) => {}
         }
     }
 
@@ -208,13 +210,12 @@ async fn apply_path_components_safe_async(
                     ));
                 }
             }
-            std::path::Component::CurDir => {}
             std::path::Component::RootDir => {
                 if clean_path.starts_with('/') {
                     safe_path = home_canon.to_path_buf();
                 }
             }
-            std::path::Component::Prefix(_) => {}
+            std::path::Component::CurDir | std::path::Component::Prefix(_) => {}
         }
     }
 
@@ -607,6 +608,7 @@ async fn resolve_cwd_async(cwd: &str, home_canon: &Path) -> WftpgResult<PathBuf>
     }
 }
 
+#[must_use]
 pub fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
     use chrono::DateTime;
     use std::time::UNIX_EPOCH;
@@ -614,7 +616,7 @@ pub fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
     if let Ok(system_time) = metadata.modified()
         && let Ok(duration) = system_time.duration_since(UNIX_EPOCH)
     {
-        let secs = duration.as_secs() as i64;
+        let secs = i64::try_from(duration.as_secs()).unwrap_or(i64::MAX);
         let nanos = duration.subsec_nanos();
         if let Some(dt) = DateTime::from_timestamp(secs, nanos) {
             return dt.format("%Y-%m-%d %H:%M").to_string();
@@ -623,6 +625,7 @@ pub fn get_file_mtime(metadata: &std::fs::Metadata) -> String {
     "1970-01-01 00:00".to_string()
 }
 
+#[must_use]
 pub fn get_file_mtime_raw(metadata: &std::fs::Metadata) -> String {
     use std::time::UNIX_EPOCH;
     if let Ok(time) = metadata.modified()
@@ -633,7 +636,10 @@ pub fn get_file_mtime_raw(metadata: &std::fs::Metadata) -> String {
     "0".to_string()
 }
 
+#[must_use]
 pub fn escape_mlst_filename(name: &str) -> String {
+    use std::fmt::Write as _;
+
     let mut result = String::with_capacity(name.len());
     for c in name.chars() {
         match c {
@@ -645,9 +651,8 @@ pub fn escape_mlst_filename(name: &str) -> String {
             '\r' => result.push_str("\\015"),
             '\t' => result.push_str("\\011"),
             c if c.is_control() => {
-                let code = c as u32;
-                if code <= 0xFF {
-                    result.push_str(&format!("\\{:03o}", code as u8));
+                if let Ok(byte) = u8::try_from(u32::from(c)) {
+                    let _ = write!(result, "\\{byte:03o}");
                 } else {
                     result.push('?');
                 }
@@ -658,6 +663,7 @@ pub fn escape_mlst_filename(name: &str) -> String {
     result
 }
 
+#[must_use]
 pub fn format_mtime_rfc3659(metadata: &std::fs::Metadata) -> String {
     use chrono::DateTime;
     use std::time::UNIX_EPOCH;
@@ -665,7 +671,7 @@ pub fn format_mtime_rfc3659(metadata: &std::fs::Metadata) -> String {
     if let Ok(system_time) = metadata.modified()
         && let Ok(duration) = system_time.duration_since(UNIX_EPOCH)
     {
-        let secs = duration.as_secs() as i64;
+        let secs = i64::try_from(duration.as_secs()).unwrap_or(i64::MAX);
         let nanos = duration.subsec_nanos();
         if let Some(dt) = DateTime::from_timestamp(secs, nanos) {
             return dt.format("%Y%m%d%H%M%S%.3f").to_string();
@@ -674,12 +680,14 @@ pub fn format_mtime_rfc3659(metadata: &std::fs::Metadata) -> String {
     "19700101000000".to_string()
 }
 
+#[must_use]
 pub fn get_unix_mode(metadata: &std::fs::Metadata) -> String {
     use std::os::unix::fs::PermissionsExt;
     let mode = metadata.permissions().mode();
     format!("{:04o}", mode & 0o7777)
 }
 
+#[must_use]
 pub fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
     let mut facts: Vec<String> = Vec::new();
 
@@ -692,10 +700,10 @@ pub fn build_mlst_facts(metadata: &std::fs::Metadata) -> String {
     facts.push(format!("size={};", metadata.len()));
 
     let mtime = format_mtime_rfc3659(metadata);
-    facts.push(format!("modify={};", mtime));
+    facts.push(format!("modify={mtime};"));
 
     let mode = get_unix_mode(metadata);
-    facts.push(format!("unix.mode={};", mode));
+    facts.push(format!("unix.mode={mode};"));
 
     facts.join("")
 }
@@ -758,8 +766,7 @@ pub fn safe_open_file_at(home_dir: &str, relative_path: &str) -> WftpgResult<std
                 }
                 nix::unistd::close(current_fd).ok();
                 return Err(WftpgError::PathResolveError(format!(
-                    "无法访问路径组件: {}",
-                    component
+                    "无法访问路径组件: {component}"
                 )));
             }
         }
@@ -834,8 +841,7 @@ pub async fn safe_open_file_at_async(
                 }
                 nix::unistd::close(current_fd).ok();
                 return Err(WftpgError::PathResolveError(format!(
-                    "无法访问路径组件：{}",
-                    component
+                    "无法访问路径组件：{component}"
                 )));
             }
         }
@@ -851,7 +857,7 @@ pub async fn safe_open_file_at_async(
 
 /// 🔒 严格验证路径是否在 chroot 监狱内
 ///
-/// 这个函数比 safe_resolve_path 更严格，它会：
+/// 这个函数比 `safe_resolve_path` 更严格，它会：
 /// 1. canonicalize 路径（解析所有符号链接）
 /// 2. 检查规范化后的路径是否在 home 目录内
 /// 3. 逐段检查路径组件，防止符号链接逃逸
@@ -868,7 +874,7 @@ pub async fn validate_path_within_chroot(path: &str, home_dir: &str) -> Result<P
 
     let home_canon = tokio::fs::canonicalize(home_dir)
         .await
-        .map_err(|e| anyhow::anyhow!("Cannot canonicalize home directory: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Cannot canonicalize home directory: {e}"))?;
 
     // 首先解析路径
     let resolved = if Path::new(path).is_absolute() {
@@ -899,7 +905,7 @@ pub async fn validate_path_within_chroot(path: &str, home_dir: &str) -> Result<P
                     .unwrap_or_else(|_| parent.to_path_buf());
 
                 if !parent_canon.starts_with(&home_canon) {
-                    bail!("Parent path escapes chroot: {:?}", parent_canon);
+                    bail!("Parent path escapes chroot: {}", parent_canon.display());
                 }
             }
             // 返回原始解析路径（未完全 canonicalize）
@@ -913,7 +919,7 @@ pub async fn validate_path_within_chroot(path: &str, home_dir: &str) -> Result<P
             "SECURITY: Path escape attempt detected! Resolved: {:?}, Home: {:?}",
             canon_path, home_canon
         );
-        bail!("Path escapes chroot jail: {:?}", canon_path);
+        bail!("Path escapes chroot jail: {}", canon_path.display());
     }
 
     // 逐段检查祖先路径，确保没有符号链接指向外部
@@ -936,9 +942,9 @@ pub async fn validate_path_within_chroot(path: &str, home_dir: &str) -> Result<P
             // 如果符号链接目标是绝对的，必须在 home 内
             if link_target.is_absolute() && !link_target.starts_with(&home_canon) {
                 bail!(
-                    "Symlink ancestor {:?} points outside chroot to {:?}",
-                    ancestor,
-                    link_target
+                    "Symlink ancestor {} points outside chroot to {}",
+                    ancestor.display(),
+                    link_target.display()
                 );
             }
         }
@@ -961,7 +967,7 @@ pub async fn validate_path_for_creation(path: &str, home_dir: &str) -> Result<Pa
 
     let home_canon = tokio::fs::canonicalize(home_dir)
         .await
-        .map_err(|e| anyhow::anyhow!("Cannot canonicalize home directory: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Cannot canonicalize home directory: {e}"))?;
 
     // 解析目标路径
     let target_path = if Path::new(path).is_absolute() {
@@ -984,7 +990,10 @@ pub async fn validate_path_for_creation(path: &str, home_dir: &str) -> Result<Pa
 
             if let Ok(meta) = tokio::fs::metadata(ancestor).await {
                 if meta.file_type().is_symlink() {
-                    bail!("Cannot create file under symlink ancestor: {:?}", ancestor);
+                    bail!(
+                        "Cannot create file under symlink ancestor: {}",
+                        ancestor.display()
+                    );
                 }
             } else {
                 break; // 祖先不存在，停止检查
@@ -992,7 +1001,7 @@ pub async fn validate_path_for_creation(path: &str, home_dir: &str) -> Result<Pa
         }
         Ok(target_path)
     } else {
-        bail!("Creation path escapes chroot: {:?}", target_path)
+        bail!("Creation path escapes chroot: {}", target_path.display())
     }
 }
 

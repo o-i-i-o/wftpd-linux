@@ -168,7 +168,7 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
                             "gui-user",
                             "USER_TOGGLE",
                             &uname,
-                            &format!("User {} status changed to {}", uname, action)
+                            &format!("User {uname} status changed to {action}")
                         );
                         info!("User {} enabled status toggled to {}", uname, new_enabled);
                     }
@@ -317,7 +317,7 @@ fn show_user_dialog(username: Option<&str>, state: &Arc<StdMutex<AppState>>, sto
     quota_box.set_margin_end(5);
 
     let quota_cb = CheckButton::with_label("启用配额");
-    let quota_spin = create_spin_button(1.0, 1000000.0, 100.0);
+    let quota_spin = create_spin_button(1.0, 1_000_000.0, 100.0);
     quota_box.pack_start(&quota_cb, false, false, 0);
     quota_box.pack_start(&Label::new(Some("配额(MB):")), false, false, 0);
     quota_box.pack_start(&quota_spin, false, false, 0);
@@ -332,7 +332,7 @@ fn show_user_dialog(username: Option<&str>, state: &Arc<StdMutex<AppState>>, sto
     speed_box.set_margin_end(5);
 
     let speed_limit_cb = CheckButton::with_label("启用限速");
-    let speed_limit_spin = create_spin_button(1.0, 102400.0, 100.0);
+    let speed_limit_spin = create_spin_button(1.0, 102_400.0, 100.0);
     speed_box.pack_start(&speed_limit_cb, false, false, 0);
     speed_box.pack_start(&Label::new(Some("速度限制(KB/s):")), false, false, 0);
     speed_box.pack_start(&speed_limit_spin, false, false, 0);
@@ -359,12 +359,12 @@ fn show_user_dialog(username: Option<&str>, state: &Arc<StdMutex<AppState>>, sto
 
         if let Some(quota) = user.permissions.quota_mb {
             quota_cb.set_active(true);
-            quota_spin.set_value(quota as f64);
+            quota_spin.set_value(super::utils::spin_f64_from(quota));
         }
 
         if let Some(speed_limit) = user.permissions.speed_limit_kbps {
             speed_limit_cb.set_active(true);
-            speed_limit_spin.set_value(speed_limit as f64);
+            speed_limit_spin.set_value(super::utils::spin_f64_from(speed_limit));
         }
     }
 
@@ -388,7 +388,7 @@ fn show_user_dialog(username: Option<&str>, state: &Arc<StdMutex<AppState>>, sto
     let quota_spin_clone = quota_spin.clone();
     let speed_limit_cb_clone = speed_limit_cb.clone();
     let speed_limit_spin_clone = speed_limit_spin.clone();
-    let edit_username = username.map(|s| s.to_string());
+    let edit_username = username.map(std::string::ToString::to_string);
 
     dialog.connect_response(clone!(@strong state_clone, @strong store_clone, @strong username_entry_clone, @strong password_entry_clone, @strong home_entry_clone,
            @strong read_cb_clone, @strong write_cb_clone, @strong delete_cb_clone, @strong list_cb_clone,
@@ -413,12 +413,12 @@ fn show_user_dialog(username: Option<&str>, state: &Arc<StdMutex<AppState>>, sto
                 can_rename: rename_cb_clone.is_active(),
                 can_append: append_cb_clone.is_active(),
                 quota_mb: if quota_cb_clone.is_active() {
-                    Some(quota_spin_clone.value() as u64)
+                    Some(super::utils::spin_u64(quota_spin_clone.value()))
                 } else {
                     None
                 },
                 speed_limit_kbps: if speed_limit_cb_clone.is_active() {
-                    Some(speed_limit_spin_clone.value() as u64)
+                    Some(super::utils::spin_u64(speed_limit_spin_clone.value()))
                 } else {
                     None
                 },
@@ -455,7 +455,7 @@ fn show_user_dialog(username: Option<&str>, state: &Arc<StdMutex<AppState>>, sto
                         gtk::DialogFlags::MODAL,
                         gtk::MessageType::Error,
                         gtk::ButtonsType::Ok,
-                        &format!("主目录不存在: {}", home_dir_msg),
+                        &format!("主目录不存在: {home_dir_msg}"),
                     );
                     err_dialog.run();
                     err_dialog.close();
@@ -470,7 +470,7 @@ fn show_user_dialog(username: Option<&str>, state: &Arc<StdMutex<AppState>>, sto
                         gtk::DialogFlags::MODAL,
                         gtk::MessageType::Error,
                         gtk::ButtonsType::Ok,
-                        &format!("主目录路径不是目录: {}", home_dir_msg),
+                        &format!("主目录路径不是目录: {home_dir_msg}"),
                     );
                     err_dialog.run();
                     err_dialog.close();
@@ -488,18 +488,14 @@ fn show_user_dialog(username: Option<&str>, state: &Arc<StdMutex<AppState>>, sto
                             let _ = users.update_home_dir(&username, home_dir.clone());
                             let _ = users.update_permissions(&username, perms);
                             true
+                        } else if pwd.is_empty() {
+                            false
                         } else {
-                            if pwd.is_empty() {
-                                false
-                            } else {
-                                users.add_user(username.clone(), &pwd, home_dir.clone(), perms, false).is_ok()
-                            }
+                            users.add_user(username.clone(), &pwd, home_dir.clone(), perms, false).is_ok()
                         };
 
                         if success {
-                            if let Err(e) = setup_shared_directory_permissions(&home_dir) {
-                                warn!("Failed to setup directory permissions: {}", e);
-                            }
+                            setup_shared_directory_permissions(&home_dir);
 
                             serde_json::to_string(&*users).unwrap_or_default()
                         } else { return; }
@@ -540,7 +536,7 @@ fn show_confirm_dialog(username: &str, state: &Arc<StdMutex<AppState>>, store: &
     dialog.set_default_size(300, 100);
 
     let content = dialog.content_area();
-    let label = Label::new(Some(&format!("确定要删除用户 \"{}\" 吗？", username)));
+    let label = Label::new(Some(&format!("确定要删除用户 \"{username}\" 吗？")));
     label.set_margin_top(20);
     label.set_margin_bottom(20);
     label.set_margin_start(20);
@@ -573,7 +569,7 @@ fn show_confirm_dialog(username: &str, state: &Arc<StdMutex<AppState>>, store: &
                             "gui-user",
                             "USER_DELETE",
                             &username,
-                            &format!("User {} deleted", username)
+                            &format!("User {username} deleted")
                         );
                         info!("User {} deleted", username);
                     }
@@ -599,8 +595,7 @@ fn refresh_user_list(store: &ListStore, state: &Arc<StdMutex<AppState>>) {
             let quota_str = user
                 .permissions
                 .quota_mb
-                .map(|q| format!("{} MB", q))
-                .unwrap_or_else(|| "无限制".to_string());
+                .map_or_else(|| "无限制".to_string(), |q| format!("{q} MB"));
             let iter = store.append();
             store.set_value(&iter, 0, &username.to_value());
             store.set_value(&iter, 1, &user.home_dir.to_value());
@@ -793,6 +788,8 @@ fn get_suggested_directories() -> Vec<(String, String, String)> {
 }
 
 fn check_dir_permission(path: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
     let path = std::path::Path::new(path);
 
     if !path.exists() {
@@ -802,19 +799,17 @@ fn check_dir_permission(path: &str) -> bool {
         return false;
     }
 
-    let metadata = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return false,
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
     };
 
     if !metadata.is_dir() {
         return false;
     }
 
-    use std::os::unix::fs::MetadataExt;
     let mode = metadata.permissions().mode();
-    let file_uid = metadata.uid();
-    let file_gid = metadata.gid();
+    let uid_of_dir = metadata.uid();
+    let gid_of_dir = metadata.gid();
 
     let world_readable = (mode & 0o004) != 0;
     let world_executable = (mode & 0o001) != 0;
@@ -823,45 +818,40 @@ fn check_dir_permission(path: &str) -> bool {
         return true;
     }
 
-    let current_uid = unsafe { libc::getuid() };
-    if file_uid == current_uid {
+    let current_uid = nix::unistd::getuid().as_raw();
+    if uid_of_dir == current_uid {
         return (mode & 0o400) != 0 && (mode & 0o100) != 0;
     }
 
-    let groups: Vec<u32> = unsafe {
-        let mut groups = [0u32; 64];
-        let ngroups = 64;
-        let result = libc::getgroups(ngroups, groups.as_mut_ptr());
-        if result < 0 {
-            warn!("Failed to get groups, falling back to world permissions");
-            return world_readable && world_executable;
-        }
-        groups[..result as usize].to_vec()
+    let in_file_group = if let Ok(groups) = nix::unistd::getgroups() {
+        groups.iter().any(|gid| gid.as_raw() == gid_of_dir)
+    } else {
+        warn!("Failed to get groups, falling back to world permissions");
+        return world_readable && world_executable;
     };
 
-    if groups.contains(&file_gid) {
+    if in_file_group {
         return (mode & 0o040) != 0 && (mode & 0o010) != 0;
     }
 
     world_readable && world_executable
 }
 
-fn setup_shared_directory_permissions(path: &str) -> std::io::Result<()> {
+fn setup_shared_directory_permissions(path: &str) {
     let path = std::path::Path::new(path);
 
     if !path.exists() {
-        return Ok(());
+        return;
     }
 
     let wftpg_group_exists = std::process::Command::new("getent")
         .args(["group", "wftpg"])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
 
     if !wftpg_group_exists {
         warn!("wftpg group not found, skipping permission setup");
-        return Ok(());
+        return;
     }
 
     let chown_result = std::process::Command::new("chgrp")
@@ -902,6 +892,4 @@ fn setup_shared_directory_permissions(path: &str) -> std::io::Result<()> {
             info!("setfacl not available, using umask for file permissions");
         }
     }
-
-    Ok(())
 }

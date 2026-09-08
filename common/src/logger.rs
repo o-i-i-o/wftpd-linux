@@ -42,6 +42,7 @@ pub struct Logger {
 }
 
 impl Logger {
+    #[must_use]
     pub fn new(_log_dir: &str, _max_file_size: u64, _max_files: usize) -> Self {
         Logger {
             buffer: Mutex::new(Vec::with_capacity(1000)),
@@ -109,9 +110,9 @@ impl Logger {
             level,
             source: source.to_string(),
             message: message.to_string(),
-            client_ip: client_ip.map(|s| s.to_string()),
-            username: username.map(|s| s.to_string()),
-            action: action.map(|s| s.to_string()),
+            client_ip: client_ip.map(std::string::ToString::to_string),
+            username: username.map(std::string::ToString::to_string),
+            action: action.map(std::string::ToString::to_string),
         };
 
         if let Ok(mut buffer) = self.buffer.lock() {

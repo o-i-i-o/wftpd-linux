@@ -178,7 +178,7 @@ impl Config {
         if !path.exists() {
             let config = Self::default();
             if let Err(e) = config.save(path) {
-                eprintln!("Warning: Failed to save default config: {}", e);
+                eprintln!("Warning: Failed to save default config: {e}");
             }
             return Ok(config);
         }
@@ -208,10 +208,12 @@ impl Config {
         Ok(())
     }
 
+    #[must_use]
     pub fn get_config_path() -> PathBuf {
         paths::config_path()
     }
 
+    #[must_use]
     pub fn get_users_path() -> PathBuf {
         paths::users_path()
     }
@@ -223,14 +225,12 @@ impl Config {
                     let home_path = Path::new(home);
                     if !home_path.exists() {
                         return Err(anyhow::anyhow!(
-                            "FTP匿名访问已启用，但匿名用户主目录不存在: {}",
-                            home
+                            "FTP匿名访问已启用，但匿名用户主目录不存在: {home}"
                         ));
                     }
                     if !home_path.is_dir() {
                         return Err(anyhow::anyhow!(
-                            "FTP匿名访问已启用，但匿名用户主目录路径不是目录: {}",
-                            home
+                            "FTP匿名访问已启用，但匿名用户主目录路径不是目录: {home}"
                         ));
                     }
                 }
@@ -256,17 +256,9 @@ impl Config {
     }
 
     /// 静态版本：供非 Config 持有方（如 FTP 认证桥）复用同一套规则
+    #[must_use]
     pub fn is_ip_allowed_for(allowed_ips: &[String], denied_ips: &[String], ip: &str) -> bool {
-        if denied_ips
-            .iter()
-            .any(|cidr| match ip_matches_cidr(ip, cidr) {
-                Ok(matches) => matches,
-                Err(e) => {
-                    warn!("Failed to match IP {ip} against denied CIDR {cidr}: {e}");
-                    false
-                }
-            })
-        {
+        if denied_ips.iter().any(|cidr| ip_matches_cidr(ip, cidr)) {
             return false;
         }
 
@@ -274,32 +266,16 @@ impl Config {
             return true;
         }
 
-        allowed_ips
-            .iter()
-            .any(|cidr| match ip_matches_cidr(ip, cidr) {
-                Ok(matches) => matches,
-                Err(e) => {
-                    warn!("Failed to match IP {ip} against allowed CIDR {cidr}: {e}");
-                    false
-                }
-            })
+        allowed_ips.iter().any(|cidr| ip_matches_cidr(ip, cidr))
     }
 
+    #[must_use]
     pub fn is_ip_allowed(&self, ip: &str) -> bool {
         if self
             .security
             .denied_ips
             .iter()
-            .any(|cidr| match ip_matches_cidr(ip, cidr) {
-                Ok(matches) => matches,
-                Err(e) => {
-                    warn!(
-                        "Failed to match IP {} against denied CIDR {}: {}",
-                        ip, cidr, e
-                    );
-                    false
-                }
-            })
+            .any(|cidr| ip_matches_cidr(ip, cidr))
         {
             return false;
         }
@@ -311,38 +287,29 @@ impl Config {
         self.security
             .allowed_ips
             .iter()
-            .any(|cidr| match ip_matches_cidr(ip, cidr) {
-                Ok(matches) => matches,
-                Err(e) => {
-                    warn!(
-                        "Failed to match IP {} against allowed CIDR {}: {}",
-                        ip, cidr, e
-                    );
-                    false
-                }
-            })
+            .any(|cidr| ip_matches_cidr(ip, cidr))
     }
 }
 
-fn ip_matches_cidr(ip: &str, cidr: &str) -> Result<bool> {
+fn ip_matches_cidr(ip: &str, cidr: &str) -> bool {
     use ipnet::{Ipv4Net, Ipv6Net};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     if cidr == "0.0.0.0/0" || cidr == "::/0" {
-        return Ok(true);
+        return true;
     }
 
     if let Ok(ipv4) = ip.parse::<Ipv4Addr>()
         && let Ok(net) = cidr.parse::<Ipv4Net>()
     {
-        return Ok(net.contains(&ipv4));
+        return net.contains(&ipv4);
     }
 
     if let Ok(ipv6) = ip.parse::<Ipv6Addr>()
         && let Ok(net) = cidr.parse::<Ipv6Net>()
     {
-        return Ok(net.contains(&ipv6));
+        return net.contains(&ipv6);
     }
 
-    Ok(ip == cidr)
+    ip == cidr
 }

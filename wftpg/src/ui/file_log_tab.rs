@@ -17,10 +17,9 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
 
     let (refresh_btn, clear_btn, auto_refresh_cb, log_file_combo) =
         create_control_buttons(&container, state);
-    let tree_view = create_log_view(&container, state);
+    let tree_view = create_log_view(&container);
 
     setup_button_handlers(
-        state,
         &tree_view,
         &refresh_btn,
         &clear_btn,
@@ -74,7 +73,7 @@ fn populate_log_files(combo: &ComboBoxText, state: &Arc<StdMutex<AppState>>) {
 
     if let Ok(entries) = fs::read_dir(&log_dir) {
         let mut log_files: Vec<(String, String)> = entries
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| {
                 let name = e.file_name();
                 let name = name.to_string_lossy();
@@ -97,7 +96,7 @@ fn populate_log_files(combo: &ComboBoxText, state: &Arc<StdMutex<AppState>>) {
     combo.set_active_id(Some("current"));
 }
 
-fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TreeView {
+fn create_log_view(container: &Box) -> TreeView {
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -115,7 +114,7 @@ fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TreeView
         gtk::glib::Type::STRING,
     ]);
 
-    populate_log_store(&store, state, "current");
+    populate_log_store(&store, "current");
 
     let tree = TreeView::with_model(&store);
 
@@ -146,14 +145,14 @@ fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TreeView
     gtk::prelude::CellLayoutExt::add_attribute(&col_ip, &renderer_ip, "text", 2);
     tree.append_column(&col_ip);
 
-    let col_op = TreeViewColumn::new();
-    col_op.set_title("操作");
-    col_op.set_resizable(true);
-    col_op.set_min_width(80);
-    let renderer_op = CellRendererText::new();
-    gtk::prelude::CellLayoutExt::pack_start(&col_op, &renderer_op, true);
-    gtk::prelude::CellLayoutExt::add_attribute(&col_op, &renderer_op, "text", 3);
-    tree.append_column(&col_op);
+    let col_operation = TreeViewColumn::new();
+    col_operation.set_title("操作");
+    col_operation.set_resizable(true);
+    col_operation.set_min_width(80);
+    let renderer_operation = CellRendererText::new();
+    gtk::prelude::CellLayoutExt::pack_start(&col_operation, &renderer_operation, true);
+    gtk::prelude::CellLayoutExt::add_attribute(&col_operation, &renderer_operation, "text", 3);
+    tree.append_column(&col_operation);
 
     let col_path = TreeViewColumn::new();
     col_path.set_title("文件路径");
@@ -207,22 +206,24 @@ fn create_log_view(container: &Box, state: &Arc<StdMutex<AppState>>) -> TreeView
 }
 
 fn format_file_size(size: u64) -> String {
-    if size == 0 {
-        return "-".to_string();
-    }
+    use super::utils::spin_f64_from;
 
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
 
+    if size == 0 {
+        return "-".to_string();
+    }
+
     if size >= GB {
-        format!("{:.2} GB", size as f64 / GB as f64)
+        format!("{:.2} GB", spin_f64_from(size) / spin_f64_from(GB))
     } else if size >= MB {
-        format!("{:.2} MB", size as f64 / MB as f64)
+        format!("{:.2} MB", spin_f64_from(size) / spin_f64_from(MB))
     } else if size >= KB {
-        format!("{:.2} KB", size as f64 / KB as f64)
+        format!("{:.2} KB", spin_f64_from(size) / spin_f64_from(KB))
     } else {
-        format!("{} B", size)
+        format!("{size} B")
     }
 }
 
@@ -244,7 +245,7 @@ fn get_operation_display(op: &str) -> String {
     .to_string()
 }
 
-fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source: &str) {
+fn populate_log_store(store: &ListStore, source: &str) {
     use std::sync::mpsc;
 
     store.clear();
@@ -298,7 +299,7 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
             } else if let Err(e) = result {
                 store_weak.clear();
                 let iter = store_weak.append();
-                store_weak.set_value(&iter, 4, &format!("❌ 无法获取日志：{}", e).to_value());
+                store_weak.set_value(&iter, 4, &format!("❌ 无法获取日志：{e}").to_value());
             }
             glib::ControlFlow::Break // 停止定时器
         } else {
@@ -308,25 +309,23 @@ fn populate_log_store(store: &ListStore, state: &Arc<StdMutex<AppState>>, source
 }
 
 fn setup_button_handlers(
-    state: &Arc<StdMutex<AppState>>,
     tree_view: &TreeView,
     refresh_btn: &Button,
     clear_btn: &Button,
     auto_refresh_cb: &CheckButton,
     log_file_combo: &ComboBoxText,
 ) {
-    let state_clone = Arc::clone(state);
     let tree_view_clone = tree_view.clone();
     let log_file_combo_clone = log_file_combo.clone();
-    refresh_btn.connect_clicked(clone!(@strong state_clone, @strong tree_view_clone, @strong log_file_combo_clone => move |_| {
-        let source = log_file_combo_clone.active_id()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "current".to_string());
-        if let Some(store) = tree_view_clone.model()
-            && let Ok(store) = store.downcast::<ListStore>() {
-                populate_log_store(&store, &state_clone, &source);
-            }
-    }));
+    refresh_btn.connect_clicked(
+        clone!(@strong tree_view_clone, @strong log_file_combo_clone => move |_| {
+            let source = log_file_combo_clone.active_id().map_or_else(|| "current".to_string(), |s| s.to_string());
+            if let Some(store) = tree_view_clone.model()
+                && let Ok(store) = store.downcast::<ListStore>() {
+                    populate_log_store(&store, &source);
+                }
+        }),
+    );
 
     let tree_view_clone = tree_view.clone();
     clear_btn.connect_clicked(clone!(@strong tree_view_clone => move |_| {
@@ -336,7 +335,6 @@ fn setup_button_handlers(
             }
     }));
 
-    let state_clone = Arc::clone(state);
     let tree_view_clone = tree_view.clone();
     let auto_refresh_cb_clone = auto_refresh_cb.clone();
     let log_file_combo_clone = log_file_combo.clone();
@@ -345,29 +343,25 @@ fn setup_button_handlers(
         if auto_refresh_cb_clone.is_active() {
             let source = log_file_combo_clone
                 .active_id()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "current".to_string());
+                .map_or_else(|| "current".to_string(), |s| s.to_string());
 
             if source == "current"
                 && let Some(store) = tree_view_clone.model()
                 && let Ok(store) = store.downcast::<ListStore>()
             {
-                populate_log_store(&store, &state_clone, &source);
+                populate_log_store(&store, &source);
             }
         }
         glib::ControlFlow::Continue
     });
 
-    let state_clone = Arc::clone(state);
     let tree_view_clone = tree_view.clone();
     log_file_combo.connect_changed(
-        clone!(@strong state_clone, @strong tree_view_clone, @strong log_file_combo => move |_| {
-            let source = log_file_combo.active_id()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "current".to_string());
+        clone!(@strong tree_view_clone, @strong log_file_combo => move |_| {
+            let source = log_file_combo.active_id().map_or_else(|| "current".to_string(), |s| s.to_string());
             if let Some(store) = tree_view_clone.model()
                 && let Ok(store) = store.downcast::<ListStore>() {
-                    populate_log_store(&store, &state_clone, &source);
+                    populate_log_store(&store, &source);
                 }
         }),
     );

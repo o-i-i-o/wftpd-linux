@@ -1,9 +1,9 @@
 //! gRPC 控制面探测工具：连接运行中的 wftpd，验证状态/日志/配置读写等接口。
 //!
-//! 用法：cargo run -p wftpg --example grpc_probe
+//! 用法：cargo run -p wftpg --example `grpc_probe`
 
 use hyper_util::rt::TokioIo;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Endpoint;
 use tower::service_fn;
 use wftpd_proto::wftpd::v1::service_selector::Which;
 use wftpd_proto::{GetRecentLogsRequest, GetStatusRequest, ServiceSelector, WatchLogsRequest};

@@ -16,7 +16,7 @@ pub fn build_ui(app: &Application) {
     let state = match AppState::new_for_gui() {
         Ok(s) => Arc::new(StdMutex::new(s)),
         Err(e) => {
-            eprintln!("Failed to initialize application state: {}", e);
+            eprintln!("Failed to initialize application state: {e}");
             // 创建一个临时窗口来显示错误对话框
             let window = ApplicationWindow::builder()
                 .application(app)
@@ -26,7 +26,7 @@ pub fn build_ui(app: &Application) {
                 .build();
             window.present();
 
-            let error_msg = format!("初始化失败: {}", e);
+            let error_msg = format!("初始化失败: {e}");
             let dialog = gtk::MessageDialog::new(
                 Some(&window),
                 gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
@@ -53,8 +53,7 @@ pub fn build_ui(app: &Application) {
 
     setup_window_for_uos(&window);
 
-    let state_clone = Arc::clone(&state);
-    window.connect_delete_event(move |_, _| {
+    window.connect_delete_event(|_, _| {
         // GUI 关闭时不停止后台服务，仅退出界面
         // wftpd 服务由 systemd 管理，独立于 GUI 运行
         gtk::glib::Propagation::Proceed
@@ -76,17 +75,17 @@ pub fn build_ui(app: &Application) {
 
     let state_for_dirs = Arc::clone(&state);
     gtk::glib::MainContext::default().spawn_local(async move {
-        ensure_default_directories_async(&state_for_dirs).await;
+        ensure_default_directories(&state_for_dirs);
     });
 }
 
 fn append_tab<P: gtk::prelude::IsA<gtk::Widget>>(notebook: &Notebook, page: &P, label: &str) {
     let tab_label = Label::new(Some(label));
-    tab_label.set_markup(&format!("<span size='large'>{}</span>", label));
+    tab_label.set_markup(&format!("<span size='large'>{label}</span>"));
     notebook.append_page(page, Some(&tab_label));
 }
 
-async fn ensure_default_directories_async(state: &Arc<StdMutex<AppState>>) {
+fn ensure_default_directories(state: &Arc<StdMutex<AppState>>) {
     let dirs_to_create: Vec<String> = {
         match state.try_lock() {
             Ok(s) => match s.user_manager.try_lock() {
@@ -108,7 +107,7 @@ async fn ensure_default_directories_async(state: &Arc<StdMutex<AppState>>) {
         if !path.exists()
             && let Err(e) = std::fs::create_dir_all(path)
         {
-            eprintln!("Failed to create directory {}: {}", dir, e);
+            eprintln!("Failed to create directory {dir}: {e}");
         }
     }
 }

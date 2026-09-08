@@ -3,6 +3,15 @@
 //! 仅做配置管理、服务控制与日志查看；所有对配置/用户文件的写入都通过
 //! gRPC（UDS）交给后端 wftpd 完成，前端本地只持有共享类型（wftpd-common）。
 
+// 本 crate 为应用型项目内部代码（不作为库对外发布）：pedantic 的文档规范类
+// lint（# Errors/# Panics 章节、#[must_use] 标注）与函数长度上限对内部 API
+// 收益有限，统一在 crate 级关闭；具体取舍见仓库审计说明。
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::too_many_lines
+)]
 pub mod communication;
 pub mod ui;
 

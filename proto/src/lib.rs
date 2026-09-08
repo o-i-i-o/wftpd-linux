@@ -8,6 +8,8 @@
 pub mod convert;
 
 pub mod wftpd {
+    /// tonic-prost 生成的代码，不参与手工 lint 检查
+    #[allow(clippy::pedantic)]
     pub mod v1 {
         tonic::include_proto!("wftpd.v1");
     }

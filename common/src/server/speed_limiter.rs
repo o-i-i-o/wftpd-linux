@@ -8,6 +8,7 @@ pub struct SpeedLimiter {
 }
 
 impl SpeedLimiter {
+    #[must_use]
     pub fn new(max_kbps: u64) -> Self {
         Self {
             last_check: Mutex::new(Instant::now()),
@@ -16,6 +17,7 @@ impl SpeedLimiter {
         }
     }
 
+    #[must_use]
     pub fn with_unlimited() -> Self {
         Self {
             last_check: Mutex::new(Instant::now()),
@@ -41,17 +43,21 @@ impl SpeedLimiter {
 
         {
             let mut tokens = self.tokens.lock().unwrap();
-            let replenished = (elapsed.as_secs_f64() * self.max_bytes_per_second as f64) as u64;
+            // 纳秒级整数运算：elapsed * 速率 / 1e9，等价于旧的 f64 计算
+            let replenished = u64::try_from(
+                elapsed.as_nanos() * u128::from(self.max_bytes_per_second) / 1_000_000_000,
+            )
+            .unwrap_or(u64::MAX);
             *tokens = tokens.saturating_add(replenished);
             new_tokens = *tokens;
         }
 
         if new_tokens < bytes as u64 {
-            let deficit = bytes as u64 - new_tokens;
-            let wait_time = Duration::from_micros(
-                (deficit as f64 / self.max_bytes_per_second as f64 * 1_000_000.0) as u64,
-            );
-            tokio::time::sleep(wait_time).await;
+            let deficit = bytes as u128 - u128::from(new_tokens);
+            let nanos =
+                u64::try_from(deficit * 1_000_000_000 / u128::from(self.max_bytes_per_second))
+                    .unwrap_or(u64::MAX);
+            tokio::time::sleep(Duration::from_nanos(nanos)).await;
         }
 
         {

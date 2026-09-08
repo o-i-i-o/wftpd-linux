@@ -1,7 +1,7 @@
 //! gRPC(tonic over UDS) 客户端封装。
 //!
 //! 函数签名与旧 IPC 客户端保持一致：阻塞式、返回 `anyhow::Result`，
-//! UI 侧在独立线程中调用（见 log_tab / user_tab 等的用法）。
+//! UI 侧在独立线程中调用（见 `log_tab` / `user_tab` 等的用法）。
 
 use std::sync::OnceLock;
 
@@ -50,6 +50,7 @@ async fn connect() -> Result<ControlClient<Channel>> {
     Ok(ControlClient::new(channel))
 }
 
+#[must_use]
 pub fn connect_error_hint() -> String {
     format!(
         "未找到 wftpd 控制套接字 ({}),后端服务可能未运行。可执行: systemctl --user start wftpd",
@@ -92,7 +93,7 @@ fn selector(which: Which) -> ServiceSelector {
     }
 }
 
-fn op_result(reply: wftpd_proto::OpReply) -> Result<()> {
+fn op_result(reply: &wftpd_proto::OpReply) -> Result<()> {
     if reply.success {
         Ok(())
     } else {
@@ -104,7 +105,7 @@ pub fn start_service(which: Which) -> Result<()> {
     run(async {
         let mut client = connect().await?;
         let response = client.start_service(selector(which)).await?;
-        op_result(response.into_inner())
+        op_result(&response.into_inner())
     })
 }
 
@@ -112,7 +113,7 @@ pub fn stop_service(which: Which) -> Result<()> {
     run(async {
         let mut client = connect().await?;
         let response = client.stop_service(selector(which)).await?;
-        op_result(response.into_inner())
+        op_result(&response.into_inner())
     })
 }
 
@@ -120,7 +121,7 @@ pub fn restart_service(which: Which) -> Result<()> {
     run(async {
         let mut client = connect().await?;
         let response = client.restart_service(selector(which)).await?;
-        op_result(response.into_inner())
+        op_result(&response.into_inner())
     })
 }
 
@@ -162,7 +163,7 @@ pub fn write_audit_log(user: &str, action: &str, target: &str, details: &str) ->
     run(async {
         let mut client = connect().await?;
         let response = client.write_audit_log(request).await?;
-        op_result(response.into_inner())
+        op_result(&response.into_inner())
     })
 }
 
@@ -174,7 +175,7 @@ pub fn get_logs(count: usize) -> Result<Vec<LogEntryJson>> {
         let mut client = connect().await?;
         let response = client
             .get_recent_logs(GetRecentLogsRequest {
-                count: count as u32,
+                count: u32::try_from(count).unwrap_or(u32::MAX),
             })
             .await
             .map_err(|e| anyhow!("读取日志失败: {e}"))?;
@@ -195,7 +196,7 @@ pub fn get_log_file_content(path: &str, count: usize) -> Result<Vec<LogEntryJson
         let response = client
             .get_log_file_content(GetLogFileContentRequest {
                 path,
-                count: count as u32,
+                count: u32::try_from(count).unwrap_or(u32::MAX),
             })
             .await
             .map_err(|e| anyhow!("读取日志文件失败: {e}"))?;
@@ -216,7 +217,7 @@ pub fn get_file_log_file_content(path: &str, count: usize) -> Result<Vec<FileLog
         let response = client
             .get_file_op_log_content(GetFileOpLogContentRequest {
                 path,
-                count: count as u32,
+                count: u32::try_from(count).unwrap_or(u32::MAX),
             })
             .await
             .map_err(|e| anyhow!("读取文件操作日志失败: {e}"))?;

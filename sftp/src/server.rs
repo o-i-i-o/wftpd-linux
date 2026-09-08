@@ -1,6 +1,6 @@
 use anyhow::Result;
 use russh::MethodKind;
-use russh::keys::*;
+use russh::keys::{Algorithm, PrivateKey, ssh_key};
 use russh::server::Server;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -36,9 +36,8 @@ impl russh::server::Server for SftpServer {
     type Handler = SftpHandler;
 
     fn new_client(&mut self, client_addr: Option<SocketAddr>) -> Self::Handler {
-        let client_ip = client_addr
-            .map(|addr| addr.ip().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let client_ip =
+            client_addr.map_or_else(|| "unknown".to_string(), |addr| addr.ip().to_string());
 
         info!(
             "[SFTP SERVER] Creating new handler for client: {}",
@@ -99,14 +98,6 @@ impl SftpServer {
         }
     }
 
-    fn log_info(&self, message: &str) {
-        info!("SFTP: {}", message);
-    }
-
-    fn log_error(&self, message: &str) {
-        error!("SFTP: {}", message);
-    }
-
     pub async fn start(&self) -> Result<()> {
         let (
             bind_ip,
@@ -117,8 +108,8 @@ impl SftpServer {
             _auth_timeout,
             idle_timeout,
         ) = {
-            match self.config.try_lock() {
-                Ok(cfg) => (
+            if let Ok(cfg) = self.config.try_lock() {
+                (
                     cfg.sftp.bind_ip.clone(),
                     cfg.sftp.port,
                     cfg.sftp.host_key_path.clone(),
@@ -126,11 +117,10 @@ impl SftpServer {
                     cfg.sftp.max_auth_attempts as usize,
                     Duration::from_secs(cfg.sftp.auth_timeout),
                     Duration::from_secs(cfg.security.idle_timeout),
-                ),
-                Err(_) => {
-                    self.log_error("Failed to acquire config lock during startup");
-                    return Err(anyhow::anyhow!("Failed to acquire config lock"));
-                }
+                )
+            } else {
+                error!("SFTP: Failed to acquire config lock during startup");
+                return Err(anyhow::anyhow!("Failed to acquire config lock"));
             }
         };
 
@@ -160,8 +150,8 @@ impl SftpServer {
 
         let config = Arc::new(config);
 
-        let bind_addr = format!("{}:{}", bind_ip, sftp_port);
-        self.log_info(&format!("SFTP server starting on {}", bind_addr));
+        let bind_addr = format!("{bind_ip}:{sftp_port}");
+        info!("SFTP: server starting on {bind_addr}");
 
         // Create a clone of self for the server to run
         let mut server = self.clone();
@@ -169,7 +159,7 @@ impl SftpServer {
         // Run the server using russh's built-in server loop
         let addr: SocketAddr = bind_addr
             .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid bind address: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid bind address: {e}"))?;
 
         self.running.store(true, Ordering::SeqCst);
 
@@ -225,10 +215,11 @@ impl SftpServer {
             let _ = tokio::time::timeout(Duration::from_secs(5), rx).await;
         }
 
-        self.log_info("SFTP server stopped");
+        info!("SFTP: server stopped");
         Ok(())
     }
 
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
@@ -277,7 +268,7 @@ impl SftpServer {
         let pub_path = path.with_extension("pub");
         let public_key = key.public_key();
         let pub_openssh = public_key.to_openssh()?;
-        tokio::fs::write(&pub_path, pub_openssh.to_string()).await?;
+        tokio::fs::write(&pub_path, pub_openssh.clone()).await?;
 
         #[cfg(unix)]
         {

@@ -16,15 +16,15 @@ pub enum WftpgError {
 impl fmt::Display for WftpgError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WftpgError::ConfigError(msg) => write!(f, "配置错误: {}", msg),
-            WftpgError::NetworkError(msg) => write!(f, "网络错误: {}", msg),
-            WftpgError::AuthError(msg) => write!(f, "认证错误: {}", msg),
-            WftpgError::FileError(msg) => write!(f, "文件错误: {}", msg),
-            WftpgError::PermissionError(msg) => write!(f, "权限错误: {}", msg),
-            WftpgError::UserError(msg) => write!(f, "用户错误: {}", msg),
-            WftpgError::ProtocolError(msg) => write!(f, "协议错误: {}", msg),
-            WftpgError::InternalError(msg) => write!(f, "内部错误: {}", msg),
-            WftpgError::PathResolveError(msg) => write!(f, "路径解析错误: {}", msg),
+            WftpgError::ConfigError(msg) => write!(f, "配置错误: {msg}"),
+            WftpgError::NetworkError(msg) => write!(f, "网络错误: {msg}"),
+            WftpgError::AuthError(msg) => write!(f, "认证错误: {msg}"),
+            WftpgError::FileError(msg) => write!(f, "文件错误: {msg}"),
+            WftpgError::PermissionError(msg) => write!(f, "权限错误: {msg}"),
+            WftpgError::UserError(msg) => write!(f, "用户错误: {msg}"),
+            WftpgError::ProtocolError(msg) => write!(f, "协议错误: {msg}"),
+            WftpgError::InternalError(msg) => write!(f, "内部错误: {msg}"),
+            WftpgError::PathResolveError(msg) => write!(f, "路径解析错误: {msg}"),
         }
     }
 }

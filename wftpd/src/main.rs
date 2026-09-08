@@ -5,8 +5,17 @@
 //! 2. 在 UDS 上提供 gRPC 控制服务（wftpd.v1.Control），供 wftp-gui 前端使用
 //!
 //! 运行模型：以当前桌面登录用户运行（systemd --user 服务），所有可写路径
-//! 遵循 XDG 规范（见 wftpd_common::paths）。
+//! 遵循 XDG 规范（见 `wftpd_common::paths`）。
 
+// 本 crate 为应用型项目内部代码（不作为库对外发布）：pedantic 的文档规范类
+// lint（# Errors/# Panics 章节、#[must_use] 标注）与函数长度上限对内部 API
+// 收益有限，统一在 crate 级关闭；具体取舍见仓库审计说明。
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::too_many_lines
+)]
 mod control;
 mod logs;
 mod state;

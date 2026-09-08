@@ -7,9 +7,8 @@ use argon2::{
 
 /// 与 common/src/users.rs 相同的校验路径
 fn verify_password(password: &str, hash: &str) -> bool {
-    let parsed_hash = match PasswordHash::new(hash) {
-        Ok(h) => h,
-        Err(_) => return false,
+    let Ok(parsed_hash) = PasswordHash::new(hash) else {
+        return false;
     };
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed_hash)

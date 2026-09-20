@@ -1,8 +1,8 @@
-//! 服务器配置页：FTP/SFTP 参数编辑。
+//! 服务器配置页：FTP/FTPS/SFTP 参数编辑。
 //!
 //! 配置文件位于用户 XDG 目录（`~/.config/wftpd/config.toml`），GUI 与后端同属
 //! 桌面用户，具备读写权限。保存经后端 gRPC `SaveConfig` 完成校验与落盘，
-//! 启用标志即时生效；绑定地址、端口等变更需重启对应协议服务后生效。
+//! 启用标志即时生效；绑定地址、端口、证书等变更需重启对应协议服务后生效。
 
 use crate::AppState;
 use gtk::glib::clone;
@@ -23,6 +23,7 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     container.set_margin_end(10);
 
     create_ftp_config_frame(&container, state);
+    create_ftps_config_frame(&container, state);
     create_sftp_config_frame(&container, state);
 
     let hint = Label::new(None);
@@ -251,27 +252,31 @@ fn validate_anonymous_home(w: &FtpWidgets) {
         .set_markup("<span foreground='green' size='small'>✓ 目录有效</span>");
 }
 
-/// 匿名用户目录选择对话框
+/// 通用路径选择对话框：`folder` 为 `true` 选目录，否则选文件；结果写入 `target`
+fn pick_path(target: &Entry, title: &str, folder: bool) {
+    let action = if folder {
+        gtk::FileChooserAction::SelectFolder
+    } else {
+        gtk::FileChooserAction::Open
+    };
+    let dialog = gtk::FileChooserDialog::new(Some(title), None::<&gtk::Window>, action);
+    dialog.add_button("取消", gtk::ResponseType::Cancel);
+    dialog.add_button("选择", gtk::ResponseType::Accept);
+    dialog.connect_response(clone!(@strong target, @strong dialog => move |dlg, resp| {
+        if resp == gtk::ResponseType::Accept
+            && let Some(path) = dlg.file().and_then(|f| f.path())
+        {
+            target.set_text(&path.to_string_lossy());
+        }
+        dialog.close();
+    }));
+    dialog.run();
+    dialog.close();
+}
+
 fn setup_anonymous_browse(w: &FtpWidgets) {
     w.browse.connect_clicked(clone!(@strong w => move |_| {
-        let dialog = gtk::FileChooserDialog::new(
-            Some("选择匿名用户主目录"),
-            None::<&gtk::Window>,
-            gtk::FileChooserAction::SelectFolder,
-        );
-        dialog.add_button("取消", gtk::ResponseType::Cancel);
-        dialog.add_button("选择", gtk::ResponseType::Accept);
-        dialog.connect_response(clone!(@strong w, @strong dialog => move |dlg, resp| {
-            if resp == gtk::ResponseType::Accept
-                && let Some(path) = dlg.file().and_then(|f| f.path())
-            {
-                w.anon_home.set_text(&path.to_string_lossy());
-                validate_anonymous_home(&w);
-            }
-            dialog.close();
-        }));
-        dialog.run();
-        dialog.close();
+        pick_path(&w.anon_home, "选择匿名用户主目录", true);
     }));
 }
 
@@ -359,6 +364,212 @@ fn setup_ftp_save_button(state: &Arc<StdMutex<AppState>>, w: &FtpWidgets) {
                     "<span foreground='red' size='small'>✗ 保存失败: {e}</span>"
                 ));
                 error!("保存 FTP 配置失败: {e}");
+            }
+        }
+    }));
+}
+
+// ---- FTPS 配置 ----
+
+/// FTPS 配置区控件集合
+#[derive(Clone)]
+struct FtpsWidgets {
+    require_ssl: CheckButton,
+    cert_path: Entry,
+    key_path: Entry,
+    browse_cert: Button,
+    browse_key: Button,
+    validate_status: Label,
+    save: Button,
+    status: Label,
+}
+
+fn create_ftps_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
+    let frame = Frame::new(Some("FTPS 配置（FTP over TLS）"));
+    let box_ = Box::new(Orientation::Vertical, 5);
+    box_.set_margin_top(10);
+    box_.set_margin_bottom(10);
+    box_.set_margin_start(10);
+    box_.set_margin_end(10);
+
+    let require_ssl = CheckButton::with_label("强制TLS（拒绝未升级的客户端）");
+    let cert_path = Entry::new();
+    cert_path.set_hexpand(true);
+    cert_path.set_placeholder_text(Some("PEM 证书路径，如 /etc/ssl/certs/ftp.pem"));
+    let key_path = Entry::new();
+    key_path.set_hexpand(true);
+    key_path.set_placeholder_text(Some("PEM 私钥路径"));
+    let browse_cert = Button::with_label("浏览...");
+    let browse_key = Button::with_label("浏览...");
+    let validate_status = Label::new(None);
+    let save = Button::with_label("保存配置");
+    let status = Label::new(None);
+
+    // FTPS 字段位于配置的 [security] 段；证书+私钥齐备即启用 AUTH TLS
+    let _ = with_config(state, |cfg| {
+        require_ssl.set_active(cfg.security.require_ssl);
+        if let Some(cert) = &cfg.security.cert_path {
+            cert_path.set_text(cert);
+        }
+        if let Some(key) = &cfg.security.key_path {
+            key_path.set_text(key);
+        }
+    });
+
+    let row1 = Box::new(Orientation::Horizontal, 5);
+    row1.pack_start(&Label::new(Some("证书路径:")), false, false, 0);
+    row1.pack_start(&cert_path, true, true, 0);
+    row1.pack_start(&browse_cert, false, false, 0);
+    box_.pack_start(&row1, false, false, 0);
+
+    let row2 = Box::new(Orientation::Horizontal, 5);
+    row2.pack_start(&Label::new(Some("私钥路径:")), false, false, 0);
+    row2.pack_start(&key_path, true, true, 0);
+    row2.pack_start(&browse_key, false, false, 0);
+    row2.pack_start(&save, false, false, 0);
+    box_.pack_start(&row2, false, false, 0);
+
+    let row3 = Box::new(Orientation::Horizontal, 5);
+    row3.pack_start(&require_ssl, false, false, 0);
+    box_.pack_start(&row3, false, false, 0);
+
+    box_.pack_start(&validate_status, false, false, 0);
+    box_.pack_start(&status, false, false, 0);
+
+    let hint = Label::new(None);
+    hint.set_markup(
+        "<span foreground='gray' size='small'>证书与私钥均配置后客户端可通过 AUTH TLS 加密连接；变更需重启 FTP 服务生效</span>",
+    );
+    hint.set_halign(gtk::Align::Start);
+    box_.pack_start(&hint, false, false, 0);
+
+    frame.add(&box_);
+    container.pack_start(&frame, false, false, 0);
+
+    let w = FtpsWidgets {
+        require_ssl,
+        cert_path,
+        key_path,
+        browse_cert,
+        browse_key,
+        validate_status,
+        save,
+        status,
+    };
+
+    validate_ftps_config(&w);
+    w.require_ssl.connect_toggled(clone!(@strong w => move |_| {
+        validate_ftps_config(&w);
+    }));
+    w.cert_path.connect_changed(clone!(@strong w => move |_| {
+        validate_ftps_config(&w);
+    }));
+    w.key_path.connect_changed(clone!(@strong w => move |_| {
+        validate_ftps_config(&w);
+    }));
+    w.browse_cert.connect_clicked(clone!(@strong w => move |_| {
+        pick_path(&w.cert_path, "选择 TLS 证书", false);
+    }));
+    w.browse_key.connect_clicked(clone!(@strong w => move |_| {
+        pick_path(&w.key_path, "选择 TLS 私钥", false);
+    }));
+    setup_ftps_save_button(state, &w);
+}
+
+/// 校验 FTPS 配置：证书+私钥齐备且文件存在才可用；强制 TLS 依赖二者
+fn validate_ftps_config(w: &FtpsWidgets) {
+    let cert = w.cert_path.text().to_string();
+    let key = w.key_path.text().to_string();
+
+    if cert.trim().is_empty() || key.trim().is_empty() {
+        if w.require_ssl.is_active() {
+            w.validate_status.set_markup(
+                "<span foreground='red' size='small'>⚠ 强制TLS需要同时配置证书和私钥</span>",
+            );
+        } else {
+            w.validate_status.set_markup(
+                "<span foreground='gray' size='small'>未配置证书/私钥时以明文 FTP 运行</span>",
+            );
+        }
+        return;
+    }
+
+    for (name, path_str) in [("证书", &cert), ("私钥", &key)] {
+        let path = Path::new(path_str.trim());
+        if !path.exists() {
+            w.validate_status.set_markup(&format!(
+                "<span foreground='red' size='small'>⚠ {name}文件不存在: {path_str}</span>"
+            ));
+            return;
+        }
+    }
+
+    w.validate_status
+        .set_markup("<span foreground='green' size='small'>✓ FTPS 将启用（AUTH TLS）</span>");
+}
+
+fn setup_ftps_save_button(state: &Arc<StdMutex<AppState>>, w: &FtpsWidgets) {
+    w.save.connect_clicked(clone!(@strong state, @strong w => move |_| {
+        validate_ftps_config(&w);
+        let require_ssl = w.require_ssl.is_active();
+        let cert_path = w.cert_path.text().to_string();
+        let key_path = w.key_path.text().to_string();
+
+        // 后端启动时对缺失的证书只告警不阻断，这里在保存前拦住明显错误
+        let certs_ready = !cert_path.trim().is_empty() && !key_path.trim().is_empty();
+        if require_ssl && !certs_ready {
+            error!("保存失败：强制TLS需要同时配置证书和私钥");
+            return;
+        }
+        if certs_ready
+            && (!Path::new(cert_path.trim()).is_file() || !Path::new(key_path.trim()).is_file())
+        {
+            error!("保存失败：证书或私钥文件不存在/不是文件");
+            return;
+        }
+
+        let summary = format!("ftps: require_ssl={require_ssl}, cert_ready={certs_ready}");
+        let saved = with_config(&state, |cfg| {
+            cfg.security.require_ssl = require_ssl;
+            cfg.security.cert_path = if cert_path.trim().is_empty() {
+                None
+            } else {
+                Some(cert_path.trim().to_string())
+            };
+            cfg.security.key_path = if key_path.trim().is_empty() {
+                None
+            } else {
+                Some(key_path.trim().to_string())
+            };
+            toml::to_string_pretty(&*cfg).unwrap_or_default()
+        });
+
+        let Some(config_str) = saved else {
+            return;
+        };
+        match crate::communication::write_config(&config_str) {
+            Ok(saved_content) => {
+                let _ = with_config(&state, |cfg| {
+                    if let Ok(new_config) = toml::from_str(&saved_content) {
+                        *cfg = new_config;
+                    }
+                });
+                w.status.set_markup(
+                    "<span foreground='green' size='small'>✓ FTPS 配置已保存（重启 FTP 服务后生效）</span>",
+                );
+                let _ = crate::communication::write_audit_log(
+                    "gui-server",
+                    "SERVER_CONFIG",
+                    "ftps",
+                    &summary,
+                );
+                info!("{summary} saved");
+            }
+            Err(e) => {
+                w.status.set_markup(&format!(
+                    "<span foreground='red' size='small'>✗ 保存失败: {e}</span>"
+                ));
+                error!("保存 FTPS 配置失败: {e}");
             }
         }
     }));

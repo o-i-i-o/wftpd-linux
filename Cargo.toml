@@ -18,7 +18,7 @@ pedantic = { level = "warn", priority = -1 }
 version = "3.0.2"
 edition = "2024"
 authors = ["WFTPG Developer"]
-license = "MIT"
+license = "GPL v3"
 
 [workspace.dependencies]
 # 内部 crate

@@ -225,6 +225,9 @@ fi
 if [ -z "$OUTPUT_DIR" ]; then
     OUTPUT_DIR="$SCRIPT_DIR"
 fi
+# 输出目录统一转为绝对路径：脚本后续会 cd 到 BUILD_DIR，相对路径会失效
+mkdir -p "${OUTPUT_DIR}"
+OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
 
 check_dependencies
 

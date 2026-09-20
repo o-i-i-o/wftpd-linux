@@ -63,8 +63,9 @@ jobs:
       - name: 校验标签与 Cargo.toml 版本一致
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if ! grep -q "^version = \"${TAG_VERSION}\"$" Cargo.toml; then
-            echo "标签 ${GITHUB_REF_NAME} 与 Cargo.toml 中的版本不一致，请先更新 [workspace.package].version"
+          CARGO_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ] && [[ "$TAG_VERSION" != "$CARGO_VERSION"-* ]]; then
+            echo "标签 ${GITHUB_REF_NAME} 与 Cargo.toml 中的版本 ${CARGO_VERSION} 不一致，请先更新 [workspace.package].version"
             exit 1
           fi
 
@@ -80,15 +81,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # 复用 debian/build-deb.sh：release 编译 + 打包 deb（脚本要求 root，CI 有免密 sudo）
+      # -v 用标签版本命名 deb（支持 3.0.2-beta.N 这类预发布版本）
       - name: 构建 deb 包
-        run: sudo ./debian/build-deb.sh -a amd64 -o dist
+        run: sudo ./debian/build-deb.sh -a amd64 -o dist -v "${GITHUB_REF_NAME#v}"
 
       - name: 打包 tarball
         run: |
-          STAGE="wftpd-linux-${GITHUB_REF_NAME#v}-x86_64"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          STAGE="wftpd-linux-${TAG_VERSION}-x86_64"
+          # build-deb.sh 以 --target 方式编译，产物位于 target/<triple>/release
+          BIN_DIR="target/x86_64-unknown-linux-gnu/release"
           mkdir -p "dist/${STAGE}"
-          cp target/release/wftpd "dist/${STAGE}/"
-          cp target/release/wftp-gui "dist/${STAGE}/"
+          cp "${BIN_DIR}/wftpd" "dist/${STAGE}/"
+          cp "${BIN_DIR}/wftp-gui" "dist/${STAGE}/"
           cp debian/wftpgctl "dist/${STAGE}/"
           cp config_template.toml "dist/${STAGE}/config.toml"
           chmod 755 "dist/${STAGE}/wftpd" "dist/${STAGE}/wftp-gui" "dist/${STAGE}/wftpgctl"

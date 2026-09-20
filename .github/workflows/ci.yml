@@ -1,5 +1,6 @@
 # WFTPD-Linux CI：格式检查、静态检查、测试与构建
 # 与项目规则一致：clippy 告警视为错误，禁止 #[allow] 隐藏告警
+# 推送 v* 标签时自动构建 deb / tarball 并创建 GitHub Release
 name: CI
 
 on:
@@ -10,6 +11,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
 
 jobs:
   ci:
@@ -43,3 +47,59 @@ jobs:
 
       - name: cargo build 构建（release）
         run: cargo build --workspace --release
+
+  release:
+    name: 发布 Release
+    # 仅在推送 v* 标签时触发，且 CI 全部通过后才发布
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: ci
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 校验标签与 Cargo.toml 版本一致
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^version = \"${TAG_VERSION}\"$" Cargo.toml; then
+            echo "标签 ${GITHUB_REF_NAME} 与 Cargo.toml 中的版本不一致，请先更新 [workspace.package].version"
+            exit 1
+          fi
+
+      - name: 安装系统依赖（GTK3 / 图标生成）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev pkg-config imagemagick
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 构建产物
+        uses: Swatinem/rust-cache@v2
+
+      # 复用 debian/build-deb.sh：release 编译 + 打包 deb（脚本要求 root，CI 有免密 sudo）
+      - name: 构建 deb 包
+        run: sudo ./debian/build-deb.sh -a amd64 -o dist
+
+      - name: 打包 tarball
+        run: |
+          STAGE="wftpd-linux-${GITHUB_REF_NAME#v}-x86_64"
+          mkdir -p "dist/${STAGE}"
+          cp target/release/wftpd "dist/${STAGE}/"
+          cp target/release/wftp-gui "dist/${STAGE}/"
+          cp debian/wftpgctl "dist/${STAGE}/"
+          cp config_template.toml "dist/${STAGE}/config.toml"
+          chmod 755 "dist/${STAGE}/wftpd" "dist/${STAGE}/wftp-gui" "dist/${STAGE}/wftpgctl"
+          tar -czf "dist/${STAGE}.tar.gz" -C dist "${STAGE}"
+          rm -rf "dist/${STAGE}"
+
+      - name: 创建 GitHub Release 并上传产物
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+          generate_release_notes: true
+          fail_on_unmatched_files: true

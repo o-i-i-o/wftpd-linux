@@ -41,15 +41,15 @@ tonic = "0.14"
 tonic-prost = "0.14"
 prost = "0.14"
 tonic-build = { version = "0.14", package = "tonic-prost-build" }
-protox = "0.9"
+protox = "0.10"
 
 # FTP (libunftp)
 libunftp = { version = "0.23", default-features = false, features = ["ring"] }
 unftp-core = "0.1"
 
 # SFTP/SSH
-russh = "0.63.2"
-russh-sftp = "2.4"
+russh = "0.64.1"
+russh-sftp = "3.0.1"
 
 
 # 加密与安全
@@ -79,7 +79,7 @@ libc = "0.2"
 nix = { version = "0.31", features = ["user", "fs", "socket"] }
 
 # GUI
-gtk = "0.18"
+gtk = "0.19"
 
 [profile.release]
 opt-level = 3

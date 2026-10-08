@@ -6,7 +6,7 @@ use gtk::{
     ScrolledWindow, SpinButton, TreeView, TreeViewColumn,
 };
 use std::sync::{Arc, Mutex as StdMutex};
-use tracing::{error, info, warn};
+use tracing::{error};
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);

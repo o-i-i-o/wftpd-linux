@@ -13,6 +13,9 @@ use gtk::{
 };
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
+use tracing::info;
+
+
 
 pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     let container = Box::new(Orientation::Vertical, 10);

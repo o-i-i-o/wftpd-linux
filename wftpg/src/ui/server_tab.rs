@@ -136,10 +136,10 @@ fn create_ftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     container.pack_start(&frame, false, false, 0);
 
     validate_anonymous_home(&w);
-    w.anon.connect_toggled(clone!(@strong w => move |_| {
+    w.anon.connect_toggled(clone!(#[strong] w => move |_| {
         validate_anonymous_home(&w);
     }));
-    w.anon_home.connect_changed(clone!(@strong w => move |_| {
+    w.anon_home.connect_changed(clone!(#[strong] w => move |_| {
         validate_anonymous_home(&w);
     }));
     setup_anonymous_browse(&w);
@@ -261,7 +261,7 @@ fn pick_path(target: &Entry, title: &str, folder: bool) {
     let dialog = gtk::FileChooserDialog::new(Some(title), None::<&gtk::Window>, action);
     dialog.add_button("取消", gtk::ResponseType::Cancel);
     dialog.add_button("选择", gtk::ResponseType::Accept);
-    dialog.connect_response(clone!(@strong target, @strong dialog => move |dlg, resp| {
+    dialog.connect_response(clone!(#[strong] target, #[strong] dialog => move |dlg, resp| {
         if resp == gtk::ResponseType::Accept
             && let Some(path) = dlg.file().and_then(|f| f.path())
         {
@@ -274,13 +274,13 @@ fn pick_path(target: &Entry, title: &str, folder: bool) {
 }
 
 fn setup_anonymous_browse(w: &FtpWidgets) {
-    w.browse.connect_clicked(clone!(@strong w => move |_| {
+    w.browse.connect_clicked(clone!(#[strong] w => move |_| {
         pick_path(&w.anon_home, "选择匿名用户主目录", true);
     }));
 }
 
 fn setup_ftp_save_button(state: &Arc<StdMutex<AppState>>, w: &FtpWidgets) {
-    w.save.connect_clicked(clone!(@strong state, @strong w => move |_| {
+    w.save.connect_clicked(clone!(#[strong] state, #[strong] w => move |_| {
         let enabled = w.enabled.is_active();
         let anon = w.anon.is_active();
 
@@ -457,19 +457,19 @@ fn create_ftps_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     };
 
     validate_ftps_config(&w);
-    w.require_ssl.connect_toggled(clone!(@strong w => move |_| {
+    w.require_ssl.connect_toggled(clone!(#[strong] w => move |_| {
         validate_ftps_config(&w);
     }));
-    w.cert_path.connect_changed(clone!(@strong w => move |_| {
+    w.cert_path.connect_changed(clone!(#[strong] w => move |_| {
         validate_ftps_config(&w);
     }));
-    w.key_path.connect_changed(clone!(@strong w => move |_| {
+    w.key_path.connect_changed(clone!(#[strong] w => move |_| {
         validate_ftps_config(&w);
     }));
-    w.browse_cert.connect_clicked(clone!(@strong w => move |_| {
+    w.browse_cert.connect_clicked(clone!(#[strong] w => move |_| {
         pick_path(&w.cert_path, "选择 TLS 证书", false);
     }));
-    w.browse_key.connect_clicked(clone!(@strong w => move |_| {
+    w.browse_key.connect_clicked(clone!(#[strong] w => move |_| {
         pick_path(&w.key_path, "选择 TLS 私钥", false);
     }));
     setup_ftps_save_button(state, &w);
@@ -508,7 +508,7 @@ fn validate_ftps_config(w: &FtpsWidgets) {
 }
 
 fn setup_ftps_save_button(state: &Arc<StdMutex<AppState>>, w: &FtpsWidgets) {
-    w.save.connect_clicked(clone!(@strong state, @strong w => move |_| {
+    w.save.connect_clicked(clone!(#[strong] state, #[strong] w => move |_| {
         validate_ftps_config(&w);
         let require_ssl = w.require_ssl.is_active();
         let cert_path = w.cert_path.text().to_string();
@@ -685,7 +685,7 @@ fn create_sftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
 }
 
 fn setup_sftp_save_button(state: &Arc<StdMutex<AppState>>, w: &SftpWidgets) {
-    w.save.connect_clicked(clone!(@strong state, @strong w => move |_| {
+    w.save.connect_clicked(clone!(#[strong] state, #[strong] w => move |_| {
         let enabled = w.enabled.is_active();
         let bind_ip = w.bind_ip.text().to_string();
         let port = spin_u16(w.port.value());

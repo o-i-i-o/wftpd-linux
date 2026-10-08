@@ -60,7 +60,7 @@ fn create_login_security_frame(container: &Box, state: &Arc<StdMutex<AppState>>)
     let max_attempts_clone = max_attempts_spin.clone();
     let ban_duration_clone = ban_duration_spin.clone();
     save_btn.connect_clicked(
-        clone!(@strong state_clone, @strong max_attempts_clone, @strong ban_duration_clone => move |_| {
+        clone!(#[strong] state_clone, #[strong] max_attempts_clone, #[strong] ban_duration_clone, move |_| {
             let max_attempts = super::utils::spin_u32(max_attempts_clone.value());
             let ban_duration = super::utils::spin_u64(ban_duration_clone.value());
 
@@ -314,7 +314,7 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
     let store_clone = widgets.store.clone();
     let ip_entry_clone = widgets.ip_entry.clone();
     widgets.add_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone, @strong ip_entry_clone => move |_| {
+        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] ip_entry_clone, move |_| {
             let ip = ip_entry_clone.text().to_string();
             if ip.is_empty() {
                 return;
@@ -345,7 +345,7 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
     let store_clone = widgets.store.clone();
     let tree_clone = widgets.tree.clone();
     widgets.delete_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] tree_clone, move |_| {
             let selection = tree_clone.selection();
             if let Some((model, iter)) = selection.selected() {
                 let ip: String = model.value(&iter, 0).get().unwrap_or_default();
@@ -366,7 +366,7 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     widgets.clear_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone => move |_| {
+        clone!(#[strong] state_clone, #[strong] store_clone, move |_| {
             if push_security_config(
                 &state_clone,
                 &store_clone,
@@ -382,7 +382,7 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     widgets.allow_all_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone => move |_| {
+        clone!(#[strong] state_clone, #[strong] store_clone, move |_| {
             if push_security_config(
                 &state_clone,
                 &store_clone,
@@ -401,7 +401,7 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
     let store_clone = widgets.store.clone();
     let ip_entry_clone = widgets.ip_entry.clone();
     widgets.add_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone, @strong ip_entry_clone => move |_| {
+        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] ip_entry_clone, move |_| {
             let ip = ip_entry_clone.text().to_string();
             if ip.is_empty() {
                 return;
@@ -432,7 +432,7 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
     let store_clone = widgets.store.clone();
     let tree_clone = widgets.tree.clone();
     widgets.delete_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone, @strong tree_clone => move |_| {
+        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] tree_clone, move |_| {
             let selection = tree_clone.selection();
             if let Some((model, iter)) = selection.selected() {
                 let ip: String = model.value(&iter, 0).get().unwrap_or_default();
@@ -453,7 +453,7 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     widgets.clear_btn.connect_clicked(
-        clone!(@strong state_clone, @strong store_clone => move |_| {
+        clone!(#[strong] state_clone, #[strong] store_clone, move |_| {
             if push_security_config(
                 &state_clone,
                 &store_clone,

@@ -44,7 +44,7 @@ tonic-build = { version = "0.14", package = "tonic-prost-build" }
 protox = "0.10"
 
 # FTP (libunftp)
-libunftp = { version = "0.23", default-features = false, features = ["ring"] }
+libunftp = "0.23.1"
 unftp-core = "0.1"
 
 # SFTP/SSH

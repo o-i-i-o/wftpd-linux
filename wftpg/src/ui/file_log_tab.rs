@@ -361,7 +361,7 @@ fn setup_button_handlers(
 
     let tree_view_clone = tree_view.clone();
     log_file_combo.connect_changed(
-        clone!(#[strong] tree_view_clone, #[strong] log_file_combo => move |_| {
+        clone!(#[strong] tree_view_clone, #[strong] log_file_combo, move |_| {
             let source = log_file_combo.active_id().map_or_else(|| "current".to_string(), |s| s.to_string());
             if let Some(store) = tree_view_clone.model()
                 && let Ok(store) = store.downcast::<ListStore>() {

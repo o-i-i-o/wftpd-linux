@@ -335,14 +335,14 @@ fn build_home_dir_row(box_: &Box) -> Entry {
 
     let browse_btn = Button::with_label("浏览...");
     let home_for_browse = home_entry.clone();
-    browse_btn.connect_clicked(clone!(#[strong] home_for_browse => move |_| {
+    browse_btn.connect_clicked(clone!(#[strong] home_for_browse, move |_| {
         open_home_dir_chooser(&home_for_browse);
     }));
     row3.pack_start(&browse_btn, false, false, 0);
 
     let suggest_btn = Button::with_label("推荐目录");
     let home_for_suggest = home_entry.clone();
-    suggest_btn.connect_clicked(clone!(#[strong] home_for_suggest => move |_| {
+    suggest_btn.connect_clicked(clone!(#[strong] home_for_suggest, move |_| {
         show_suggested_directories_dialog(&home_for_suggest);
     }));
     row3.pack_start(&suggest_btn, false, false, 0);
@@ -519,7 +519,7 @@ fn open_home_dir_chooser(home_entry: &Entry) {
     dialog.add_button("选择", ResponseType::Accept);
 
     let entry = home_entry.clone();
-    dialog.connect_response(clone!(#[strong] entry, #[strong] dialog => move |dlg, resp| {
+    dialog.connect_response(clone!(#[strong] entry, move |dlg, resp| {
         if resp == ResponseType::Accept
             && let Some(path) = dlg.filename() {
                 entry.set_text(&path.to_string_lossy());
@@ -682,7 +682,7 @@ fn show_confirm_dialog(username: &str, state: &Arc<StdMutex<AppState>>, store: &
     let uname = username.to_string();
 
     dialog.connect_response(
-        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] uname => move |dlg, resp| {
+        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] uname, move |dlg, resp| {
             if resp == ResponseType::Ok {
                 let store = store_clone.clone();
                 let username = uname.clone();

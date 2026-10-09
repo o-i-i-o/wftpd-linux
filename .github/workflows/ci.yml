@@ -95,7 +95,7 @@ jobs:
           cp "${BIN_DIR}/wftpd" "dist/${STAGE}/"
           cp "${BIN_DIR}/wftp-gui" "dist/${STAGE}/"
           cp debian/wftpgctl "dist/${STAGE}/"
-          cp config_template.toml "dist/${STAGE}/config.toml"
+          cp config_example.toml "dist/${STAGE}/config.toml"
           chmod 755 "dist/${STAGE}/wftpd" "dist/${STAGE}/wftp-gui" "dist/${STAGE}/wftpgctl"
           tar -czf "dist/${STAGE}.tar.gz" -C dist "${STAGE}"
           rm -rf "dist/${STAGE}"

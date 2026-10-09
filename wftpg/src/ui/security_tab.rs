@@ -310,6 +310,14 @@ fn push_security_config(
 }
 
 fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistWidgets) {
+    connect_whitelist_add(state, widgets);
+    connect_whitelist_delete(state, widgets);
+    connect_whitelist_clear(state, widgets);
+    connect_whitelist_allow_all(state, widgets);
+}
+
+/// 添加：校验 IP/CIDR 格式后加入白名单
+fn connect_whitelist_add(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistWidgets) {
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let ip_entry_clone = widgets.ip_entry.clone();
@@ -346,7 +354,10 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
             }
         }
     ));
+}
 
+/// 删除：移除列表中选中的 IP
+fn connect_whitelist_delete(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistWidgets) {
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let tree_clone = widgets.tree.clone();
@@ -374,7 +385,10 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
             }
         }
     ));
+}
 
+/// 清空：删除全部白名单条目
+fn connect_whitelist_clear(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistWidgets) {
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     widgets.clear_btn.connect_clicked(clone!(
@@ -394,7 +408,10 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
             }
         }
     ));
+}
 
+/// 放行所有：白名单设为 0.0.0.0/0
+fn connect_whitelist_allow_all(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistWidgets) {
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     widgets.allow_all_btn.connect_clicked(clone!(

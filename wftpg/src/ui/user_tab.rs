@@ -60,6 +60,29 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     list_frame.add(&list_box);
     container.pack_start(&list_frame, true, true, 0);
 
+    connect_user_action_buttons(
+        state,
+        &store,
+        &tree,
+        (add_btn, edit_btn, delete_btn, toggle_btn, refresh_btn),
+    );
+
+    container
+}
+
+/// 连接用户列表操作按钮：新增/编辑/删除/启用切换/刷新
+fn connect_user_action_buttons(
+    state: &Arc<StdMutex<AppState>>,
+    store: &ListStore,
+    tree: &TreeView,
+    buttons: (Button, Button, Button, Button, Button),
+) {
+    let (add_btn, edit_btn, delete_btn, toggle_btn, refresh_btn) = buttons;
+
+    // glib 对象为引用计数类型：显式按值克隆，供各闭包持有
+    let store = ListStore::clone(store);
+    let tree = TreeView::clone(tree);
+
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
     add_btn.connect_clicked(clone!(
@@ -134,8 +157,6 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
             refresh_user_list(&store_clone, &state_clone);
         }
     ));
-
-    container
 }
 
 /// 构建用户列表的五个列（用户名/主目录/启用/配额/权限）

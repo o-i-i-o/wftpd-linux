@@ -41,6 +41,18 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     box_.set_margin_start(10);
     box_.set_margin_end(10);
 
+    let widgets = build_log_config_rows(&box_, state);
+    connect_log_config_save(&box_, state, widgets);
+
+    frame.add(&box_);
+    container.pack_start(&frame, false, false, 0);
+}
+
+/// 构建日志配置的行控件并回填当前值
+fn build_log_config_rows(
+    box_: &Box,
+    state: &Arc<StdMutex<AppState>>,
+) -> (Entry, ComboBoxText, SpinButton, SpinButton, CheckButton) {
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&Label::new(Some("日志目录:")), false, false, 0);
     let log_dir_entry = Entry::new();
@@ -107,6 +119,23 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     row3.pack_start(&log_to_gui_cb, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
 
+    (
+        log_dir_entry,
+        log_level_combo,
+        max_size_spin,
+        max_files_spin,
+        log_to_gui_cb,
+    )
+}
+
+/// 连接保存按钮：读取控件值写回配置并持久化
+fn connect_log_config_save(
+    box_: &Box,
+    state: &Arc<StdMutex<AppState>>,
+    widgets: (Entry, ComboBoxText, SpinButton, SpinButton, CheckButton),
+) {
+    let (log_dir_entry, log_level_combo, max_size_spin, max_files_spin, log_to_gui_cb) = widgets;
+
     let save_btn = Button::with_label("保存");
     let state_clone = Arc::clone(state);
     let log_dir_clone = log_dir_entry.clone();
@@ -153,9 +182,6 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
         }
     ));
     box_.pack_start(&save_btn, false, false, 0);
-
-    frame.add(&box_);
-    container.pack_start(&frame, false, false, 0);
 }
 
 fn create_control_buttons(

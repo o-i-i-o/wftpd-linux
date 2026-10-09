@@ -503,6 +503,14 @@ fn create_ftps_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
         status,
     };
 
+    connect_ftps_signals(state, &w);
+}
+
+/// 连接 FTPS 控件的校验、浏览与保存信号
+fn connect_ftps_signals(state: &Arc<StdMutex<AppState>>, w: &FtpsWidgets) {
+    // glib 对象为引用计数类型：显式按值克隆，供各闭包持有
+    let w = FtpsWidgets::clone(w);
+
     validate_ftps_config(&w);
     w.require_ssl.connect_toggled(clone!(
         #[strong]

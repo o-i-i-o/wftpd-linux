@@ -15,9 +15,9 @@
 //! - [`tests`]：单元测试
 
 mod extended;
+mod protocol;
 #[cfg(test)]
 mod tests;
-mod protocol;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

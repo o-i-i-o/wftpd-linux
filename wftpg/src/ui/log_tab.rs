@@ -114,30 +114,44 @@ fn create_log_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     let max_size_clone = max_size_spin.clone();
     let max_files_clone = max_files_spin.clone();
     let enable_gui_clone = log_to_gui_cb.clone();
-    save_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] log_dir_clone, #[strong] log_level_clone,
-               #[strong] max_size_clone, #[strong] max_files_clone, #[strong] enable_gui_clone, move |_| {
+    save_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        log_dir_clone,
+        #[strong]
+        log_level_clone,
+        #[strong]
+        max_size_clone,
+        #[strong]
+        max_files_clone,
+        #[strong]
+        enable_gui_clone,
+        move |_| {
             let state = Arc::clone(&state_clone);
             let log_dir = log_dir_clone.text().to_string();
-            let log_level = log_level_clone.active_id().map_or_else(|| "info".to_string(), |s| s.to_string());
+            let log_level = log_level_clone
+                .active_id()
+                .map_or_else(|| "info".to_string(), |s| s.to_string());
             let max_size = super::utils::spin_u64(max_size_clone.value()) * 1024 * 1024;
             let max_files = super::utils::spin_usize(max_files_clone.value());
             let enable_gui = enable_gui_clone.is_active();
 
             glib::MainContext::ref_thread_default().spawn_local(async move {
                 if let Ok(s) = state.try_lock()
-                    && let Ok(mut config) = s.config.try_lock() {
-                        config.logging.log_dir = log_dir;
-                        config.logging.log_level = log_level;
-                        config.logging.max_log_size = max_size;
-                        config.logging.max_log_files = max_files;
-                        config.logging.enable_gui_logging = enable_gui;
-                        let _ = config.save(&wftpd_common::Config::get_config_path());
-                        info!("Logging configuration saved");
-                    }
+                    && let Ok(mut config) = s.config.try_lock()
+                {
+                    config.logging.log_dir = log_dir;
+                    config.logging.log_level = log_level;
+                    config.logging.max_log_size = max_size;
+                    config.logging.max_log_files = max_files;
+                    config.logging.enable_gui_logging = enable_gui;
+                    let _ = config.save(&wftpd_common::Config::get_config_path());
+                    info!("Logging configuration saved");
+                }
             });
-        }),
-    );
+        }
+    ));
     box_.pack_start(&save_btn, false, false, 0);
 
     frame.add(&box_);
@@ -365,23 +379,35 @@ fn setup_button_handlers(
 ) {
     let tree_view_clone = tree_view.clone();
     let log_file_combo_clone = log_file_combo.clone();
-    refresh_btn.connect_clicked(
-        clone!(#[strong] tree_view_clone, #[strong] log_file_combo_clone, move |_| {
-            let source = log_file_combo_clone.active_id().map_or_else(|| "current".to_string(), |s| s.to_string());
+    refresh_btn.connect_clicked(clone!(
+        #[strong]
+        tree_view_clone,
+        #[strong]
+        log_file_combo_clone,
+        move |_| {
+            let source = log_file_combo_clone
+                .active_id()
+                .map_or_else(|| "current".to_string(), |s| s.to_string());
             if let Some(store) = tree_view_clone.model()
-                && let Ok(store) = store.downcast::<ListStore>() {
-                    populate_log_store(&store, &source);
-                }
-        }),
-    );
+                && let Ok(store) = store.downcast::<ListStore>()
+            {
+                populate_log_store(&store, &source);
+            }
+        }
+    ));
 
     let tree_view_clone = tree_view.clone();
-    clear_btn.connect_clicked(clone!(#[strong] tree_view_clone, move |_| {
-        if let Some(store) = tree_view_clone.model()
-            && let Ok(store) = store.downcast::<ListStore>() {
+    clear_btn.connect_clicked(clone!(
+        #[strong]
+        tree_view_clone,
+        move |_| {
+            if let Some(store) = tree_view_clone.model()
+                && let Ok(store) = store.downcast::<ListStore>()
+            {
                 store.clear();
             }
-    }));
+        }
+    ));
 
     let tree_view_clone = tree_view.clone();
     let auto_refresh_cb_clone = auto_refresh_cb.clone();
@@ -404,15 +430,22 @@ fn setup_button_handlers(
     });
 
     let tree_view_clone = tree_view.clone();
-    log_file_combo.connect_changed(
-        clone!(#[strong] tree_view_clone, #[strong] log_file_combo, move |_| {
-            let source = log_file_combo.active_id().map_or_else(|| "current".to_string(), |s| s.to_string());
+    log_file_combo.connect_changed(clone!(
+        #[strong]
+        tree_view_clone,
+        #[strong]
+        log_file_combo,
+        move |_| {
+            let source = log_file_combo
+                .active_id()
+                .map_or_else(|| "current".to_string(), |s| s.to_string());
             if let Some(store) = tree_view_clone.model()
-                && let Ok(store) = store.downcast::<ListStore>() {
-                    populate_log_store(&store, &source);
-                }
-        }),
-    );
+                && let Ok(store) = store.downcast::<ListStore>()
+            {
+                populate_log_store(&store, &source);
+            }
+        }
+    ));
 }
 
 fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {

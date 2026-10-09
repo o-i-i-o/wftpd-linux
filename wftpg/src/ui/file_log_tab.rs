@@ -321,23 +321,35 @@ fn setup_button_handlers(
 ) {
     let tree_view_clone = tree_view.clone();
     let log_file_combo_clone = log_file_combo.clone();
-    refresh_btn.connect_clicked(
-        clone!(#[strong] tree_view_clone, #[strong] log_file_combo_clone, move |_| {
-            let source = log_file_combo_clone.active_id().map_or_else(|| "current".to_string(), |s| s.to_string());
+    refresh_btn.connect_clicked(clone!(
+        #[strong]
+        tree_view_clone,
+        #[strong]
+        log_file_combo_clone,
+        move |_| {
+            let source = log_file_combo_clone
+                .active_id()
+                .map_or_else(|| "current".to_string(), |s| s.to_string());
             if let Some(store) = tree_view_clone.model()
-                && let Ok(store) = store.downcast::<ListStore>() {
-                    populate_log_store(&store, &source);
-                }
-        }),
-    );
+                && let Ok(store) = store.downcast::<ListStore>()
+            {
+                populate_log_store(&store, &source);
+            }
+        }
+    ));
 
     let tree_view_clone = tree_view.clone();
-    clear_btn.connect_clicked(clone!(#[strong] tree_view_clone, move |_| {
-        if let Some(store) = tree_view_clone.model()
-            && let Ok(store) = store.downcast::<ListStore>() {
+    clear_btn.connect_clicked(clone!(
+        #[strong]
+        tree_view_clone,
+        move |_| {
+            if let Some(store) = tree_view_clone.model()
+                && let Ok(store) = store.downcast::<ListStore>()
+            {
                 store.clear();
             }
-    }));
+        }
+    ));
 
     let tree_view_clone = tree_view.clone();
     let auto_refresh_cb_clone = auto_refresh_cb.clone();
@@ -360,13 +372,20 @@ fn setup_button_handlers(
     });
 
     let tree_view_clone = tree_view.clone();
-    log_file_combo.connect_changed(
-        clone!(#[strong] tree_view_clone, #[strong] log_file_combo, move |_| {
-            let source = log_file_combo.active_id().map_or_else(|| "current".to_string(), |s| s.to_string());
+    log_file_combo.connect_changed(clone!(
+        #[strong]
+        tree_view_clone,
+        #[strong]
+        log_file_combo,
+        move |_| {
+            let source = log_file_combo
+                .active_id()
+                .map_or_else(|| "current".to_string(), |s| s.to_string());
             if let Some(store) = tree_view_clone.model()
-                && let Ok(store) = store.downcast::<ListStore>() {
-                    populate_log_store(&store, &source);
-                }
-        }),
-    );
+                && let Ok(store) = store.downcast::<ListStore>()
+            {
+                populate_log_store(&store, &source);
+            }
+        }
+    ));
 }

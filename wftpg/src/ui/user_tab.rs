@@ -62,52 +62,78 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
-    add_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, move |_| {
+    add_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        move |_| {
             show_user_dialog(None, &state_clone, &store_clone);
-        }),
-    );
+        }
+    ));
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
     let tree_clone = tree.clone();
-    edit_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] tree_clone, move |_| {
+    edit_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        #[strong]
+        tree_clone,
+        move |_| {
             if let Some((username, _)) = selected_user(&tree_clone) {
                 show_user_dialog(Some(&username), &state_clone, &store_clone);
             }
-        }),
-    );
+        }
+    ));
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
     let tree_clone = tree.clone();
-    delete_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] tree_clone, move |_| {
+    delete_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        #[strong]
+        tree_clone,
+        move |_| {
             if let Some((username, _)) = selected_user(&tree_clone) {
                 show_confirm_dialog(&username, &state_clone, &store_clone);
             }
-        }),
-    );
+        }
+    ));
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
     let tree_clone = tree.clone();
-    toggle_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] tree_clone, move |_| {
+    toggle_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        #[strong]
+        tree_clone,
+        move |_| {
             if let Some((username, current_enabled)) = selected_user(&tree_clone) {
                 toggle_selected_user(&state_clone, &store_clone, &username, current_enabled);
             }
-        }),
-    );
+        }
+    ));
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
-    refresh_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, move |_| {
+    refresh_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        move |_| {
             refresh_user_list(&store_clone, &state_clone);
-        }),
-    );
+        }
+    ));
 
     container
 }

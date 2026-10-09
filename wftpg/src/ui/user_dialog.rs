@@ -10,7 +10,9 @@ use gtk::{
 use std::sync::{Arc, Mutex as StdMutex};
 use tracing::{error, info};
 
-use super::suggested_dirs::{setup_shared_directory_permissions, show_suggested_directories_dialog};
+use super::suggested_dirs::{
+    setup_shared_directory_permissions, show_suggested_directories_dialog,
+};
 use super::user_tab::refresh_user_list;
 use super::utils::{spin_f64_from, spin_u64};
 
@@ -68,16 +70,21 @@ pub(super) fn show_user_dialog(
 
     let state_clone = Arc::clone(state);
     let store_clone = store.clone();
-    dialog.connect_response(
-        clone!(#[strong] fields, #[strong] state_clone, #[strong] store_clone, move |dlg, resp| {
-            if resp == ResponseType::Ok
-                && !submit_user_dialog(&fields, &state_clone, &store_clone)
+    dialog.connect_response(clone!(
+        #[strong]
+        fields,
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        move |dlg, resp| {
+            if resp == ResponseType::Ok && !submit_user_dialog(&fields, &state_clone, &store_clone)
             {
                 return; // 校验或保存未通过，保持对话框打开
             }
             dlg.close();
-        }),
-    );
+        }
+    ));
 
     dialog.run();
 }
@@ -122,16 +129,24 @@ fn build_home_dir_row(box_: &Box) -> Entry {
 
     let browse_btn = Button::with_label("浏览...");
     let home_for_browse = home_entry.clone();
-    browse_btn.connect_clicked(clone!(#[strong] home_for_browse, move |_| {
-        open_home_dir_chooser(&home_for_browse);
-    }));
+    browse_btn.connect_clicked(clone!(
+        #[strong]
+        home_for_browse,
+        move |_| {
+            open_home_dir_chooser(&home_for_browse);
+        }
+    ));
     row3.pack_start(&browse_btn, false, false, 0);
 
     let suggest_btn = Button::with_label("推荐目录");
     let home_for_suggest = home_entry.clone();
-    suggest_btn.connect_clicked(clone!(#[strong] home_for_suggest, move |_| {
-        show_suggested_directories_dialog(&home_for_suggest);
-    }));
+    suggest_btn.connect_clicked(clone!(
+        #[strong]
+        home_for_suggest,
+        move |_| {
+            show_suggested_directories_dialog(&home_for_suggest);
+        }
+    ));
     row3.pack_start(&suggest_btn, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
 
@@ -288,7 +303,9 @@ fn load_user_dialog_values(
 
     if let Some(speed_limit) = user.permissions.speed_limit_kbps {
         fields.speed_limit_cb.set_active(true);
-        fields.speed_limit_spin.set_value(spin_f64_from(speed_limit));
+        fields
+            .speed_limit_spin
+            .set_value(spin_f64_from(speed_limit));
     }
 }
 
@@ -302,13 +319,18 @@ fn open_home_dir_chooser(home_entry: &Entry) {
     dialog.add_button("选择", ResponseType::Accept);
 
     let entry = home_entry.clone();
-    dialog.connect_response(clone!(#[strong] entry, move |dlg, resp| {
-        if resp == ResponseType::Accept
-            && let Some(path) = dlg.filename() {
+    dialog.connect_response(clone!(
+        #[strong]
+        entry,
+        move |dlg, resp| {
+            if resp == ResponseType::Accept
+                && let Some(path) = dlg.filename()
+            {
                 entry.set_text(&path.to_string_lossy());
             }
-        dlg.close();
-    }));
+            dlg.close();
+        }
+    ));
 
     dialog.run();
 }
@@ -337,7 +359,10 @@ fn collect_permissions(fields: &UserDialogFields) -> wftpd_common::Permissions {
         can_rmdir: fields.rmdir_cb.is_active(),
         can_rename: fields.rename_cb.is_active(),
         can_append: fields.append_cb.is_active(),
-        quota_mb: fields.quota_cb.is_active().then(|| spin_u64(fields.quota_spin.value())),
+        quota_mb: fields
+            .quota_cb
+            .is_active()
+            .then(|| spin_u64(fields.quota_spin.value())),
         speed_limit_kbps: fields
             .speed_limit_cb
             .is_active()
@@ -465,8 +490,14 @@ pub(super) fn show_confirm_dialog(
     let store_clone = store.clone();
     let uname = username.to_string();
 
-    dialog.connect_response(
-        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] uname, move |dlg, resp| {
+    dialog.connect_response(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        #[strong]
+        uname,
+        move |dlg, resp| {
             if resp == ResponseType::Ok {
                 let store = store_clone.clone();
                 let username = uname.clone();
@@ -476,8 +507,12 @@ pub(super) fn show_confirm_dialog(
                         if let Ok(mut users) = s.user_manager.try_lock() {
                             let _ = users.remove_user(&username);
                             serde_json::to_string(&*users).unwrap_or_default()
-                        } else { return; }
-                    } else { return; }
+                        } else {
+                            return;
+                        }
+                    } else {
+                        return;
+                    }
                 };
 
                 match crate::communication::write_users(&users_json) {
@@ -486,7 +521,7 @@ pub(super) fn show_confirm_dialog(
                             "gui-user",
                             "USER_DELETE",
                             &username,
-                            &format!("User {username} deleted")
+                            &format!("User {username} deleted"),
                         );
                         info!("User {} deleted", username);
                     }
@@ -497,8 +532,8 @@ pub(super) fn show_confirm_dialog(
                 refresh_user_list(&store, &state_clone);
             }
             dlg.close();
-        }),
-    );
+        }
+    ));
 
     dialog.run();
 }

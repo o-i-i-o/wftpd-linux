@@ -8,14 +8,15 @@ use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
 use russh_sftp::protocol::{
-    Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode,
-    Version,
+    Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode, Version,
 };
 use russh_sftp::server::Handler;
 use tracing::{debug, info, warn};
 
 use super::extended::Digest;
-use super::{DirHandle, FileHandle, MAX_READ_LEN, OpenEntry, SFTP_VERSION, SftpFileHandler, SftpResult};
+use super::{
+    DirHandle, FileHandle, MAX_READ_LEN, OpenEntry, SFTP_VERSION, SftpFileHandler, SftpResult,
+};
 
 impl Handler for SftpFileHandler {
     type Error = StatusCode;

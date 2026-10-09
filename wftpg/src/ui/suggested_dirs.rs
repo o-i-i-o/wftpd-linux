@@ -93,8 +93,12 @@ pub(super) fn show_suggested_directories_dialog(home_entry: &gtk::Entry) {
     let home_entry_clone = home_entry.clone();
     let tree_clone = tree.clone();
 
-    dialog.connect_response(
-        clone!(#[strong] home_entry_clone, #[strong] tree_clone, move |dlg, resp| {
+    dialog.connect_response(clone!(
+        #[strong]
+        home_entry_clone,
+        #[strong]
+        tree_clone,
+        move |dlg, resp| {
             if resp == ResponseType::Ok {
                 let selection = tree_clone.selection();
                 if let Some((model, iter)) = selection.selected() {
@@ -103,8 +107,8 @@ pub(super) fn show_suggested_directories_dialog(home_entry: &gtk::Entry) {
                 }
             }
             dlg.close();
-        }),
-    );
+        }
+    ));
 
     dialog.run();
 }

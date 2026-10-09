@@ -313,8 +313,14 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let ip_entry_clone = widgets.ip_entry.clone();
-    widgets.add_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] ip_entry_clone, move |_| {
+    widgets.add_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        #[strong]
+        ip_entry_clone,
+        move |_| {
             let ip = ip_entry_clone.text().to_string();
             if ip.is_empty() {
                 return;
@@ -338,14 +344,20 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                 ip_entry_clone.set_text("");
                 info!("IP {ip} added to whitelist");
             }
-        }),
-    );
+        }
+    ));
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let tree_clone = widgets.tree.clone();
-    widgets.delete_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] tree_clone, move |_| {
+    widgets.delete_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        #[strong]
+        tree_clone,
+        move |_| {
             let selection = tree_clone.selection();
             if let Some((model, iter)) = selection.selected() {
                 let ip: String = model.value(&iter, 0).get().unwrap_or_default();
@@ -360,13 +372,17 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
                     info!("IP {ip} removed from whitelist");
                 }
             }
-        }),
-    );
+        }
+    ));
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
-    widgets.clear_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, move |_| {
+    widgets.clear_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        move |_| {
             if push_security_config(
                 &state_clone,
                 &store_clone,
@@ -376,13 +392,17 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
             ) {
                 info!("Whitelist cleared");
             }
-        }),
-    );
+        }
+    ));
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
-    widgets.allow_all_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, move |_| {
+    widgets.allow_all_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        move |_| {
             if push_security_config(
                 &state_clone,
                 &store_clone,
@@ -392,16 +412,22 @@ fn setup_whitelist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &WhitelistW
             ) {
                 info!("Allow all IPs set");
             }
-        }),
-    );
+        }
+    ));
 }
 
 fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistWidgets) {
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let ip_entry_clone = widgets.ip_entry.clone();
-    widgets.add_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] ip_entry_clone, move |_| {
+    widgets.add_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        #[strong]
+        ip_entry_clone,
+        move |_| {
             let ip = ip_entry_clone.text().to_string();
             if ip.is_empty() {
                 return;
@@ -425,14 +451,20 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
                 ip_entry_clone.set_text("");
                 info!("IP {ip} added to blacklist");
             }
-        }),
-    );
+        }
+    ));
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
     let tree_clone = widgets.tree.clone();
-    widgets.delete_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, #[strong] tree_clone, move |_| {
+    widgets.delete_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        #[strong]
+        tree_clone,
+        move |_| {
             let selection = tree_clone.selection();
             if let Some((model, iter)) = selection.selected() {
                 let ip: String = model.value(&iter, 0).get().unwrap_or_default();
@@ -447,13 +479,17 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
                     info!("IP {ip} removed from blacklist");
                 }
             }
-        }),
-    );
+        }
+    ));
 
     let state_clone = Arc::clone(state);
     let store_clone = widgets.store.clone();
-    widgets.clear_btn.connect_clicked(
-        clone!(#[strong] state_clone, #[strong] store_clone, move |_| {
+    widgets.clear_btn.connect_clicked(clone!(
+        #[strong]
+        state_clone,
+        #[strong]
+        store_clone,
+        move |_| {
             if push_security_config(
                 &state_clone,
                 &store_clone,
@@ -463,8 +499,8 @@ fn setup_blacklist_buttons(state: &Arc<StdMutex<AppState>>, widgets: &BlacklistW
             ) {
                 info!("Blacklist cleared");
             }
-        }),
-    );
+        }
+    ));
 }
 
 fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {

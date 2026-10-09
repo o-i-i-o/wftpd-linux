@@ -190,13 +190,12 @@ fn open_write_read_close_roundtrip() {
     let mut env = setup();
 
     let flags = OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE;
-    let handle =
-        block_on(
-            env.handler
-                .open(1, "note.txt".into(), flags, FileAttributes::dummy()),
-        )
-        .unwrap()
-        .handle;
+    let handle = block_on(
+        env.handler
+            .open(1, "note.txt".into(), flags, FileAttributes::dummy()),
+    )
+    .unwrap()
+    .handle;
     block_on(
         env.handler
             .write(2, handle.clone(), 0, b"hello world".to_vec()),

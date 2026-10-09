@@ -15,8 +15,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use tracing::{error, info};
 
-
-
 pub fn create(state: &Arc<StdMutex<AppState>>) -> ScrolledWindow {
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -158,12 +156,20 @@ fn create_ftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     container.pack_start(&frame, false, false, 0);
 
     validate_anonymous_home(&w);
-    w.anon.connect_toggled(clone!(#[strong] w, move |_| {
-        validate_anonymous_home(&w);
-    }));
-    w.anon_home.connect_changed(clone!(#[strong] w, move |_| {
-        validate_anonymous_home(&w);
-    }));
+    w.anon.connect_toggled(clone!(
+        #[strong]
+        w,
+        move |_| {
+            validate_anonymous_home(&w);
+        }
+    ));
+    w.anon_home.connect_changed(clone!(
+        #[strong]
+        w,
+        move |_| {
+            validate_anonymous_home(&w);
+        }
+    ));
     setup_anonymous_browse(&w);
     setup_ftp_save_button(state, &w);
 }
@@ -285,22 +291,32 @@ fn pick_path(target: &Entry, title: &str, folder: bool) {
     let dialog = gtk::FileChooserDialog::new(Some(title), None::<&gtk::Window>, action);
     dialog.add_button("取消", gtk::ResponseType::Cancel);
     dialog.add_button("选择", gtk::ResponseType::Accept);
-    dialog.connect_response(clone!(#[strong] target, #[strong] dialog, move |dlg, resp| {
-        if resp == gtk::ResponseType::Accept
-            && let Some(path) = dlg.file().and_then(|f| f.path())
-        {
-            target.set_text(&path.to_string_lossy());
+    dialog.connect_response(clone!(
+        #[strong]
+        target,
+        #[strong]
+        dialog,
+        move |dlg, resp| {
+            if resp == gtk::ResponseType::Accept
+                && let Some(path) = dlg.file().and_then(|f| f.path())
+            {
+                target.set_text(&path.to_string_lossy());
+            }
+            dialog.close();
         }
-        dialog.close();
-    }));
+    ));
     dialog.run();
     dialog.close();
 }
 
 fn setup_anonymous_browse(w: &FtpWidgets) {
-    w.browse.connect_clicked(clone!(#[strong] w, move |_| {
-        pick_path(&w.anon_home, "选择匿名用户主目录", true);
-    }));
+    w.browse.connect_clicked(clone!(
+        #[strong]
+        w,
+        move |_| {
+            pick_path(&w.anon_home, "选择匿名用户主目录", true);
+        }
+    ));
 }
 
 fn setup_ftp_save_button(state: &Arc<StdMutex<AppState>>, w: &FtpWidgets) {
@@ -441,7 +457,12 @@ fn create_ftps_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
 
     // 按行排布：每条配置独占一行
     let row1 = Box::new(Orientation::Horizontal, 5);
-    row1.pack_start(&Label::new(Some("强制TLS（拒绝未升级的客户端）")), false, false, 0);
+    row1.pack_start(
+        &Label::new(Some("强制TLS（拒绝未升级的客户端）")),
+        false,
+        false,
+        0,
+    );
     row1.pack_start(&require_ssl, false, false, 0);
     row1.pack_start(&validate_status, false, false, 0);
     row1.pack_end(&save, false, false, 0);
@@ -483,21 +504,41 @@ fn create_ftps_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     };
 
     validate_ftps_config(&w);
-    w.require_ssl.connect_toggled(clone!(#[strong] w, move |_| {
-        validate_ftps_config(&w);
-    }));
-    w.cert_path.connect_changed(clone!(#[strong] w, move |_| {
-        validate_ftps_config(&w);
-    }));
-    w.key_path.connect_changed(clone!(#[strong] w, move |_| {
-        validate_ftps_config(&w);
-    }));
-    w.browse_cert.connect_clicked(clone!(#[strong] w, move |_| {
-        pick_path(&w.cert_path, "选择 TLS 证书", false);
-    }));
-    w.browse_key.connect_clicked(clone!(#[strong] w, move |_| {
-        pick_path(&w.key_path, "选择 TLS 私钥", false);
-    }));
+    w.require_ssl.connect_toggled(clone!(
+        #[strong]
+        w,
+        move |_| {
+            validate_ftps_config(&w);
+        }
+    ));
+    w.cert_path.connect_changed(clone!(
+        #[strong]
+        w,
+        move |_| {
+            validate_ftps_config(&w);
+        }
+    ));
+    w.key_path.connect_changed(clone!(
+        #[strong]
+        w,
+        move |_| {
+            validate_ftps_config(&w);
+        }
+    ));
+    w.browse_cert.connect_clicked(clone!(
+        #[strong]
+        w,
+        move |_| {
+            pick_path(&w.cert_path, "选择 TLS 证书", false);
+        }
+    ));
+    w.browse_key.connect_clicked(clone!(
+        #[strong]
+        w,
+        move |_| {
+            pick_path(&w.key_path, "选择 TLS 私钥", false);
+        }
+    ));
     setup_ftps_save_button(state, &w);
 }
 

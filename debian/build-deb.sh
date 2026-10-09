@@ -515,7 +515,12 @@ if [ -f "$DEB_FILE" ]; then
     echo "========================================"
     
     rm -rf "${BUILD_DIR}/${PACKAGE_NAME}_${VERSION}_${TARGET_ARCH}/"
-    
+
+    # 以 sudo 运行时把产物目录归还给原用户，避免 CI 后续步骤（tarball 打包）或本地后续操作因 root 属主而 Permission denied
+    if [ -n "$SUDO_USER" ]; then
+        chown -R "${SUDO_USER}:$(id -gn "${SUDO_USER}")" "${OUTPUT_DIR}" "${BUILD_DIR}"
+    fi
+
     exit 0
 else
     log_error "DEB包构建失败"

@@ -1,7 +1,7 @@
 //! 系统服务页：FTP/SFTP 服务控制（gRPC）与后端守护进程管理（systemctl --user）。
 
 use gtk::prelude::*;
-use gtk::{Box, Button, Frame, Label, Orientation, glib};
+use gtk::{Box, Button, Frame, Label, Orientation, ScrolledWindow, glib};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use wftpd_proto::wftpd::v1::service_selector::Which;
@@ -22,7 +22,7 @@ struct StatusLabels {
     autostart: Label,
 }
 
-pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
+pub fn create(_state: &Arc<StdMutex<AppState>>) -> ScrolledWindow {
     let container = Box::new(Orientation::Vertical, 10);
     container.set_margin_top(10);
     container.set_margin_bottom(10);
@@ -117,7 +117,13 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> Box {
     // 初始加载状态
     refresh_status(&labels, &refreshing);
 
-    container
+    // 内容高度超过窗口时可整体滚动，保证底部控件可达可操作
+    let scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .build();
+    scrolled.add(&container);
+    scrolled
 }
 
 /// 构建后端守护进程管理区：启停按钮、自启状态与 enable/disable 按钮

@@ -9,7 +9,7 @@ use gtk::glib::clone;
 use gtk::prelude::*;
 use gtk::{
     Adjustment, Box, Button, CheckButton, ComboBoxText, Entry, Frame, Label, Orientation,
-    SpinButton,
+    ScrolledWindow, SpinButton,
 };
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -17,7 +17,12 @@ use tracing::{error, info};
 
 
 
-pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
+pub fn create(state: &Arc<StdMutex<AppState>>) -> ScrolledWindow {
+    let scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .build();
+
     let container = Box::new(Orientation::Vertical, 10);
     container.set_margin_top(10);
     container.set_margin_bottom(10);
@@ -35,7 +40,9 @@ pub fn create(state: &Arc<StdMutex<AppState>>) -> Box {
     hint.set_halign(gtk::Align::Start);
     container.pack_start(&hint, false, false, 0);
 
-    container
+    // 内容高度超过窗口时可整体滚动，保证底部控件可达可操作
+    scrolled.add(&container);
+    scrolled
 }
 
 fn create_spin_button(min: f64, max: f64, step: f64) -> SpinButton {

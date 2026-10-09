@@ -23,7 +23,7 @@ use tracing_subscriber::{
     reload::{self, Handle},
 };
 
-use crate::file_logger::LogEntryJson;
+use crate::server::file_logger::LogEntryJson;
 
 static RELOAD_HANDLE: OnceLock<Handle<Targets, Registry>> = OnceLock::new();
 

@@ -13,8 +13,7 @@ use russh::server::{Auth, Msg, Session};
 use russh::{Channel, ChannelId};
 use tracing::{debug, error, info, warn};
 use wftpd_common::server::quota::QuotaCache;
-use wftpd_common::server::utils::is_safe_username;
-use wftpd_common::{FileLogger, UserManager};
+use wftpd_common::{FileLogger, UserManager, is_safe_username};
 
 use crate::ops::SftpFileHandler;
 

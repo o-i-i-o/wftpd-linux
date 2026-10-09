@@ -1,4 +1,6 @@
 mod main_window;
+mod suggested_dirs;
+mod user_dialog;
 mod utils;
 
 pub mod file_log_tab;

@@ -253,7 +253,10 @@ mod tests {
 
     #[test]
     fn list_log_files_missing_dir_returns_empty() {
-        assert!(list_log_files("/nonexistent/wftpd/logs", "wftpg").is_empty());
+        assert_eq!(
+            list_log_files("/nonexistent/wftpd/logs", "wftpg"),
+            [] as [wftpd_common::LogFileEntry; 0]
+        );
     }
 
     #[test]
@@ -278,7 +281,10 @@ mod tests {
 
     #[test]
     fn read_program_log_missing_file_returns_empty() {
-        assert!(read_program_log("/nonexistent/wftpd/app.log", 10).is_empty());
+        assert_eq!(
+            read_program_log("/nonexistent/wftpd/app.log", 10),
+            [] as [wftpd_common::LogEntryJson; 0]
+        );
     }
 
     #[test]

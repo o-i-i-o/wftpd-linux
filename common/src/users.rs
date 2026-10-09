@@ -58,6 +58,23 @@ impl Permissions {
     }
 }
 
+/// 校验用户名是否安全：仅允许字母数字、下划线与连字符，首位须为字母数字或下划线，
+/// 长度 1..=64。用于认证前拦截非法输入（FTP USER 命令 / SSH 认证请求）。
+#[must_use]
+pub fn is_safe_username(username: &str) -> bool {
+    if username.is_empty() || username.len() > 64 {
+        return false;
+    }
+    let bytes = username.as_bytes();
+    let first = bytes[0];
+    if !first.is_ascii_alphanumeric() && first != b'_' {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|&c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+}
+
 impl fmt::Display for Permissions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut perms = Vec::new();
@@ -470,6 +487,21 @@ impl UserManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_safe_username_accepts_alnum_underscore_dash() {
+        for name in ["alice", "a", "A_1-b", "_x", "0start", &"a".repeat(64)] {
+            assert!(is_safe_username(name), "应接受: {name}");
+        }
+    }
+
+    #[test]
+    fn is_safe_username_rejects_bad_input() {
+        for name in ["", "-lead", "has space", "中文", "a;b", "a/b", ".", ".."] {
+            assert!(!is_safe_username(name), "应拒绝: {name:?}");
+        }
+        assert!(!is_safe_username(&"a".repeat(65)), "超过 64 字符应拒绝");
+    }
 
     fn temp_home() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();

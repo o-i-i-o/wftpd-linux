@@ -96,49 +96,61 @@ fn create_ftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
 
     let w = build_ftp_widgets(state);
 
+    // 按行排布：每条配置独占一行
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&w.enabled, false, false, 0);
-    row1.pack_start(&Label::new(Some("绑定地址:")), false, false, 0);
-    row1.pack_start(&w.bind_ip, false, false, 0);
-    row1.pack_start(&Label::new(Some("端口:")), false, false, 0);
-    row1.pack_start(&w.port, false, false, 0);
     row1.pack_end(&w.save, false, false, 0);
     box_.pack_start(&row1, false, false, 0);
 
     let row2 = Box::new(Orientation::Horizontal, 5);
-    row2.pack_start(&Label::new(Some("被动端口范围:")), false, false, 0);
-    row2.pack_start(&w.passive_start, false, false, 0);
-    row2.pack_start(&Label::new(Some("-")), false, false, 0);
-    row2.pack_start(&w.passive_end, false, false, 0);
-    row2.pack_start(&Label::new(Some("对外公开IP:")), false, false, 0);
-    row2.pack_start(&w.masquerade_ip, false, false, 0);
+    row2.pack_start(&Label::new(Some("绑定地址:")), false, false, 0);
+    row2.pack_start(&w.bind_ip, false, false, 0);
+    row2.pack_start(&Label::new(Some("端口:")), false, false, 0);
+    row2.pack_start(&w.port, false, false, 0);
     box_.pack_start(&row2, false, false, 0);
 
     let row3 = Box::new(Orientation::Horizontal, 5);
-    row3.pack_start(&Label::new(Some("欢迎消息:")), false, false, 0);
-    row3.pack_start(&w.welcome, true, true, 0);
+    row3.pack_start(&Label::new(Some("被动端口范围:")), false, false, 0);
+    row3.pack_start(&w.passive_start, false, false, 0);
+    row3.pack_start(&Label::new(Some("-")), false, false, 0);
+    row3.pack_start(&w.passive_end, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
 
     let row4 = Box::new(Orientation::Horizontal, 5);
-    row4.pack_start(&w.anon, false, false, 0);
-    row4.pack_start(&Label::new(Some("匿名用户目录:")), false, false, 0);
-    row4.pack_start(&w.anon_home, true, true, 0);
-    row4.pack_start(&w.browse, false, false, 0);
+    row4.pack_start(&Label::new(Some("对外公开IP:")), false, false, 0);
+    row4.pack_start(&w.masquerade_ip, false, false, 0);
     box_.pack_start(&row4, false, false, 0);
 
-    box_.pack_start(&w.anon_status, false, false, 0);
-
     let row5 = Box::new(Orientation::Horizontal, 5);
-    row5.pack_start(
+    row5.pack_start(&w.anon, false, false, 0);
+    row5.pack_start(&w.anon_status, false, false, 0);
+    box_.pack_start(&row5, false, false, 0);
+
+    let row6 = Box::new(Orientation::Horizontal, 5);
+    row6.pack_start(&Label::new(Some("匿名用户目录:")), false, false, 0);
+    row6.pack_start(&w.anon_home, true, true, 0);
+    row6.pack_start(&w.browse, false, false, 0);
+    box_.pack_start(&row6, false, false, 0);
+
+    let row7 = Box::new(Orientation::Horizontal, 5);
+    row7.pack_start(
         &Label::new(Some("最大传输速度(KB/s, 0为不限):")),
         false,
         false,
         0,
     );
-    row5.pack_start(&w.max_speed, false, false, 0);
-    row5.pack_start(&Label::new(Some("编码:")), false, false, 0);
-    row5.pack_start(&w.encoding, false, false, 0);
-    box_.pack_start(&row5, false, false, 0);
+    row7.pack_start(&w.max_speed, false, false, 0);
+    box_.pack_start(&row7, false, false, 0);
+
+    let row8 = Box::new(Orientation::Horizontal, 5);
+    row8.pack_start(&Label::new(Some("编码:")), false, false, 0);
+    row8.pack_start(&w.encoding, false, false, 0);
+    box_.pack_start(&row8, false, false, 0);
+
+    let row9 = Box::new(Orientation::Horizontal, 5);
+    row9.pack_start(&Label::new(Some("欢迎消息:")), false, false, 0);
+    row9.pack_start(&w.welcome, true, true, 0);
+    box_.pack_start(&row9, false, false, 0);
 
     box_.pack_start(&w.status, false, false, 0);
 
@@ -425,6 +437,7 @@ fn create_ftps_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
         }
     });
 
+    // 按行排布：每条配置独占一行
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&Label::new(Some("证书路径:")), false, false, 0);
     row1.pack_start(&cert_path, true, true, 0);
@@ -435,14 +448,14 @@ fn create_ftps_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     row2.pack_start(&Label::new(Some("私钥路径:")), false, false, 0);
     row2.pack_start(&key_path, true, true, 0);
     row2.pack_start(&browse_key, false, false, 0);
-    row2.pack_start(&save, false, false, 0);
     box_.pack_start(&row2, false, false, 0);
 
     let row3 = Box::new(Orientation::Horizontal, 5);
     row3.pack_start(&require_ssl, false, false, 0);
+    row3.pack_start(&validate_status, false, false, 0);
+    row3.pack_end(&save, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
 
-    box_.pack_start(&validate_status, false, false, 0);
     box_.pack_start(&status, false, false, 0);
 
     let hint = Label::new(None);
@@ -645,28 +658,35 @@ fn create_sftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
         }
     });
 
+    // 按行排布：每条配置独占一行
     let row1 = Box::new(Orientation::Horizontal, 5);
     row1.pack_start(&enabled, false, false, 0);
-    row1.pack_start(&Label::new(Some("绑定地址:")), false, false, 0);
-    row1.pack_start(&bind_ip, false, false, 0);
-    row1.pack_start(&Label::new(Some("端口:")), false, false, 0);
-    row1.pack_start(&port, false, false, 0);
     row1.pack_end(&save, false, false, 0);
     box_.pack_start(&row1, false, false, 0);
 
     let row2 = Box::new(Orientation::Horizontal, 5);
-    row2.pack_start(&Label::new(Some("主机密钥路径:")), false, false, 0);
-    row2.pack_start(&host_key, true, true, 0);
+    row2.pack_start(&Label::new(Some("绑定地址:")), false, false, 0);
+    row2.pack_start(&bind_ip, false, false, 0);
+    row2.pack_start(&Label::new(Some("端口:")), false, false, 0);
+    row2.pack_start(&port, false, false, 0);
     box_.pack_start(&row2, false, false, 0);
 
     let row3 = Box::new(Orientation::Horizontal, 5);
-    row3.pack_start(&Label::new(Some("最大认证尝试次数:")), false, false, 0);
-    row3.pack_start(&max_auth, false, false, 0);
-    row3.pack_start(&Label::new(Some("认证超时(秒):")), false, false, 0);
-    row3.pack_start(&auth_timeout, false, false, 0);
-    row3.pack_start(&Label::new(Some("日志级别:")), false, false, 0);
-    row3.pack_start(&log_level, false, false, 0);
+    row3.pack_start(&Label::new(Some("主机密钥路径:")), false, false, 0);
+    row3.pack_start(&host_key, true, true, 0);
     box_.pack_start(&row3, false, false, 0);
+
+    let row4 = Box::new(Orientation::Horizontal, 5);
+    row4.pack_start(&Label::new(Some("最大认证尝试次数:")), false, false, 0);
+    row4.pack_start(&max_auth, false, false, 0);
+    row4.pack_start(&Label::new(Some("认证超时(秒):")), false, false, 0);
+    row4.pack_start(&auth_timeout, false, false, 0);
+    box_.pack_start(&row4, false, false, 0);
+
+    let row5 = Box::new(Orientation::Horizontal, 5);
+    row5.pack_start(&Label::new(Some("日志级别:")), false, false, 0);
+    row5.pack_start(&log_level, false, false, 0);
+    box_.pack_start(&row5, false, false, 0);
 
     let key_hint = Label::new(None);
     key_hint.set_markup(

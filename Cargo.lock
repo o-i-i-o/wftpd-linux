@@ -3734,7 +3734,7 @@ dependencies = [
 
 [[package]]
 name = "wftpd"
-version = "3.0.5"
+version = "3.0.8"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3755,7 +3755,7 @@ dependencies = [
 
 [[package]]
 name = "wftpd-common"
-version = "3.0.5"
+version = "3.0.8"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3774,7 +3774,7 @@ dependencies = [
 
 [[package]]
 name = "wftpd-ftp"
-version = "3.0.5"
+version = "3.0.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3789,7 +3789,7 @@ dependencies = [
 
 [[package]]
 name = "wftpd-proto"
-version = "3.0.5"
+version = "3.0.8"
 dependencies = [
  "prost",
  "protox",
@@ -3801,7 +3801,7 @@ dependencies = [
 
 [[package]]
 name = "wftpd-sftp"
-version = "3.0.5"
+version = "3.0.8"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3824,7 +3824,7 @@ dependencies = [
 
 [[package]]
 name = "wftpg"
-version = "3.0.5"
+version = "3.0.8"
 dependencies = [
  "anyhow",
  "chrono",

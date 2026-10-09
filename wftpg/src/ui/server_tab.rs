@@ -98,6 +98,7 @@ fn create_ftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
 
     // 按行排布：每条配置独占一行
     let row1 = Box::new(Orientation::Horizontal, 5);
+    row1.pack_start(&Label::new(Some("启用FTP服务")), false, false, 0);
     row1.pack_start(&w.enabled, false, false, 0);
     row1.pack_end(&w.save, false, false, 0);
     box_.pack_start(&row1, false, false, 0);
@@ -122,6 +123,7 @@ fn create_ftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     box_.pack_start(&row4, false, false, 0);
 
     let row5 = Box::new(Orientation::Horizontal, 5);
+    row5.pack_start(&Label::new(Some("允许匿名访问")), false, false, 0);
     row5.pack_start(&w.anon, false, false, 0);
     row5.pack_start(&w.anon_status, false, false, 0);
     box_.pack_start(&row5, false, false, 0);
@@ -152,8 +154,6 @@ fn create_ftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     row9.pack_start(&w.welcome, true, true, 0);
     box_.pack_start(&row9, false, false, 0);
 
-    box_.pack_start(&w.status, false, false, 0);
-
     frame.add(&box_);
     container.pack_start(&frame, false, false, 0);
 
@@ -170,8 +170,10 @@ fn create_ftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
 
 /// 构造 FTP 配置控件并从用户目录配置回填初始值
 fn build_ftp_widgets(state: &Arc<StdMutex<AppState>>) -> FtpWidgets {
-    let enabled = CheckButton::with_label("启用FTP服务");
-    let anon = CheckButton::with_label("允许匿名访问");
+    // 复选框指示器置于名称文字之后（GTK3 不支持翻转指示器，故用无文字
+    // CheckButton，名称由所在行的 Label 提供）
+    let enabled = CheckButton::new();
+    let anon = CheckButton::new();
     let bind_ip = Entry::new();
     bind_ip.set_width_chars(15);
     bind_ip.set_placeholder_text(Some("0.0.0.0"));
@@ -413,7 +415,7 @@ fn create_ftps_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     box_.set_margin_start(10);
     box_.set_margin_end(10);
 
-    let require_ssl = CheckButton::with_label("强制TLS（拒绝未升级的客户端）");
+    let require_ssl = CheckButton::new();
     let cert_path = Entry::new();
     cert_path.set_hexpand(true);
     cert_path.set_placeholder_text(Some("PEM 证书路径，如 /etc/ssl/certs/ftp.pem"));
@@ -439,21 +441,22 @@ fn create_ftps_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
 
     // 按行排布：每条配置独占一行
     let row1 = Box::new(Orientation::Horizontal, 5);
-    row1.pack_start(&Label::new(Some("证书路径:")), false, false, 0);
-    row1.pack_start(&cert_path, true, true, 0);
-    row1.pack_start(&browse_cert, false, false, 0);
+    row1.pack_start(&Label::new(Some("强制TLS（拒绝未升级的客户端）")), false, false, 0);
+    row1.pack_start(&require_ssl, false, false, 0);
+    row1.pack_start(&validate_status, false, false, 0);
+    row1.pack_end(&save, false, false, 0);
     box_.pack_start(&row1, false, false, 0);
 
     let row2 = Box::new(Orientation::Horizontal, 5);
-    row2.pack_start(&Label::new(Some("私钥路径:")), false, false, 0);
-    row2.pack_start(&key_path, true, true, 0);
-    row2.pack_start(&browse_key, false, false, 0);
+    row2.pack_start(&Label::new(Some("证书路径:")), false, false, 0);
+    row2.pack_start(&cert_path, true, true, 0);
+    row2.pack_start(&browse_cert, false, false, 0);
     box_.pack_start(&row2, false, false, 0);
 
     let row3 = Box::new(Orientation::Horizontal, 5);
-    row3.pack_start(&require_ssl, false, false, 0);
-    row3.pack_start(&validate_status, false, false, 0);
-    row3.pack_end(&save, false, false, 0);
+    row3.pack_start(&Label::new(Some("私钥路径:")), false, false, 0);
+    row3.pack_start(&key_path, true, true, 0);
+    row3.pack_start(&browse_key, false, false, 0);
     box_.pack_start(&row3, false, false, 0);
 
     box_.pack_start(&status, false, false, 0);
@@ -621,7 +624,7 @@ fn create_sftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     box_.set_margin_start(10);
     box_.set_margin_end(10);
 
-    let enabled = CheckButton::with_label("启用SFTP服务");
+    let enabled = CheckButton::new();
     let bind_ip = Entry::new();
     bind_ip.set_width_chars(15);
     bind_ip.set_placeholder_text(Some("0.0.0.0"));
@@ -660,6 +663,7 @@ fn create_sftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
 
     // 按行排布：每条配置独占一行
     let row1 = Box::new(Orientation::Horizontal, 5);
+    row1.pack_start(&Label::new(Some("启用SFTP服务")), false, false, 0);
     row1.pack_start(&enabled, false, false, 0);
     row1.pack_end(&save, false, false, 0);
     box_.pack_start(&row1, false, false, 0);
@@ -694,8 +698,6 @@ fn create_sftp_config_frame(container: &Box, state: &Arc<StdMutex<AppState>>) {
     );
     key_hint.set_halign(gtk::Align::Start);
     box_.pack_start(&key_hint, false, false, 0);
-
-    box_.pack_start(&status, false, false, 0);
 
     frame.add(&box_);
     container.pack_start(&frame, false, false, 0);

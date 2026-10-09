@@ -48,8 +48,11 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> ScrolledWindow {
     sftp_status.set_halign(gtk::Align::Start);
     version_status.set_halign(gtk::Align::Start);
 
-    status_box.pack_start(&ftp_status, false, false, 0);
-    status_box.pack_start(&sftp_status, false, false, 0);
+    // FTP 与 SFTP 状态及刷新按钮同行显示
+    let protocol_row = Box::new(Orientation::Horizontal, 20);
+    protocol_row.pack_start(&ftp_status, false, false, 0);
+    protocol_row.pack_start(&sftp_status, false, false, 0);
+    status_box.pack_start(&protocol_row, false, false, 0);
     status_box.pack_start(&version_status, false, false, 0);
 
     let labels = StatusLabels {
@@ -67,7 +70,7 @@ pub fn create(_state: &Arc<StdMutex<AppState>>) -> ScrolledWindow {
             refresh_status(&labels, &refreshing);
         });
     }
-    status_box.pack_start(&refresh_button, false, false, 0);
+    protocol_row.pack_end(&refresh_button, false, false, 0);
     status_frame.add(&status_box);
     container.pack_start(&status_frame, false, false, 0);
 

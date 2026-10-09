@@ -2,7 +2,7 @@
 //!
 //! 业务逻辑与旧手写实现保持一致：
 //! - 路径经词法解析锚定在用户主目录内（防穿越）
-//! - 每个操作前检查用户权限（can_read/can_write/...）
+//! - 每个操作前检查用户权限（`can_read/can_write/...`）
 //! - 上传写入量受 `quota_mb` 配额约束
 //! - 传输受用户 `speed_limit_kbps` 限速
 //! - 文件操作写入审计日志（FileLogger → `file_ops` target）
